@@ -92,6 +92,8 @@ struct ThreadConfig {
     int fec = 1;
     int decoder = 1;
     int render = 1;
+    int RS_K = 1;
+    int RS_M = 1;
 };
 
 #endif

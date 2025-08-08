@@ -865,6 +865,9 @@ void FecWorkerThread(int threadId) {
                 uint32_t originalLenForDecode = currentFrameMetaForAttempt.originalDataLen;
 
                 if (g_matrix_initialized && DecodeFEC_Jerasure(shardsForDecodeAttempt, RS_K, RS_M, originalLenForDecode, decodedFrameData, g_jerasure_matrix)) {
+                    // Save H264 file after successful FEC decode, before enqueue
+                    SaveH264ToFile_NUM(decodedFrameData, "decoded_frame");
+                    
                     H264Frame frame_to_decode;
                     frame_to_decode.timestamp = currentFrameMetaForAttempt.firstTimestamp;
                     frame_to_decode.frameNumber = frameNumber;
@@ -901,6 +904,8 @@ ThreadConfig getOptimalThreadConfig(){
     config.fec = 3;
     config.decoder = 2;
     config.render = 1;
+    config.RS_K = 8;
+    config.RS_M = 2;
 
     return config;
 }
@@ -932,23 +937,28 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         }
     }
 
-    // Clean up old log files
+    // Clean up old log files - keep only 5 backup files
+    std::vector<std::filesystem::path> backupFiles;
     for (const auto& entry : std::filesystem::directory_iterator(exeDir)) {
         if (entry.is_regular_file()) {
             std::string fileName = entry.path().filename().string();
             std::regex pattern(R"((\d{14})_debuglog_client\.log\.back)");
-            std::smatch match;
-            if (std::regex_match(fileName, match, pattern)) {
-                std::string dateString = match[1].str();
-                std::tm fileTime = {};
-                std::istringstream ss(dateString);
-                ss >> std::get_time(&fileTime, "%Y%m%d%H%M%S");
-
-                std::time_t fileTimestamp = std::mktime(&fileTime);
-                double diffInSeconds = std::difftime(now, fileTimestamp);
-                if (diffInSeconds > 14 * 24 * 60 * 60) {
-                    std::filesystem::remove(entry.path());
-                }
+            if (std::regex_match(fileName, pattern)) {
+                backupFiles.push_back(entry.path());
+            }
+        }
+    }
+    
+    // Sort by filename (timestamp), newest first
+    std::sort(backupFiles.begin(), backupFiles.end(), std::greater<std::filesystem::path>());
+    
+    // Remove files beyond the 5 most recent ones
+    if (backupFiles.size() > 5) {
+        for (size_t i = 5; i < backupFiles.size(); ++i) {
+            try {
+                std::filesystem::remove(backupFiles[i]);
+            } catch (const std::filesystem::filesystem_error& e) {
+                DebugLog(L"Failed to remove old log file: " + std::wstring(e.what(), e.what() + strlen(e.what())));
             }
         }
     }

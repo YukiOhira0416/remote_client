@@ -4,10 +4,11 @@
 #include <mutex>
 #include "Globals.h"
 #include "Nvdec.h"
+#include "main.h"
 
 // Reed-Solomon encoding parameters
-const int RS_K = 8;  // Data shards
-const int RS_M = 2;  // Parity shards
+const int RS_K = getOptimalThreadConfig().RS_K;  // Data shards
+const int RS_M = getOptimalThreadConfig().RS_M;  // Parity shards
 const int RS_N = RS_K + RS_M;
 
 // Jerasure encoding matrix (bit matrix)
