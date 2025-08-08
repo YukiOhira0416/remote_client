@@ -154,24 +154,31 @@ bool FrameDecoder::allocateFrameBuffers() {
     texDesc.DepthOrArraySize = 1;
     texDesc.MipLevels = 1;
     texDesc.SampleDesc.Count = 1;
-    texDesc.Layout = D3D12_TEXTURE_LAYOUT_64KB_STANDARD_SWIZZLE;
+    texDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     texDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
 
     D3D12_HEAP_PROPERTIES heapProps = {};
     heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
 
     for (int i = 0; i < m_videoDecoderCreateInfo.ulNumDecodeSurfaces; ++i) {
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT placedFootprintY = {};
+        UINT64 totalSizeF = 0;
         // Y plane
         texDesc.Width = m_frameWidth;
         texDesc.Height = m_frameHeight;
         texDesc.Format = DXGI_FORMAT_R8_UNORM;
+        m_pD3D12Device->GetCopyableFootprints(&texDesc, 0, 1, 0, &placedFootprintY, nullptr, nullptr, &totalSizeF);
+        m_frameResources[i].pitchY = placedFootprintY.Footprint.RowPitch;
         HRESULT hr = m_pD3D12Device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER, &texDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_frameResources[i].pTextureY));
         if (FAILED(hr)) return false;
 
         // UV plane
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT placedFootprintUV = {};
         texDesc.Width = m_frameWidth / 2;
         texDesc.Height = m_frameHeight / 2;
         texDesc.Format = DXGI_FORMAT_R8G8_UNORM;
+        m_pD3D12Device->GetCopyableFootprints(&texDesc, 0, 1, 0, &placedFootprintUV, nullptr, nullptr, &totalSizeF);
+        m_frameResources[i].pitchUV = placedFootprintUV.Footprint.RowPitch;
         hr = m_pD3D12Device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER, &texDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_frameResources[i].pTextureUV));
         if (FAILED(hr)) return false;
 
@@ -183,19 +190,19 @@ bool FrameDecoder::allocateFrameBuffers() {
         cudaExternalMemoryHandleDesc extMemHandleDesc = {};
         extMemHandleDesc.type = cudaExternalMemoryHandleTypeD3D12Heap;
         extMemHandleDesc.handle.win32.handle = m_frameResources[i].sharedHandleY;
-        extMemHandleDesc.size = m_frameResources[i].pTextureY->GetDesc().Width * m_frameResources[i].pTextureY->GetDesc().Height;
+        extMemHandleDesc.size = m_frameResources[i].pitchY * m_frameResources[i].pTextureY->GetDesc().Height;
         CUDA_RUNTIME_CHECK(cudaImportExternalMemory(&m_frameResources[i].cudaExtMemY, &extMemHandleDesc));
 
         extMemHandleDesc.handle.win32.handle = m_frameResources[i].sharedHandleUV;
-        extMemHandleDesc.size = m_frameResources[i].pTextureUV->GetDesc().Width * m_frameResources[i].pTextureUV->GetDesc().Height * 2;
+        extMemHandleDesc.size = m_frameResources[i].pitchUV * m_frameResources[i].pTextureUV->GetDesc().Height;
         CUDA_RUNTIME_CHECK(cudaImportExternalMemory(&m_frameResources[i].cudaExtMemUV, &extMemHandleDesc));
 
         // Map external memory to CUDA device pointers
         cudaExternalMemoryBufferDesc bufferDesc = {};
-        bufferDesc.size = m_frameResources[i].pTextureY->GetDesc().Width * m_frameResources[i].pTextureY->GetDesc().Height;
+        bufferDesc.size = m_frameResources[i].pitchY * m_frameResources[i].pTextureY->GetDesc().Height;
         CUDA_RUNTIME_CHECK(cudaExternalMemoryGetMappedBuffer(&m_frameResources[i].mappedCudaPtrY, m_frameResources[i].cudaExtMemY, &bufferDesc));
 
-        bufferDesc.size = m_frameResources[i].pTextureUV->GetDesc().Width * m_frameResources[i].pTextureUV->GetDesc().Height * 2;
+        bufferDesc.size = m_frameResources[i].pitchUV * m_frameResources[i].pTextureUV->GetDesc().Height;
         CUDA_RUNTIME_CHECK(cudaExternalMemoryGetMappedBuffer(&m_frameResources[i].mappedCudaPtrUV, m_frameResources[i].cudaExtMemUV, &bufferDesc));
     }
 
@@ -234,15 +241,15 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     m.srcPitch = nDecodedPitch;
     m.dstMemoryType = CU_MEMORYTYPE_DEVICE;
     m.dstDevice = (CUdeviceptr)pTexY_void;
-    m.dstPitch = self->m_frameWidth;
+    m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchY;
     m.WidthInBytes = self->m_frameWidth;
     m.Height = self->m_frameHeight;
     CUDA_CHECK(cuMemcpy2D(&m));
 
-    m.srcDevice = pDecodedFrame + self->m_frameHeight * nDecodedPitch;
+    m.srcDevice = pDecodedFrame + (size_t)self->m_frameHeight * nDecodedPitch;
     m.dstDevice = (CUdeviceptr)pTexUV_void;
-    m.dstPitch = self->m_frameWidth; // UV plane pitch is also full width in bytes for R8G8
-    m.WidthInBytes = self->m_frameWidth;
+    m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchUV;
+    m.WidthInBytes = self->m_frameWidth / 2 * 2; // width for R8G8
     m.Height = self->m_frameHeight / 2;
     CUDA_CHECK(cuMemcpy2D(&m));
 

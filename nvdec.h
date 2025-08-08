@@ -49,6 +49,8 @@ private:
         void* mappedCudaPtrUV;
         HANDLE sharedHandleY;
         HANDLE sharedHandleUV;
+        UINT pitchY;
+        UINT pitchUV;
     };
 
     std::vector<DecodedFrameResource> m_frameResources;
