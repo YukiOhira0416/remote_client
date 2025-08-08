@@ -1,0 +1,85 @@
+1: InitD3D (D3D12): Tearing is supported.
+2: InitD3D (D3D12): D3D12 Device created.
+3: InitD3D (D3D12): Command Queue created.
+4: InitD3D (D3D12): Swap Chain created.
+5: InitD3D (D3D12): RTV Descriptor Heap created.
+6: InitD3D (D3D12): Render Target Views created.
+7: InitD3D (D3D12): Command Allocator created.
+8: InitD3D (D3D12): Command List created.
+9: InitD3D (D3D12): Fence and Event created.
+10: InitD3D (D3D12): Root Signature created.
+11: InitD3D (D3D12): PSO created.
+12: InitD3D (D3D12): SRV Descriptor Heap created.
+13: ListenForResendRequests thread started.
+14: ReceiveRawPacketsThread [0] started.
+15: ReceiveRawPacketsThread [1] started.
+16: ReceiveRawPacketsThread [2] started.
+17: FecWorkerThread [0] started.
+18: FecWorkerThread [1] started.
+19: Waiting for RESEND signal...
+20: FecWorkerThread [2] started.
+21: ReceiveRawPacketsThread [0]: ENet server started, listening on port 8130
+22: ReceiveRawPacketsThread [1]: ENet server started, listening on port 8131
+23: ReceiveRawPacketsThread [2]: ENet server started, listening on port 8132
+24: RenderFrame Execution Time: 6 ms.
+25: RenderFrame Execution Time: 1 ms.
+26: RenderFrame Execution Time: 0 ms.
+27: RenderFrame Execution Time: 0 ms.
+28: RenderFrame Execution Time: 0 ms.
+29: RenderFrame Execution Time: 0 ms.
+30: RenderFrame Execution Time: 0 ms.
+31: RenderFrame Execution Time: 2 ms.
+32: RenderFrame Execution Time: 0 ms.
+33: RenderFrame Execution Time: 0 ms.
+34: RenderFrame Execution Time: 0 ms.
+35: RenderFrame Execution Time: 0 ms.
+36: RenderFrame Execution Time: 0 ms.
+37: RenderFrame Execution Time: 0 ms.
+38: RenderFrame Execution Time: 0 ms.
+39: RenderFrame Execution Time: 0 ms.
+40: RenderFrame Execution Time: 0 ms.
+41: RenderFrame Execution Time: 0 ms.
+42: RenderFrame Execution Time: 0 ms.
+43: RenderFrame Execution Time: 0 ms.
+44: RenderFrame Execution Time: 0 ms.
+45: RenderFrame Execution Time: 0 ms.
+46: RenderFrame Execution Time: 0 ms.
+47: RenderFrame Execution Time: 0 ms.
+48: RenderFrame Execution Time: 0 ms.
+49: RenderFrame Execution Time: 0 ms.
+50: RenderFrame Execution Time: 0 ms.
+51: RenderFrame Execution Time: 0 ms.
+52: RenderFrame Execution Time: 0 ms.
+53: RenderFrame Execution Time: 0 ms.
+54: RenderFrame Execution Time: 0 ms.
+55: RenderFrame Execution Time: 0 ms.
+56: RenderFrame Execution Time: 0 ms.
+57: RenderFrame Execution Time: 0 ms.
+58: RenderFrame Execution Time: 0 ms.
+59: RenderFrame Execution Time: 0 ms.
+60: RenderFrame Execution Time: 0 ms.
+61: RenderFrame Execution Time: 0 ms.
+62: RenderFrame Execution Time: 1 ms.
+63: RenderFrame Execution Time: 0 ms.
+64: RenderFrame Execution Time: 0 ms.
+65: RenderFrame Execution Time: 0 ms.
+66: RenderFrame Execution Time: 0 ms.
+67: RenderFrame Execution Time: 0 ms.
+68: RenderFrame Execution Time: 0 ms.
+69: RenderFrame Execution Time: 0 ms.
+70: RenderFrame Execution Time: 0 ms.
+71: RenderFrame Execution Time: 0 ms.
+72: RenderFrame Execution Time: 0 ms.
+73: RenderFrame Execution Time: 0 ms.
+74: RenderFrame Execution Time: 0 ms.
+75: ReceiveRawPacketsThread [1]: Client connected from 16777343:63564
+76: ReceiveRawPacketsThread [2]: Client connected from 16777343:63565
+77: ReceiveRawPacketsThread [0]: Client connected from 16777343:63566
+78: RenderFrame Execution Time: 0 ms.
+79: RenderFrame Execution Time: 0 ms.
+80: RenderFrame Execution Time: 0 ms.
+81: RenderFrame Execution Time: 0 ms.
+82: RenderFrame Execution Time: 0 ms.
+83: RenderFrame Execution Time: 0 ms.
+84: RenderFrame Execution Time: 0 ms.
+85: ReceiveRawPacketsThread [2]: FragmentAssembled - Delay (FECWorkerTS to Enqueue time): 4 ms.

@@ -1,0 +1,23 @@
+{
+    "cmake.configureOnOpen": true,
+    "cmake.buildDirectory": "${workspaceFolder}/build",
+    "cmake.generator": "Visual Studio 17 2022",
+    "cmake.platform": "x64",
+    "cmake.configureArgs": [
+        "-DCMAKE_BUILD_TYPE=Debug"
+    ],
+    "cmake.buildArgs": [
+        "--config",
+        "Debug"
+    ],
+    "cmake.debugConfig": {
+        "name": "Debug RemoteClient",
+        "program": "${command:cmake.launchTargetPath}",
+        "args": [],
+        "cwd": "${workspaceFolder}"
+    },
+    "files.associations": {
+        "*.hlsl": "hlsl",
+        "iostream": "cpp"
+    }
+}

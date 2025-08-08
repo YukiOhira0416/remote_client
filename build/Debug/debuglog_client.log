@@ -1,0 +1,219 @@
+1: InitD3D (D3D12): Tearing is supported.
+2: InitD3D (D3D12): D3D12 Device created.
+3: InitD3D (D3D12): Command Queue created.
+4: InitD3D (D3D12): Swap Chain created.
+5: InitD3D (D3D12): RTV Descriptor Heap created.
+6: InitD3D (D3D12): Render Target Views created.
+7: InitD3D (D3D12): Command Allocator created.
+8: InitD3D (D3D12): Command List created.
+9: InitD3D (D3D12): Fence and Event created.
+10: InitD3D (D3D12): Root Signature created.
+11: InitD3D (D3D12): PSO created.
+12: InitD3D (D3D12): SRV Descriptor Heap created.
+13: ListenForResendRequests thread started.
+14: ReceiveRawPacketsThread [0] started.
+15: ReceiveRawPacketsThread [1] started.
+16: ReceiveRawPacketsThread [2] started.
+17: FecWorkerThread [0] started.
+18: FecWorkerThread [1] started.
+19: FecWorkerThread [2] started.
+20: Waiting for RESEND signal...
+21: ReceiveRawPacketsThread [0]: ENet server started, listening on port 8130
+22: ReceiveRawPacketsThread [1]: ENet server started, listening on port 8131
+23: ReceiveRawPacketsThread [2]: ENet server started, listening on port 8132
+24: RenderFrame Execution Time: 8 ms.
+25: RenderFrame Execution Time: 1 ms.
+26: RenderFrame Execution Time: 0 ms.
+27: RenderFrame Execution Time: 0 ms.
+28: RenderFrame Execution Time: 0 ms.
+29: RenderFrame Execution Time: 0 ms.
+30: RenderFrame Execution Time: 0 ms.
+31: RenderFrame Execution Time: 0 ms.
+32: RenderFrame Execution Time: 0 ms.
+33: RenderFrame Execution Time: 0 ms.
+34: RenderFrame Execution Time: 0 ms.
+35: RenderFrame Execution Time: 0 ms.
+36: RenderFrame Execution Time: 0 ms.
+37: RenderFrame Execution Time: 0 ms.
+38: RenderFrame Execution Time: 0 ms.
+39: RenderFrame Execution Time: 0 ms.
+40: RenderFrame Execution Time: 0 ms.
+41: RenderFrame Execution Time: 0 ms.
+42: RenderFrame Execution Time: 0 ms.
+43: RenderFrame Execution Time: 0 ms.
+44: RenderFrame Execution Time: 0 ms.
+45: RenderFrame Execution Time: 4 ms.
+46: RenderFrame Execution Time: 0 ms.
+47: RenderFrame Execution Time: 0 ms.
+48: RenderFrame Execution Time: 0 ms.
+49: RenderFrame Execution Time: 0 ms.
+50: RenderFrame Execution Time: 0 ms.
+51: RenderFrame Execution Time: 0 ms.
+52: RenderFrame Execution Time: 0 ms.
+53: RenderFrame Execution Time: 0 ms.
+54: RenderFrame Execution Time: 0 ms.
+55: RenderFrame Execution Time: 0 ms.
+56: RenderFrame Execution Time: 0 ms.
+57: RenderFrame Execution Time: 1 ms.
+58: RenderFrame Execution Time: 0 ms.
+59: RenderFrame Execution Time: 0 ms.
+60: RenderFrame Execution Time: 0 ms.
+61: RenderFrame Execution Time: 0 ms.
+62: RenderFrame Execution Time: 0 ms.
+63: RenderFrame Execution Time: 0 ms.
+64: RenderFrame Execution Time: 0 ms.
+65: RenderFrame Execution Time: 0 ms.
+66: RenderFrame Execution Time: 0 ms.
+67: RenderFrame Execution Time: 0 ms.
+68: RenderFrame Execution Time: 0 ms.
+69: RenderFrame Execution Time: 0 ms.
+70: RenderFrame Execution Time: 0 ms.
+71: RenderFrame Execution Time: 0 ms.
+72: RenderFrame Execution Time: 0 ms.
+73: RenderFrame Execution Time: 0 ms.
+74: RenderFrame Execution Time: 0 ms.
+75: RenderFrame Execution Time: 0 ms.
+76: RenderFrame Execution Time: 0 ms.
+77: RenderFrame Execution Time: 0 ms.
+78: ReceiveRawPacketsThread [1]: Client connected from 16777343:61479
+79: RenderFrame Execution Time: 1 ms.
+80: ReceiveRawPacketsThread [0]: Client connected from 16777343:61480
+81: ReceiveRawPacketsThread [2]: Client connected from 16777343:61481
+82: RenderFrame Execution Time: 0 ms.
+83: RenderFrame Execution Time: 0 ms.
+84: RenderFrame Execution Time: 0 ms.
+85: RenderFrame Execution Time: 0 ms.
+86: RenderFrame Execution Time: 0 ms.
+87: RenderFrame Execution Time: 0 ms.
+88: RenderFrame Execution Time: 0 ms.
+89: RenderFrame Execution Time: 0 ms.
+90: RenderFrame Execution Time: 0 ms.
+91: RenderFrame Execution Time: 0 ms.
+92: RenderFrame Execution Time: 0 ms.
+93: RenderFrame Execution Time: 0 ms.
+94: RenderFrame Execution Time: 0 ms.
+95: RenderFrame Execution Time: 0 ms.
+96: RenderFrame Execution Time: 0 ms.
+97: RenderFrame Execution Time: 0 ms.
+98: RenderFrame Execution Time: 0 ms.
+99: RenderFrame Execution Time: 0 ms.
+100: RenderFrame Execution Time: 0 ms.
+101: RenderFrame Execution Time: 0 ms.
+102: RenderFrame Execution Time: 0 ms.
+103: RenderFrame Execution Time: 0 ms.
+104: RenderFrame Execution Time: 0 ms.
+105: RenderFrame Execution Time: 0 ms.
+106: RenderFrame Execution Time: 0 ms.
+107: RenderFrame Execution Time: 0 ms.
+108: RenderFrame Execution Time: 0 ms.
+109: RenderFrame Execution Time: 0 ms.
+110: RenderFrame Execution Time: 0 ms.
+111: RenderFrame Execution Time: 0 ms.
+112: RenderFrame Execution Time: 0 ms.
+113: RenderFrame Execution Time: 0 ms.
+114: RenderFrame Execution Time: 0 ms.
+115: RenderFrame Execution Time: 0 ms.
+116: RenderFrame Execution Time: 0 ms.
+117: RenderFrame Execution Time: 0 ms.
+118: RenderFrame Execution Time: 0 ms.
+119: RenderFrame Execution Time: 1 ms.
+120: RenderFrame Execution Time: 0 ms.
+121: RenderFrame Execution Time: 0 ms.
+122: RenderFrame Execution Time: 0 ms.
+123: RenderFrame Execution Time: 0 ms.
+124: RenderFrame Execution Time: 0 ms.
+125: RenderFrame Execution Time: 0 ms.
+126: RenderFrame Execution Time: 0 ms.
+127: RenderFrame Execution Time: 0 ms.
+128: RenderFrame Execution Time: 0 ms.
+129: RenderFrame Execution Time: 0 ms.
+130: RenderFrame Execution Time: 0 ms.
+131: RenderFrame Execution Time: 0 ms.
+132: RenderFrame Execution Time: 0 ms.
+133: RenderFrame Execution Time: 0 ms.
+134: RenderFrame Execution Time: 0 ms.
+135: RenderFrame Execution Time: 0 ms.
+136: RenderFrame Execution Time: 0 ms.
+137: RenderFrame Execution Time: 0 ms.
+138: RenderFrame Execution Time: 0 ms.
+139: RenderFrame Execution Time: 0 ms.
+140: RenderFrame Execution Time: 0 ms.
+141: RenderFrame Execution Time: 0 ms.
+142: RenderFrame Execution Time: 0 ms.
+143: RenderFrame Execution Time: 0 ms.
+144: RenderFrame Execution Time: 0 ms.
+145: RenderFrame Execution Time: 0 ms.
+146: RenderFrame Execution Time: 0 ms.
+147: RenderFrame Execution Time: 0 ms.
+148: RenderFrame Execution Time: 0 ms.
+149: RenderFrame Execution Time: 0 ms.
+150: RenderFrame Execution Time: 0 ms.
+151: RenderFrame Execution Time: 0 ms.
+152: RenderFrame Execution Time: 0 ms.
+153: RenderFrame Execution Time: 0 ms.
+154: RenderFrame Execution Time: 0 ms.
+155: RenderFrame Execution Time: 0 ms.
+156: RenderFrame Execution Time: 0 ms.
+157: RenderFrame Execution Time: 0 ms.
+158: RenderFrame Execution Time: 0 ms.
+159: RenderFrame Execution Time: 0 ms.
+160: RenderFrame Execution Time: 0 ms.
+161: RenderFrame Execution Time: 0 ms.
+162: RenderFrame Execution Time: 0 ms.
+163: RenderFrame Execution Time: 0 ms.
+164: RenderFrame Execution Time: 0 ms.
+165: RenderFrame Execution Time: 0 ms.
+166: RenderFrame Execution Time: 0 ms.
+167: RenderFrame Execution Time: 0 ms.
+168: RenderFrame Execution Time: 0 ms.
+169: RenderFrame Execution Time: 0 ms.
+170: RenderFrame Execution Time: 1 ms.
+171: RenderFrame Execution Time: 0 ms.
+172: RenderFrame Execution Time: 0 ms.
+173: RenderFrame Execution Time: 0 ms.
+174: RenderFrame Execution Time: 0 ms.
+175: RenderFrame Execution Time: 0 ms.
+176: RenderFrame Execution Time: 0 ms.
+177: RenderFrame Execution Time: 0 ms.
+178: RenderFrame Execution Time: 0 ms.
+179: RenderFrame Execution Time: 0 ms.
+180: RenderFrame Execution Time: 0 ms.
+181: RenderFrame Execution Time: 0 ms.
+182: RenderFrame Execution Time: 0 ms.
+183: RenderFrame Execution Time: 0 ms.
+184: RenderFrame Execution Time: 0 ms.
+185: RenderFrame Execution Time: 0 ms.
+186: RenderFrame Execution Time: 0 ms.
+187: RenderFrame Execution Time: 0 ms.
+188: RenderFrame Execution Time: 0 ms.
+189: RenderFrame Execution Time: 0 ms.
+190: RenderFrame Execution Time: 0 ms.
+191: RenderFrame Execution Time: 0 ms.
+192: RenderFrame Execution Time: 0 ms.
+193: RenderFrame Execution Time: 0 ms.
+194: RenderFrame Execution Time: 0 ms.
+195: RenderFrame Execution Time: 0 ms.
+196: RenderFrame Execution Time: 1 ms.
+197: FecWorkerThread: Queue Size 0
+198: FecWorkerThread: Queue Size 0
+199: FecWorkerThread: Queue Size 0
+200: FecWorkerThread: Queue Duration Time 0 ms
+201: RenderFrame Execution Time: 1 ms.
+202: FecWorkerThread: Queue Duration Time 0 ms
+203: FecWorkerThread: Queue Duration Time 1 ms
+204: FecWorkerThread [2]: F#2 has 1 shards, (less than K=8) waiting for more.
+205: FecWorkerThread [0]: F#2 has 2 shards, (less than K=8) waiting for more.
+206: FecWorkerThread [1]: F#2 has 3 shards, (less than K=8) waiting for more.
+207: FecWorkerThread [2]: F#1 has 1 shards, (less than K=8) waiting for more.
+208: FecWorkerThread [0]: F#1 has 2 shards, (less than K=8) waiting for more.
+209: FecWorkerThread [1]: F#1 has 3 shards, (less than K=8) waiting for more.
+210: FecWorkerThread [2]: F#1 has 4 shards, (less than K=8) waiting for more.
+211: FecWorkerThread [0]: F#1 has 5 shards, (less than K=8) waiting for more.
+212: FecWorkerThread [1]: F#1 has 6 shards, (less than K=8) waiting for more.
+213: FecWorkerThread [2]: F#0 has 1 shards, (less than K=8) waiting for more.
+214: FecWorkerThread [0]: F#0 has 2 shards, (less than K=8) waiting for more.
+215: FecWorkerThread [1]: F#0 has 3 shards, (less than K=8) waiting for more.
+216: FecWorkerThread [1]: F#0 has 4 shards, (less than K=8) waiting for more.
+217: FecWorkerThread [0]: F#0 has 5 shards, (less than K=8) waiting for more.
+218: FecWorkerThread [2]: F#0 has 6 shards, (less than K=8) waiting for more.
+219: FecWorkerThread [1]: F#0 has 7 shards, (less than K=8) waiting for more.

@@ -1,0 +1,10 @@
+^C:\USERS\YUKI_OHIRA\SOURCE\REPOS\REMOTE_CLIENT_CUDA_NVENC\REMOTE_CLIENT\CMAKELISTS.TXT
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/Yuki_Ohira/source/repos/remote_client_cuda_nvenc/remote_client -BC:/Users/Yuki_Ohira/source/repos/remote_client_cuda_nvenc/remote_client/build --check-stamp-file C:/Users/Yuki_Ohira/source/repos/remote_client_cuda_nvenc/remote_client/build/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

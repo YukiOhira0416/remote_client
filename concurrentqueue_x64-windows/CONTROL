@@ -1,0 +1,7 @@
+Package: concurrentqueue
+Version: 1.0.4
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: bc5cad0d2505581dae20a3612e503467a615098333173f0d4eab00eb676bffec
+Description: A fast multi-producer, multi-consumer lock-free concurrent queue for C++11
