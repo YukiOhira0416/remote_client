@@ -41,6 +41,8 @@ private:
     CUvideodecoder m_hDecoder = nullptr;
 
     struct DecodedFrameResource {
+        Microsoft::WRL::ComPtr<ID3D12Heap> pHeapY;
+        Microsoft::WRL::ComPtr<ID3D12Heap> pHeapUV;
         Microsoft::WRL::ComPtr<ID3D12Resource> pTextureY;
         Microsoft::WRL::ComPtr<ID3D12Resource> pTextureUV;
         cudaExternalMemory_t cudaExtMemY;

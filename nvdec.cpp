@@ -55,6 +55,7 @@ FrameDecoder::~FrameDecoder() {
         }
         if(resource.sharedHandleY) CloseHandle(resource.sharedHandleY);
         if(resource.sharedHandleUV) CloseHandle(resource.sharedHandleUV);
+        // Heaps are released by ComPtr automatically
     }
 
     if (m_hParser) {
@@ -148,62 +149,90 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
 bool FrameDecoder::allocateFrameBuffers() {
     m_frameResources.resize(m_videoDecoderCreateInfo.ulNumDecodeSurfaces);
 
-    D3D12_RESOURCE_DESC texDesc = {};
-    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    texDesc.Alignment = 0;
-    texDesc.DepthOrArraySize = 1;
-    texDesc.MipLevels = 1;
-    texDesc.SampleDesc.Count = 1;
-    texDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    texDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
-
-    D3D12_HEAP_PROPERTIES heapProps = {};
-    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-
     for (int i = 0; i < m_videoDecoderCreateInfo.ulNumDecodeSurfaces; ++i) {
+        // --- Y Plane ---
+        D3D12_RESOURCE_DESC texDescY = {};
+        texDescY.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        texDescY.Alignment = 0;
+        texDescY.DepthOrArraySize = 1;
+        texDescY.MipLevels = 1;
+        texDescY.SampleDesc.Count = 1;
+        texDescY.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        texDescY.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
+        texDescY.Width = m_frameWidth;
+        texDescY.Height = m_frameHeight;
+        texDescY.Format = DXGI_FORMAT_R8_UNORM;
+
+        D3D12_RESOURCE_ALLOCATION_INFO allocInfoY = m_pD3D12Device->GetResourceAllocationInfo(0, 1, &texDescY);
+
+        D3D12_HEAP_DESC heapDescY = {};
+        heapDescY.SizeInBytes = allocInfoY.SizeInBytes;
+        heapDescY.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+        heapDescY.Alignment = allocInfoY.Alignment;
+        heapDescY.Flags = D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER;
+
+        HRESULT hr = m_pD3D12Device->CreateHeap(&heapDescY, IID_PPV_ARGS(&m_frameResources[i].pHeapY));
+        if(FAILED(hr)) return false;
+
+        hr = m_pD3D12Device->CreatePlacedResource(m_frameResources[i].pHeapY.Get(), 0, &texDescY, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_frameResources[i].pTextureY));
+        if(FAILED(hr)) return false;
+
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT placedFootprintY = {};
-        UINT64 totalSizeF = 0;
-        // Y plane
-        texDesc.Width = m_frameWidth;
-        texDesc.Height = m_frameHeight;
-        texDesc.Format = DXGI_FORMAT_R8_UNORM;
-        m_pD3D12Device->GetCopyableFootprints(&texDesc, 0, 1, 0, &placedFootprintY, nullptr, nullptr, &totalSizeF);
+        m_pD3D12Device->GetCopyableFootprints(&texDescY, 0, 1, 0, &placedFootprintY, nullptr, nullptr, nullptr);
         m_frameResources[i].pitchY = placedFootprintY.Footprint.RowPitch;
-        HRESULT hr = m_pD3D12Device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER, &texDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_frameResources[i].pTextureY));
-        if (FAILED(hr)) return false;
 
-        // UV plane
+        // --- UV Plane ---
+        D3D12_RESOURCE_DESC texDescUV = texDescY;
+        texDescUV.Width = m_frameWidth / 2;
+        texDescUV.Height = m_frameHeight / 2;
+        texDescUV.Format = DXGI_FORMAT_R8G8_UNORM;
+
+        D3D12_RESOURCE_ALLOCATION_INFO allocInfoUV = m_pD3D12Device->GetResourceAllocationInfo(0, 1, &texDescUV);
+
+        D3D12_HEAP_DESC heapDescUV = {};
+        heapDescUV.SizeInBytes = allocInfoUV.SizeInBytes;
+        heapDescUV.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+        heapDescUV.Alignment = allocInfoUV.Alignment;
+        heapDescUV.Flags = D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER;
+
+        hr = m_pD3D12Device->CreateHeap(&heapDescUV, IID_PPV_ARGS(&m_frameResources[i].pHeapUV));
+        if(FAILED(hr)) return false;
+
+        hr = m_pD3D12Device->CreatePlacedResource(m_frameResources[i].pHeapUV.Get(), 0, &texDescUV, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_frameResources[i].pTextureUV));
+        if(FAILED(hr)) return false;
+
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT placedFootprintUV = {};
-        texDesc.Width = m_frameWidth / 2;
-        texDesc.Height = m_frameHeight / 2;
-        texDesc.Format = DXGI_FORMAT_R8G8_UNORM;
-        m_pD3D12Device->GetCopyableFootprints(&texDesc, 0, 1, 0, &placedFootprintUV, nullptr, nullptr, &totalSizeF);
+        m_pD3D12Device->GetCopyableFootprints(&texDescUV, 0, 1, 0, &placedFootprintUV, nullptr, nullptr, nullptr);
         m_frameResources[i].pitchUV = placedFootprintUV.Footprint.RowPitch;
-        hr = m_pD3D12Device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_SHARED | D3D12_HEAP_FLAG_SHARED_CROSS_ADAPTER, &texDesc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_frameResources[i].pTextureUV));
-        if (FAILED(hr)) return false;
 
-        // Create shared handles
-        m_pD3D12Device->CreateSharedHandle(m_frameResources[i].pTextureY.Get(), nullptr, GENERIC_ALL, nullptr, &m_frameResources[i].sharedHandleY);
-        m_pD3D12Device->CreateSharedHandle(m_frameResources[i].pTextureUV.Get(), nullptr, GENERIC_ALL, nullptr, &m_frameResources[i].sharedHandleUV);
+        // --- CUDA Interop ---
+        // Create shared handles for the heaps
+        m_pD3D12Device->CreateSharedHandle(m_frameResources[i].pHeapY.Get(), nullptr, GENERIC_ALL, nullptr, &m_frameResources[i].sharedHandleY);
+        m_pD3D12Device->CreateSharedHandle(m_frameResources[i].pHeapUV.Get(), nullptr, GENERIC_ALL, nullptr, &m_frameResources[i].sharedHandleUV);
 
-        // Import D3D12 resources into CUDA as external memory
-        cudaExternalMemoryHandleDesc extMemHandleDesc = {};
-        extMemHandleDesc.type = cudaExternalMemoryHandleTypeD3D12Heap;
-        extMemHandleDesc.handle.win32.handle = m_frameResources[i].sharedHandleY;
-        extMemHandleDesc.size = m_frameResources[i].pitchY * m_frameResources[i].pTextureY->GetDesc().Height;
-        CUDA_RUNTIME_CHECK(cudaImportExternalMemory(&m_frameResources[i].cudaExtMemY, &extMemHandleDesc));
+        // Import D3D12 heaps into CUDA as external memory
+        cudaExternalMemoryHandleDesc extMemHandleDescY = {};
+        extMemHandleDescY.type = cudaExternalMemoryHandleTypeD3D12Heap;
+        extMemHandleDescY.handle.win32.handle = m_frameResources[i].sharedHandleY;
+        extMemHandleDescY.size = allocInfoY.SizeInBytes;
+        CUDA_RUNTIME_CHECK(cudaImportExternalMemory(&m_frameResources[i].cudaExtMemY, &extMemHandleDescY));
 
-        extMemHandleDesc.handle.win32.handle = m_frameResources[i].sharedHandleUV;
-        extMemHandleDesc.size = m_frameResources[i].pitchUV * m_frameResources[i].pTextureUV->GetDesc().Height;
-        CUDA_RUNTIME_CHECK(cudaImportExternalMemory(&m_frameResources[i].cudaExtMemUV, &extMemHandleDesc));
+        cudaExternalMemoryHandleDesc extMemHandleDescUV = {};
+        extMemHandleDescUV.type = cudaExternalMemoryHandleTypeD3D12Heap;
+        extMemHandleDescUV.handle.win32.handle = m_frameResources[i].sharedHandleUV;
+        extMemHandleDescUV.size = allocInfoUV.SizeInBytes;
+        CUDA_RUNTIME_CHECK(cudaImportExternalMemory(&m_frameResources[i].cudaExtMemUV, &extMemHandleDescUV));
 
         // Map external memory to CUDA device pointers
-        cudaExternalMemoryBufferDesc bufferDesc = {};
-        bufferDesc.size = m_frameResources[i].pitchY * m_frameResources[i].pTextureY->GetDesc().Height;
-        CUDA_RUNTIME_CHECK(cudaExternalMemoryGetMappedBuffer(&m_frameResources[i].mappedCudaPtrY, m_frameResources[i].cudaExtMemY, &bufferDesc));
+        cudaExternalMemoryBufferDesc bufferDescY = {};
+        bufferDescY.offset = 0;
+        bufferDescY.size = allocInfoY.SizeInBytes;
+        CUDA_RUNTIME_CHECK(cudaExternalMemoryGetMappedBuffer(&m_frameResources[i].mappedCudaPtrY, m_frameResources[i].cudaExtMemY, &bufferDescY));
 
-        bufferDesc.size = m_frameResources[i].pitchUV * m_frameResources[i].pTextureUV->GetDesc().Height;
-        CUDA_RUNTIME_CHECK(cudaExternalMemoryGetMappedBuffer(&m_frameResources[i].mappedCudaPtrUV, m_frameResources[i].cudaExtMemUV, &bufferDesc));
+        cudaExternalMemoryBufferDesc bufferDescUV = {};
+        bufferDescUV.offset = 0;
+        bufferDescUV.size = allocInfoUV.SizeInBytes;
+        CUDA_RUNTIME_CHECK(cudaExternalMemoryGetMappedBuffer(&m_frameResources[i].mappedCudaPtrUV, m_frameResources[i].cudaExtMemUV, &bufferDescUV));
     }
 
     DebugLog(L"Allocated D3D12/CUDA frame buffers.");
