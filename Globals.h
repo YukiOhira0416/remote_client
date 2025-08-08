@@ -24,6 +24,7 @@ class FrameDecoder;
 void NvdecThread(int threadId);
 
 
+extern std::atomic<bool> g_fec_worker_Running;
 extern std::atomic<int> currentResolutionWidth;
 extern std::atomic<int> currentResolutionHeight;
 extern HWND g_hWnd;

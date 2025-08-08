@@ -45,8 +45,8 @@ private:
         Microsoft::WRL::ComPtr<ID3D12Resource> pTextureUV;
         cudaExternalMemory_t cudaExtMemY;
         cudaExternalMemory_t cudaExtMemUV;
-        CUdeviceptr mappedCudaPtrY;
-        CUdeviceptr mappedCudaPtrUV;
+        void* mappedCudaPtrY;
+        void* mappedCudaPtrUV;
         HANDLE sharedHandleY;
         HANDLE sharedHandleUV;
     };

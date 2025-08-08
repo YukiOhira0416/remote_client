@@ -74,7 +74,6 @@
 std::atomic<bool> send_bandw_Running = true;
 std::atomic<bool> receive_resend_Running = true;
 std::atomic<bool> receive_raw_packet_Running = true;
-std::atomic<bool> g_fec_worker_Running = true;
 
 // Mutexes for synchronization
 std::mutex logMutex;

@@ -2,6 +2,17 @@
 #include <stdexcept>
 
 // CUDA API error checking
+#define CUDA_RUNTIME_CHECK(call)                                                                    \
+    do {                                                                                            \
+        cudaError_t err = call;                                                                     \
+        if (err != cudaSuccess) {                                                                   \
+            const char* error_string = cudaGetErrorString(err);                                     \
+            DebugLog(L"CUDA Runtime Error: " + std::wstring(error_string, error_string + strlen(error_string)) + L" in " + \
+                     std::wstring(__FILEW__, __FILEW__ + wcslen(__FILEW__)) + L" at line " + std::to_wstring(__LINE__)); \
+            throw std::runtime_error("CUDA Runtime error");                                         \
+        }                                                                                           \
+    } while (0)
+
 #define CUDA_CHECK(call)                                                                            \
     do {                                                                                            \
         CUresult err = call;                                                                        \
@@ -123,8 +134,6 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
     m_videoDecoderCreateInfo.ulTargetWidth = m_frameWidth;
     m_videoDecoderCreateInfo.ulTargetHeight = m_frameHeight;
     m_videoDecoderCreateInfo.ulNumOutputSurfaces = 2;
-    m_videoDecoderCreateInfo.pUserData = this;
-    m_videoDecoderCreateInfo.pfnGetTimestamp = NULL; // Not used
     m_videoDecoderCreateInfo.OutputFormat = cudaVideoSurfaceFormat_NV12;
 
     CUDA_CHECK(cuvidCreateDecoder(&m_hDecoder, &m_videoDecoderCreateInfo));
@@ -174,19 +183,19 @@ bool FrameDecoder::allocateFrameBuffers() {
         extMemHandleDesc.type = cudaExternalMemoryHandleTypeD3D12Heap;
         extMemHandleDesc.handle.win32.handle = m_frameResources[i].sharedHandleY;
         extMemHandleDesc.size = m_frameResources[i].pTextureY->GetDesc().Width * m_frameResources[i].pTextureY->GetDesc().Height;
-        CUDA_CHECK(cudaImportExternalMemory(&m_frameResources[i].cudaExtMemY, &extMemHandleDesc));
+        CUDA_RUNTIME_CHECK(cudaImportExternalMemory(&m_frameResources[i].cudaExtMemY, &extMemHandleDesc));
 
         extMemHandleDesc.handle.win32.handle = m_frameResources[i].sharedHandleUV;
         extMemHandleDesc.size = m_frameResources[i].pTextureUV->GetDesc().Width * m_frameResources[i].pTextureUV->GetDesc().Height * 2;
-        CUDA_CHECK(cudaImportExternalMemory(&m_frameResources[i].cudaExtMemUV, &extMemHandleDesc));
+        CUDA_RUNTIME_CHECK(cudaImportExternalMemory(&m_frameResources[i].cudaExtMemUV, &extMemHandleDesc));
 
         // Map external memory to CUDA device pointers
         cudaExternalMemoryBufferDesc bufferDesc = {};
         bufferDesc.size = m_frameResources[i].pTextureY->GetDesc().Width * m_frameResources[i].pTextureY->GetDesc().Height;
-        CUDA_CHECK(cudaExternalMemoryGetMappedBuffer(&m_frameResources[i].mappedCudaPtrY, m_frameResources[i].cudaExtMemY, &bufferDesc));
+        CUDA_RUNTIME_CHECK(cudaExternalMemoryGetMappedBuffer(&m_frameResources[i].mappedCudaPtrY, m_frameResources[i].cudaExtMemY, &bufferDesc));
 
         bufferDesc.size = m_frameResources[i].pTextureUV->GetDesc().Width * m_frameResources[i].pTextureUV->GetDesc().Height * 2;
-        CUDA_CHECK(cudaExternalMemoryGetMappedBuffer(&m_frameResources[i].mappedCudaPtrUV, m_frameResources[i].cudaExtMemUV, &bufferDesc));
+        CUDA_RUNTIME_CHECK(cudaExternalMemoryGetMappedBuffer(&m_frameResources[i].mappedCudaPtrUV, m_frameResources[i].cudaExtMemUV, &bufferDesc));
     }
 
     DebugLog(L"Allocated D3D12/CUDA frame buffers.");
@@ -215,22 +224,22 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     CUDA_CHECK(cuvidMapVideoFrame(self->m_hDecoder, pDispInfo->picture_index, &pDecodedFrame, &nDecodedPitch, &oVPP));
 
     // Copy to our D3D12 textures
-    CUdeviceptr pTexY = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrY;
-    CUdeviceptr pTexUV = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrUV;
+    void* pTexY_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrY;
+    void* pTexUV_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrUV;
 
     CUDA_MEMCPY2D m = { 0 };
     m.srcMemoryType = CU_MEMORYTYPE_DEVICE;
     m.srcDevice = pDecodedFrame;
     m.srcPitch = nDecodedPitch;
     m.dstMemoryType = CU_MEMORYTYPE_DEVICE;
-    m.dstDevice = pTexY;
+    m.dstDevice = (CUdeviceptr)pTexY_void;
     m.dstPitch = self->m_frameWidth;
     m.WidthInBytes = self->m_frameWidth;
     m.Height = self->m_frameHeight;
     CUDA_CHECK(cuMemcpy2D(&m));
 
     m.srcDevice = pDecodedFrame + self->m_frameHeight * nDecodedPitch;
-    m.dstDevice = pTexUV;
+    m.dstDevice = (CUdeviceptr)pTexUV_void;
     m.dstPitch = self->m_frameWidth; // UV plane pitch is also full width in bytes for R8G8
     m.WidthInBytes = self->m_frameWidth;
     m.Height = self->m_frameHeight / 2;
