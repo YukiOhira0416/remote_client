@@ -154,7 +154,7 @@ bool FrameDecoder::allocateFrameBuffers() {
     texDesc.DepthOrArraySize = 1;
     texDesc.MipLevels = 1;
     texDesc.SampleDesc.Count = 1;
-    texDesc.Layout = D3D12_TEXTURE_LAYOUT_64KB_UNDEFINED_SWIZZLE;
+    texDesc.Layout = D3D12_TEXTURE_LAYOUT_64KB_STANDARD_SWIZZLE;
     texDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
 
     D3D12_HEAP_PROPERTIES heapProps = {};
