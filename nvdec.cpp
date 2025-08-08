@@ -174,18 +174,30 @@ void FrameDecoder::Decode(const H264Frame& frame) {
 
 int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoFormat) {
     FrameDecoder* const self = static_cast<FrameDecoder*>(pUserData);
-    DebugLog(L"HandleVideoSequence: Codec: " + std::to_wstring(pVideoFormat->codec) +
-             L", Resolution: " + std::to_wstring(pVideoFormat->coded_width) + L"x" + std::to_wstring(pVideoFormat->coded_height));
+    cuCtxPushCurrent(self->m_cuContext);
+    int result = 1;
 
-    if (!self->m_hDecoder) {
-        if (!self->createDecoder(pVideoFormat)) {
-            DebugLog(L"HandleVideoSequence: Failed to create decoder.");
-            return 0; // Stop processing
+    try {
+        DebugLog(L"HandleVideoSequence: Codec: " + std::to_wstring(pVideoFormat->codec) +
+            L", Resolution: " + std::to_wstring(pVideoFormat->coded_width) + L"x" + std::to_wstring(pVideoFormat->coded_height));
+
+        if (!self->m_hDecoder) {
+            if (!self->createDecoder(pVideoFormat)) {
+                DebugLog(L"HandleVideoSequence: Failed to create decoder.");
+                result = 0; // Stop processing
+            }
         }
-    } else {
-        // Reconfigure decoder if format changes, not handled for simplicity
+        else {
+            // Reconfigure decoder if format changes, not handled for simplicity
+        }
     }
-    return 1; // Proceed with decoding
+    catch (...) {
+        cuCtxPopCurrent(NULL);
+        throw;
+    }
+
+    cuCtxPopCurrent(NULL);
+    return result; // Proceed with decoding
 }
 
 bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
@@ -309,77 +321,95 @@ bool FrameDecoder::allocateFrameBuffers() {
 
 int FrameDecoder::HandlePictureDecode(void* pUserData, CUVIDPICPARAMS* pPicParams) {
     FrameDecoder* const self = static_cast<FrameDecoder*>(pUserData);
-    self->m_nDecodePicCnt++;
-    CUDA_CHECK(cuvidDecodePicture(self->m_hDecoder, pPicParams));
+    cuCtxPushCurrent(self->m_cuContext);
+
+    try {
+        self->m_nDecodePicCnt++;
+        CUDA_CHECK(cuvidDecodePicture(self->m_hDecoder, pPicParams));
+    }
+    catch (...) {
+        cuCtxPopCurrent(NULL);
+        throw;
+    }
+
+    cuCtxPopCurrent(NULL);
     return 1;
 }
 
 int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDispInfo) {
     FrameDecoder* const self = static_cast<FrameDecoder*>(pUserData);
+    cuCtxPushCurrent(self->m_cuContext);
 
-    // Map the decoded video frame
-    CUVIDPROCPARAMS oVPP = { 0 };
-    oVPP.progressive_frame = pDispInfo->progressive_frame;
-    oVPP.second_field = 0;
-    oVPP.top_field_first = pDispInfo->top_field_first;
-    oVPP.unpaired_field = (pDispInfo->progressive_frame == 1 || pDispInfo->repeat_first_field <= 1);
+    try {
+        // Map the decoded video frame
+        CUVIDPROCPARAMS oVPP = { 0 };
+        oVPP.progressive_frame = pDispInfo->progressive_frame;
+        oVPP.second_field = 0;
+        oVPP.top_field_first = pDispInfo->top_field_first;
+        oVPP.unpaired_field = (pDispInfo->progressive_frame == 1 || pDispInfo->repeat_first_field <= 1);
 
-    CUdeviceptr pDecodedFrame = 0;
-    unsigned int nDecodedPitch = 0;
-    CUDA_CHECK(cuvidMapVideoFrame(self->m_hDecoder, pDispInfo->picture_index, &pDecodedFrame, &nDecodedPitch, &oVPP));
+        CUdeviceptr pDecodedFrame = 0;
+        unsigned int nDecodedPitch = 0;
+        CUDA_CHECK(cuvidMapVideoFrame(self->m_hDecoder, pDispInfo->picture_index, &pDecodedFrame, &nDecodedPitch, &oVPP));
 
-    // Copy to our D3D12 textures
-    void* pTexY_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrY;
-    void* pTexUV_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrUV;
+        // Copy to our D3D12 textures
+        void* pTexY_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrY;
+        void* pTexUV_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrUV;
 
-    CUDA_MEMCPY2D m = { 0 };
-    m.srcMemoryType = CU_MEMORYTYPE_DEVICE;
-    m.srcDevice = pDecodedFrame;
-    m.srcPitch = nDecodedPitch;
-    m.dstMemoryType = CU_MEMORYTYPE_DEVICE;
-    m.dstDevice = (CUdeviceptr)pTexY_void;
-    m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchY;
-    m.WidthInBytes = self->m_frameWidth;
-    m.Height = self->m_frameHeight;
-    CUDA_CHECK(cuMemcpy2D(&m));
+        CUDA_MEMCPY2D m = { 0 };
+        m.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+        m.srcDevice = pDecodedFrame;
+        m.srcPitch = nDecodedPitch;
+        m.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+        m.dstDevice = (CUdeviceptr)pTexY_void;
+        m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchY;
+        m.WidthInBytes = self->m_frameWidth;
+        m.Height = self->m_frameHeight;
+        CUDA_CHECK(cuMemcpy2D(&m));
 
-    m.srcDevice = pDecodedFrame + (size_t)self->m_frameHeight * nDecodedPitch;
-    m.dstDevice = (CUdeviceptr)pTexUV_void;
-    m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchUV;
-    m.WidthInBytes = self->m_frameWidth / 2 * 2; // width for R8G8
-    m.Height = self->m_frameHeight / 2;
-    CUDA_CHECK(cuMemcpy2D(&m));
+        m.srcDevice = pDecodedFrame + (size_t)self->m_frameHeight * nDecodedPitch;
+        m.dstDevice = (CUdeviceptr)pTexUV_void;
+        m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchUV;
+        m.WidthInBytes = self->m_frameWidth / 2 * 2; // width for R8G8
+        m.Height = self->m_frameHeight / 2;
+        CUDA_CHECK(cuMemcpy2D(&m));
 
-    // Unmap the frame
-    CUDA_CHECK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
+        // Unmap the frame
+        CUDA_CHECK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
 
-    // Enqueue for rendering
-    ReadyGpuFrame readyFrame;
-    readyFrame.hw_decoded_texture_Y = self->m_frameResources[pDispInfo->picture_index].pTextureY;
-    readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
-    readyFrame.timestamp = pDispInfo->timestamp;
-    // We need original frame number, but pDispInfo doesn't have it. We can use a counter.
-    readyFrame.originalFrameNumber = self->m_nDecodedFrameCount++;
-    readyFrame.id = readyFrame.originalFrameNumber;
-    readyFrame.width = self->m_frameWidth;
-    readyFrame.height = self->m_frameHeight;
+        // Enqueue for rendering
+        ReadyGpuFrame readyFrame;
+        readyFrame.hw_decoded_texture_Y = self->m_frameResources[pDispInfo->picture_index].pTextureY;
+        readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
+        readyFrame.timestamp = pDispInfo->timestamp;
+        // We need original frame number, but pDispInfo doesn't have it. We can use a counter.
+        readyFrame.originalFrameNumber = self->m_nDecodedFrameCount++;
+        readyFrame.id = readyFrame.originalFrameNumber;
+        readyFrame.width = self->m_frameWidth;
+        readyFrame.height = self->m_frameHeight;
 
-    // Save Y and UV planes as BMP files
-    static int bmpCounter = 0;
-    std::string yFilename = "frame_Y_" + std::to_string(bmpCounter) + ".bmp";
-    std::string uvFilename = "frame_UV_" + std::to_string(bmpCounter) + ".bmp";
-    SaveYUVPlaneAsBMP(pTexY_void, self->m_frameWidth, self->m_frameHeight, 
-                      self->m_frameResources[pDispInfo->picture_index].pitchY, yFilename);
-    SaveYUVPlaneAsBMP(pTexUV_void, self->m_frameWidth / 2, self->m_frameHeight / 2, 
-                      self->m_frameResources[pDispInfo->picture_index].pitchUV, uvFilename);
-    bmpCounter++;
+        // Save Y and UV planes as BMP files
+        static int bmpCounter = 0;
+        std::string yFilename = "frame_Y_" + std::to_string(bmpCounter) + ".bmp";
+        std::string uvFilename = "frame_UV_" + std::to_string(bmpCounter) + ".bmp";
+        SaveYUVPlaneAsBMP(pTexY_void, self->m_frameWidth, self->m_frameHeight,
+            self->m_frameResources[pDispInfo->picture_index].pitchY, yFilename);
+        SaveYUVPlaneAsBMP(pTexUV_void, self->m_frameWidth / 2, self->m_frameHeight / 2,
+            self->m_frameResources[pDispInfo->picture_index].pitchUV, uvFilename);
+        bmpCounter++;
 
-    {
-        std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
-        g_readyGpuFrameQueue.push_back(std::move(readyFrame));
+        {
+            std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
+            g_readyGpuFrameQueue.push_back(std::move(readyFrame));
+        }
+        g_readyGpuFrameQueueCV.notify_one();
     }
-    g_readyGpuFrameQueueCV.notify_one();
+    catch (...) {
+        cuCtxPopCurrent(NULL);
+        throw;
+    }
 
+    cuCtxPopCurrent(NULL);
     return 1;
 }
 
