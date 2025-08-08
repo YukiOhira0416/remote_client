@@ -9,17 +9,8 @@
     do {                                                                                            \
         cudaError_t err = call;                                                                     \
         if (err != cudaSuccess) {                                                                   \
-            const char* error_string_ptr = cudaGetErrorString(err);                                 \
-            if (error_string_ptr == nullptr) {                                                      \
-                DebugLog(L"CUDA Runtime Error: Unknown error code " + std::to_wstring(err) + L" in " + \
-                         std::wstring(__FILEW__, __FILEW__ + wcslen(__FILEW__)) + L" at line " + std::to_wstring(__LINE__)); \
-            } else {                                                                                \
-                char safe_error_string[512];                                                        \
-                strncpy(safe_error_string, error_string_ptr, sizeof(safe_error_string));            \
-                safe_error_string[sizeof(safe_error_string) - 1] = '\0';                            \
-                DebugLog(L"CUDA Runtime Error: " + std::wstring(safe_error_string, safe_error_string + strlen(safe_error_string)) + L" in " + \
-                         std::wstring(__FILEW__, __FILEW__ + wcslen(__FILEW__)) + L" at line " + std::to_wstring(__LINE__)); \
-            }                                                                                       \
+            DebugLog(L"CUDA Runtime Error: Code " + std::to_wstring(err) + L" in " +                 \
+                     std::wstring(__FILEW__, __FILEW__ + wcslen(__FILEW__)) + L" at line " + std::to_wstring(__LINE__)); \
             throw std::runtime_error("CUDA Runtime error");                                         \
         }                                                                                           \
     } while (0)
@@ -28,18 +19,8 @@
     do {                                                                                            \
         CUresult err = call;                                                                        \
         if (err != CUDA_SUCCESS) {                                                                  \
-            const char* error_string_ptr;                                                           \
-            cuGetErrorString(err, &error_string_ptr);                                               \
-            if (error_string_ptr == nullptr) {                                                      \
-                DebugLog(L"CUDA Error: Unknown error code " + std::to_wstring(err) + L" in " +      \
-                         std::wstring(__FILEW__, __FILEW__ + wcslen(__FILEW__)) + L" at line " + std::to_wstring(__LINE__)); \
-            } else {                                                                                \
-                char safe_error_string[512];                                                        \
-                strncpy(safe_error_string, error_string_ptr, sizeof(safe_error_string));            \
-                safe_error_string[sizeof(safe_error_string) - 1] = '\0';                            \
-                DebugLog(L"CUDA Error: " + std::wstring(safe_error_string, safe_error_string + strlen(safe_error_string)) + L" in " + \
-                         std::wstring(__FILEW__, __FILEW__ + wcslen(__FILEW__)) + L" at line " + std::to_wstring(__LINE__)); \
-            }                                                                                       \
+            DebugLog(L"CUDA Error: Code " + std::to_wstring(err) + L" in " +                         \
+                     std::wstring(__FILEW__, __FILEW__ + wcslen(__FILEW__)) + L" at line " + std::to_wstring(__LINE__)); \
             throw std::runtime_error("CUDA error");                                                 \
         }                                                                                           \
     } while (0)
