@@ -1,6 +1,8 @@
 #include "nvdec.h"
 #include "Globals.h"
 #include <stdexcept>
+#include <fstream>
+#include <vector>
 
 // CUDA API error checking
 #define CUDA_RUNTIME_CHECK(call)                                                                    \
@@ -25,6 +27,71 @@
             throw std::runtime_error("CUDA error");                                                 \
         }                                                                                           \
     } while (0)
+
+// BMP file header structures
+#pragma pack(push, 1)
+struct BMPFileHeader {
+    uint16_t bfType = 0x4D42;  // "BM"
+    uint32_t bfSize;
+    uint16_t bfReserved1 = 0;
+    uint16_t bfReserved2 = 0;
+    uint32_t bfOffBits = 54;
+};
+
+struct BMPInfoHeader {
+    uint32_t biSize = 40;
+    int32_t biWidth;
+    int32_t biHeight;
+    uint16_t biPlanes = 1;
+    uint16_t biBitCount = 8;
+    uint32_t biCompression = 0;
+    uint32_t biSizeImage;
+    int32_t biXPelsPerMeter = 2835;
+    int32_t biYPelsPerMeter = 2835;
+    uint32_t biClrUsed = 256;
+    uint32_t biClrImportant = 0;
+};
+#pragma pack(pop)
+
+void SaveYUVPlaneAsBMP(void* cudaPtr, int width, int height, int pitch, const std::string& filename) {
+    // Copy data from GPU to CPU
+    std::vector<uint8_t> hostData(pitch * height);
+    CUDA_RUNTIME_CHECK(cudaMemcpy(hostData.data(), cudaPtr, pitch * height, cudaMemcpyDeviceToHost));
+    
+    // Calculate BMP parameters
+    int bmpWidth = width;
+    int bmpHeight = height;
+    int rowSize = ((bmpWidth + 3) / 4) * 4; // 4-byte alignment
+    int imageSize = rowSize * bmpHeight;
+    
+    BMPFileHeader fileHeader;
+    fileHeader.bfSize = sizeof(BMPFileHeader) + sizeof(BMPInfoHeader) + 256*4 + imageSize;
+    
+    BMPInfoHeader infoHeader;
+    infoHeader.biWidth = bmpWidth;
+    infoHeader.biHeight = bmpHeight;
+    infoHeader.biSizeImage = imageSize;
+    
+    std::ofstream file(filename, std::ios::binary);
+    if (!file) return;
+    
+    // Write headers
+    file.write(reinterpret_cast<const char*>(&fileHeader), sizeof(fileHeader));
+    file.write(reinterpret_cast<const char*>(&infoHeader), sizeof(infoHeader));
+    
+    // Write grayscale palette
+    for (int i = 0; i < 256; i++) {
+        uint8_t color[4] = {static_cast<uint8_t>(i), static_cast<uint8_t>(i), static_cast<uint8_t>(i), 0};
+        file.write(reinterpret_cast<const char*>(color), 4);
+    }
+    
+    // Write image data (bottom-up)
+    std::vector<uint8_t> row(rowSize, 0);
+    for (int y = bmpHeight - 1; y >= 0; y--) {
+        std::memcpy(row.data(), hostData.data() + y * pitch, std::min(bmpWidth, pitch));
+        file.write(reinterpret_cast<const char*>(row.data()), rowSize);
+    }
+}
 
 FrameDecoder::FrameDecoder(CUcontext cuContext, ID3D12Device* pD3D12Device)
     : m_cuContext(cuContext), m_pD3D12Device(pD3D12Device) {
@@ -296,6 +363,16 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     readyFrame.id = readyFrame.originalFrameNumber;
     readyFrame.width = self->m_frameWidth;
     readyFrame.height = self->m_frameHeight;
+
+    // Save Y and UV planes as BMP files
+    static int bmpCounter = 0;
+    std::string yFilename = "frame_Y_" + std::to_string(bmpCounter) + ".bmp";
+    std::string uvFilename = "frame_UV_" + std::to_string(bmpCounter) + ".bmp";
+    SaveYUVPlaneAsBMP(pTexY_void, self->m_frameWidth, self->m_frameHeight, 
+                      self->m_frameResources[pDispInfo->picture_index].pitchY, yFilename);
+    SaveYUVPlaneAsBMP(pTexUV_void, self->m_frameWidth / 2, self->m_frameHeight / 2, 
+                      self->m_frameResources[pDispInfo->picture_index].pitchUV, uvFilename);
+    bmpCounter++;
 
     {
         std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);

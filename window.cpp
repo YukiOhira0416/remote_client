@@ -76,10 +76,6 @@ struct ShardInfoHeader {
     uint32_t originalDataLen;   // 元のH.264データの長さ (パケットサイズ) (リトルエンディアン)
 };
 
-// ReadyGpuFrame struct and associated globals are now declared in Globals.h
-// extern std::deque<ReadyGpuFrame> g_readyGpuFrameQueue; // Declared in Globals.h
-// extern std::mutex g_readyGpuFrameQueueMutex; // Declared in Globals.h
-// extern std::condition_variable g_readyGpuFrameQueueCV; // Declared in Globals.h
 extern uint64_t g_lastRenderedRgbaFrameId; // To track the last rendered frameB
 
 struct VertexPosTex { float x, y, z; float u, v; };
