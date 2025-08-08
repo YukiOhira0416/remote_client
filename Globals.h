@@ -15,8 +15,14 @@
 #include <iostream>
 #include <iomanip>
 #include <condition_variable>
+#include "concurrentqueue/concurrentqueue.h"
 
 #define SIZE_PACKET_SIZE 258
+
+// Forward declarations for NVDEC
+class FrameDecoder;
+void NvdecThread(int threadId);
+
 
 extern std::atomic<int> currentResolutionWidth;
 extern std::atomic<int> currentResolutionHeight;
@@ -64,10 +70,21 @@ struct ReadyGpuFrame {
     uint64_t id;
 };
 
+// H264 Frame Data for decoder queue
+struct H264Frame {
+    uint64_t timestamp;
+    uint32_t frameNumber;
+    std::vector<uint8_t> data;
+};
+
 // Global queues and synchronization for frame management
+extern moodycamel::ConcurrentQueue<H264Frame> g_h264FrameQueue;
 extern std::deque<ReadyGpuFrame> g_readyGpuFrameQueue;
 extern std::mutex g_readyGpuFrameQueueMutex;
 extern std::condition_variable g_readyGpuFrameQueueCV;
+
+// Global instance for the decoder
+extern std::unique_ptr<FrameDecoder> g_frameDecoder;
 
 struct ThreadConfig {
     int receiver = 1;

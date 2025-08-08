@@ -40,9 +40,13 @@
 #include "concurrentqueue/concurrentqueue.h"
 #include <enet/enet.h>
 #include "Globals.h"
+#include "nvdec.h"
+#include <cuda.h>
+#include <cuda_runtime_api.h>
 #include <d3dx12.h>
 #include <d3d12.h>
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "cuda.lib")
 #pragma comment(lib, "Mswsock.lib")          // For WSARecvMsg, WSASendMsg
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "dxgi.lib")             // For DXGI functions like CreateDXGIFactory
@@ -880,10 +884,12 @@ void FecWorkerThread(int threadId) {
                 uint32_t originalLenForDecode = currentFrameMetaForAttempt.originalDataLen;
 
                 if (g_matrix_initialized && DecodeFEC_Jerasure(shardsForDecodeAttempt, RS_K, RS_M, originalLenForDecode, decodedFrameData, g_jerasure_matrix)) {
-                    ReadyGpuFrame rgf;
-                    rgf.timestamp = currentFrameMetaForAttempt.firstTimestamp;
-                    rgf.originalFrameNumber = frameNumber;
-                    rgf.id = g_rgbaFrameIdCounter.fetch_add(1);
+                    H264Frame frame_to_decode;
+                    frame_to_decode.timestamp = currentFrameMetaForAttempt.firstTimestamp;
+                    frame_to_decode.frameNumber = frameNumber;
+                    frame_to_decode.data = std::move(decodedFrameData);
+
+                    g_h264FrameQueue.enqueue(std::move(frame_to_decode));
                     
                     // 追加のデバッグログ
                     auto fec_worker_thread_end = std::chrono::system_clock::now();
@@ -994,6 +1000,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         return -1;
     }
 
+    // Initialize CUDA and NVDEC
+    CUcontext cuContext = nullptr;
+    cuInit(0);
+    cuCtxCreate(&cuContext, 0, 0); // Using default device
+
+    g_frameDecoder = std::make_unique<FrameDecoder>(cuContext, g_d3d12Device.Get());
+    if (!g_frameDecoder->Init()) {
+        DebugLog(L"wWinMain: Failed to initialize FrameDecoder.");
+        return -1;
+    }
+
     // Start worker threads
     std::thread bandwidthThread(CountBandW);
     std::thread resendThread(ListenForResendRequests);
@@ -1006,6 +1023,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     std::vector<std::thread> fecWorkerThreads;
     for (int i = 0; i < getOptimalThreadConfig().fec; ++i) {
         fecWorkerThreads.emplace_back(FecWorkerThread, i);
+    }
+
+    std::vector<std::thread> nvdecThreads;
+    for (int i = 0; i < getOptimalThreadConfig().decoder; ++i) {
+        nvdecThreads.emplace_back(NvdecThread, i);
     }
 
     bool app_running = true;
@@ -1061,7 +1083,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         if (fwt.joinable()) fwt.join();
     }
 
+    for (auto& nvt : nvdecThreads) {
+        if (nvt.joinable()) nvt.join();
+    }
+
     if(windowSenderThread.joinable()) windowSenderThread.join();
+
+    g_frameDecoder.reset(); // Release the decoder resources
+    cuCtxDestroy(cuContext); // Destroy the CUDA context
     
     WSACleanup();
     DebugLog(L"WSACleanup complete. Exiting.");
