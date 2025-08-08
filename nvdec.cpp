@@ -9,20 +9,9 @@
     do {                                                                                            \
         cudaError_t err = call;                                                                     \
         if (err != cudaSuccess) {                                                                   \
-            const char* error_string_ptr = cudaGetErrorString(err);                                 \
-            std::wstringstream wss;                                                                 \
-            wss << L"CUDA Runtime Error: ";                                                         \
-            if (error_string_ptr == nullptr) {                                                      \
-                wss << L"Unknown error code " << err;                                               \
-            } else {                                                                                \
-                char safe_error_string[256];                                                        \
-                strncpy(safe_error_string, error_string_ptr, sizeof(safe_error_string));            \
-                safe_error_string[sizeof(safe_error_string) - 1] = '\0';                            \
-                std::string narrow_str(safe_error_string);                                          \
-                wss << std::wstring(narrow_str.begin(), narrow_str.end());                          \
-            }                                                                                       \
-            wss << L" in " << __FILEW__ << L" at line " << __LINE__;                                 \
-            DebugLog(wss.str());                                                                    \
+            const char* error_string = cudaGetErrorString(err);                                     \
+            DebugLog(L"CUDA Runtime Error: " + std::wstring(error_string, error_string + strlen(error_string)) + L" in " + \
+                     std::wstring(__FILEW__, __FILEW__ + wcslen(__FILEW__)) + L" at line " + std::to_wstring(__LINE__)); \
             throw std::runtime_error("CUDA Runtime error");                                         \
         }                                                                                           \
     } while (0)
@@ -31,10 +20,22 @@
     do {                                                                                            \
         CUresult err = call;                                                                        \
         if (err != CUDA_SUCCESS) {                                                                  \
-            const char* error_string_ptr;                                                           \
-            cuGetErrorString(err, &error_string_ptr);                                               \
+            const char* error_string;                                                               \
+            cuGetErrorString(err, &error_string);                                                   \
+            DebugLog(L"CUDA Error: " + std::wstring(error_string, error_string + strlen(error_string)) + L" in " + \
+                     std::wstring(__FILEW__, __FILEW__ + wcslen(__FILEW__)) + L" at line " + std::to_wstring(__LINE__)); \
+            throw std::runtime_error("CUDA error");                                                 \
+        }                                                                                           \
+    } while (0)
+
+// Callback-safe versions of the macros that do not throw exceptions
+#define CUDA_RUNTIME_CHECK_CALLBACK(call)                                                           \
+    do {                                                                                            \
+        cudaError_t err = call;                                                                     \
+        if (err != cudaSuccess) {                                                                   \
+            const char* error_string_ptr = cudaGetErrorString(err);                                 \
             std::wstringstream wss;                                                                 \
-            wss << L"CUDA Error: ";                                                                 \
+            wss << L"CUDA Runtime Error in callback: ";                                             \
             if (error_string_ptr == nullptr) {                                                      \
                 wss << L"Unknown error code " << err;                                               \
             } else {                                                                                \
@@ -46,7 +47,30 @@
             }                                                                                       \
             wss << L" in " << __FILEW__ << L" at line " << __LINE__;                                 \
             DebugLog(wss.str());                                                                    \
-            throw std::runtime_error("CUDA error");                                                 \
+            return 0; /* Return 0 on error, do not throw */                                         \
+        }                                                                                           \
+    } while (0)
+
+#define CUDA_CHECK_CALLBACK(call)                                                                   \
+    do {                                                                                            \
+        CUresult err = call;                                                                        \
+        if (err != CUDA_SUCCESS) {                                                                  \
+            const char* error_string_ptr;                                                           \
+            cuGetErrorString(err, &error_string_ptr);                                               \
+            std::wstringstream wss;                                                                 \
+            wss << L"CUDA Error in callback: ";                                                     \
+            if (error_string_ptr == nullptr) {                                                      \
+                wss << L"Unknown error code " << err;                                               \
+            } else {                                                                                \
+                char safe_error_string[256];                                                        \
+                strncpy(safe_error_string, error_string_ptr, sizeof(safe_error_string));            \
+                safe_error_string[sizeof(safe_error_string) - 1] = '\0';                            \
+                std::string narrow_str(safe_error_string);                                          \
+                wss << std::wstring(narrow_str.begin(), narrow_str.end());                          \
+            }                                                                                       \
+            wss << L" in " << __FILEW__ << L" at line " << __LINE__;                                 \
+            DebugLog(wss.str());                                                                    \
+            return 0; /* Return 0 on error, do not throw */                                         \
         }                                                                                           \
     } while (0)
 
@@ -196,18 +220,37 @@ void FrameDecoder::Decode(const H264Frame& frame) {
 
 int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoFormat) {
     FrameDecoder* const self = static_cast<FrameDecoder*>(pUserData);
-    DebugLog(L"HandleVideoSequence: Codec: " + std::to_wstring(pVideoFormat->codec) +
-             L", Resolution: " + std::to_wstring(pVideoFormat->coded_width) + L"x" + std::to_wstring(pVideoFormat->coded_height));
+    cuCtxPushCurrent(self->m_cuContext);
+    int result = 1;
 
-    if (!self->m_hDecoder) {
-        if (!self->createDecoder(pVideoFormat)) {
-            DebugLog(L"HandleVideoSequence: Failed to create decoder.");
-            return 0; // Stop processing
+    try {
+        DebugLog(L"HandleVideoSequence: Codec: " + std::to_wstring(pVideoFormat->codec) +
+            L", Resolution: " + std::to_wstring(pVideoFormat->coded_width) + L"x" + std::to_wstring(pVideoFormat->coded_height));
+
+        if (!self->m_hDecoder) {
+            if (!self->createDecoder(pVideoFormat)) {
+                DebugLog(L"HandleVideoSequence: Failed to create decoder.");
+                result = 0; // Stop processing
+            }
         }
-    } else {
-        // Reconfigure decoder if format changes, not handled for simplicity
+        else {
+            // Reconfigure decoder if format changes, not handled for simplicity
+        }
     }
-    return 1; // Proceed with decoding
+    catch (const std::runtime_error& e) {
+        // The error is already logged by the CUDA_CHECK macro.
+        // We catch the exception to prevent it from crossing the C API boundary.
+        DebugLog(L"Caught exception in HandleVideoSequence: " + std::wstring(e.what(), e.what() + strlen(e.what())));
+        result = 0; // Stop processing
+    }
+    catch (...) {
+        // Catch any other exceptions.
+        DebugLog(L"Caught unknown exception in HandleVideoSequence.");
+        result = 0;
+    }
+
+    cuCtxPopCurrent(NULL);
+    return result; // Proceed with decoding
 }
 
 bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
@@ -331,13 +374,18 @@ bool FrameDecoder::allocateFrameBuffers() {
 
 int FrameDecoder::HandlePictureDecode(void* pUserData, CUVIDPICPARAMS* pPicParams) {
     FrameDecoder* const self = static_cast<FrameDecoder*>(pUserData);
+    cuCtxPushCurrent(self->m_cuContext);
+
     self->m_nDecodePicCnt++;
-    CUDA_CHECK(cuvidDecodePicture(self->m_hDecoder, pPicParams));
+    CUDA_CHECK_CALLBACK(cuvidDecodePicture(self->m_hDecoder, pPicParams));
+
+    cuCtxPopCurrent(NULL);
     return 1;
 }
 
 int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDispInfo) {
     FrameDecoder* const self = static_cast<FrameDecoder*>(pUserData);
+    cuCtxPushCurrent(self->m_cuContext);
 
     // Map the decoded video frame
     CUVIDPROCPARAMS oVPP = { 0 };
@@ -348,7 +396,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
 
     CUdeviceptr pDecodedFrame = 0;
     unsigned int nDecodedPitch = 0;
-    CUDA_CHECK(cuvidMapVideoFrame(self->m_hDecoder, pDispInfo->picture_index, &pDecodedFrame, &nDecodedPitch, &oVPP));
+    CUDA_CHECK_CALLBACK(cuvidMapVideoFrame(self->m_hDecoder, pDispInfo->picture_index, &pDecodedFrame, &nDecodedPitch, &oVPP));
 
     // Copy to our D3D12 textures
     void* pTexY_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrY;
@@ -363,17 +411,17 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchY;
     m.WidthInBytes = self->m_frameWidth;
     m.Height = self->m_frameHeight;
-    CUDA_CHECK(cuMemcpy2D(&m));
+    CUDA_CHECK_CALLBACK(cuMemcpy2D(&m));
 
     m.srcDevice = pDecodedFrame + (size_t)self->m_frameHeight * nDecodedPitch;
     m.dstDevice = (CUdeviceptr)pTexUV_void;
     m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchUV;
     m.WidthInBytes = self->m_frameWidth / 2 * 2; // width for R8G8
     m.Height = self->m_frameHeight / 2;
-    CUDA_CHECK(cuMemcpy2D(&m));
+    CUDA_CHECK_CALLBACK(cuMemcpy2D(&m));
 
     // Unmap the frame
-    CUDA_CHECK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
+    CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
 
     // Enqueue for rendering
     ReadyGpuFrame readyFrame;
@@ -390,11 +438,16 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     static int bmpCounter = 0;
     std::string yFilename = "frame_Y_" + std::to_string(bmpCounter) + ".bmp";
     std::string uvFilename = "frame_UV_" + std::to_string(bmpCounter) + ".bmp";
+
+    // Note: SaveYUVPlaneAsBMP uses the throwing CUDA_RUNTIME_CHECK internally.
+    // To make this callback fully exception-safe, we would need to refactor SaveYUVPlaneAsBMP
+    // or wrap these calls in a try-catch block. For this fix, we focus on the reported crash area.
     SaveYUVPlaneAsBMP(pTexY_void, self->m_frameWidth, self->m_frameHeight,
-                      self->m_frameResources[pDispInfo->picture_index].pitchY, yFilename);
+        self->m_frameResources[pDispInfo->picture_index].pitchY, yFilename);
     SaveYUVPlaneAsBMP(pTexUV_void, self->m_frameWidth / 2, self->m_frameHeight / 2,
-                      self->m_frameResources[pDispInfo->picture_index].pitchUV, uvFilename);
+        self->m_frameResources[pDispInfo->picture_index].pitchUV, uvFilename);
     bmpCounter++;
+
 
     {
         std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
@@ -402,6 +455,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     }
     g_readyGpuFrameQueueCV.notify_one();
 
+    cuCtxPopCurrent(NULL);
     return 1;
 }
 
