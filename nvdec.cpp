@@ -1,4 +1,5 @@
 #include "nvdec.h"
+#include "Globals.h"
 #include <stdexcept>
 
 // CUDA API error checking
@@ -42,10 +43,10 @@ FrameDecoder::~FrameDecoder() {
     // Free CUDA external memory and mapped pointers
     for (auto& resource : m_frameResources) {
         if (resource.mappedCudaPtrY) {
-            cuMemFree(resource.mappedCudaPtrY);
+            cuMemFree((CUdeviceptr)resource.mappedCudaPtrY);
         }
         if (resource.mappedCudaPtrUV) {
-            cuMemFree(resource.mappedCudaPtrUV);
+            cuMemFree((CUdeviceptr)resource.mappedCudaPtrUV);
         }
         if (resource.cudaExtMemY) {
             cudaDestroyExternalMemory(resource.cudaExtMemY);

@@ -29,6 +29,8 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/enet_x64-windows/include
     ${CMAKE_SOURCE_DIR}/gf-complete/include
     ${CMAKE_SOURCE_DIR}/Jerasure/include
+    "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/include"
+    "C:/Program Files/NVIDIA Corporation/Video_Codec_SDK_13.0.19/Interface"
 )
 
 # Jerasure and gf-complete libraries
@@ -47,6 +49,7 @@ set(SOURCES
     DebugLog.cpp
     Globals.cpp
     ReedSolomon.cpp
+    Nvdec.cpp
 )
 
 # ヘッダーファイル
@@ -56,6 +59,7 @@ set(HEADERS
     DebugLog.h
     Globals.h
     ReedSolomon.h
+    Nvdec.h
 )
 
 # 実行ファイルを作成
@@ -83,6 +87,13 @@ target_link_libraries(${PROJECT_NAME}
     mfplat.lib
     mfuuid.lib
     mfreadwrite.lib
+    
+    # CUDA ライブラリ
+    "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/lib/x64/cuda.lib"
+    "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/lib/x64/cudart.lib"
+    
+    # NVDEC ライブラリ (Video Codec SDK)
+    "C:/Program Files/NVIDIA Corporation/Video_Codec_SDK_13.0.19/Lib/x64/nvcuvid.lib"
     
     # ENetライブラリ
     ${CMAKE_SOURCE_DIR}/enet_x64-windows/lib/enet.lib
@@ -298,7 +309,8 @@ set(CPP_PROPERTIES_JSON_CONTENT "{
                 \"\${workspaceFolder}/enet_x64-windows/include\",
                 \"\${workspaceFolder}/gf-complete/include\",
                 \"\${workspaceFolder}/Jerasure/include\",
-
+                \"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/include\",
+                \"C:/Program Files/NVIDIA Corporation/Video_Codec_SDK_13.0.19/Interface\"
             ],
             \"defines\": [
                 \"_DEBUG\",

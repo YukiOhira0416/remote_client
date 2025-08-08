@@ -3,6 +3,7 @@
 #include <vector>
 #include <mutex>
 #include "Globals.h"
+#include "Nvdec.h"
 
 // Reed-Solomon encoding parameters
 const int RS_K = 8;  // Data shards

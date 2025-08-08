@@ -103,24 +103,6 @@ std::mutex g_frameMetadataMutex;
 std::map<uint64_t, std::chrono::steady_clock::time_point> g_fragmentFirstPacketTime;
 std::atomic<uint64_t> g_rgbaFrameIdCounter{0};
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 // Number of packet processing threads
 const int NUM_FEC_WORKER_THREADS = 1;        // Threads that process ParsedShardInfo, assemble shards, and do FEC
 
@@ -1033,7 +1015,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     std::thread windowSenderThread([&app_running]() {
         while (app_running && send_bandw_Running) {
             SendWindowSize();
-            std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
         }
     });
 

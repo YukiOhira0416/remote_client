@@ -5,6 +5,7 @@
 #include <vector>
 #include <memory>
 #include <string>
+#include <cstdint>
 
 // CUDA includes
 #include <cuda.h>
@@ -14,8 +15,10 @@
 #include "nvcuvid.h"
 #include "cuviddec.h"
 
-#include "Globals.h"
 #include "DebugLog.h"
+
+// Forward declaration
+struct H264Frame;
 
 class FrameDecoder {
 public:
