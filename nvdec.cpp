@@ -9,8 +9,20 @@
     do {                                                                                            \
         cudaError_t err = call;                                                                     \
         if (err != cudaSuccess) {                                                                   \
-            DebugLog(L"CUDA Runtime Error: Code " + std::to_wstring(err) + L" in " +                 \
-                     std::wstring(__FILEW__, __FILEW__ + wcslen(__FILEW__)) + L" at line " + std::to_wstring(__LINE__)); \
+            const char* error_string_ptr = cudaGetErrorString(err);                                 \
+            std::wstringstream wss;                                                                 \
+            wss << L"CUDA Runtime Error: ";                                                         \
+            if (error_string_ptr == nullptr) {                                                      \
+                wss << L"Unknown error code " << err;                                               \
+            } else {                                                                                \
+                char safe_error_string[256];                                                        \
+                strncpy(safe_error_string, error_string_ptr, sizeof(safe_error_string));            \
+                safe_error_string[sizeof(safe_error_string) - 1] = '\0';                            \
+                std::string narrow_str(safe_error_string);                                          \
+                wss << std::wstring(narrow_str.begin(), narrow_str.end());                          \
+            }                                                                                       \
+            wss << L" in " << __FILEW__ << L" at line " << __LINE__;                                 \
+            DebugLog(wss.str());                                                                    \
             throw std::runtime_error("CUDA Runtime error");                                         \
         }                                                                                           \
     } while (0)
@@ -19,8 +31,21 @@
     do {                                                                                            \
         CUresult err = call;                                                                        \
         if (err != CUDA_SUCCESS) {                                                                  \
-            DebugLog(L"CUDA Error: Code " + std::to_wstring(err) + L" in " +                         \
-                     std::wstring(__FILEW__, __FILEW__ + wcslen(__FILEW__)) + L" at line " + std::to_wstring(__LINE__)); \
+            const char* error_string_ptr;                                                           \
+            cuGetErrorString(err, &error_string_ptr);                                               \
+            std::wstringstream wss;                                                                 \
+            wss << L"CUDA Error: ";                                                                 \
+            if (error_string_ptr == nullptr) {                                                      \
+                wss << L"Unknown error code " << err;                                               \
+            } else {                                                                                \
+                char safe_error_string[256];                                                        \
+                strncpy(safe_error_string, error_string_ptr, sizeof(safe_error_string));            \
+                safe_error_string[sizeof(safe_error_string) - 1] = '\0';                            \
+                std::string narrow_str(safe_error_string);                                          \
+                wss << std::wstring(narrow_str.begin(), narrow_str.end());                          \
+            }                                                                                       \
+            wss << L" in " << __FILEW__ << L" at line " << __LINE__;                                 \
+            DebugLog(wss.str());                                                                    \
             throw std::runtime_error("CUDA error");                                                 \
         }                                                                                           \
     } while (0)
