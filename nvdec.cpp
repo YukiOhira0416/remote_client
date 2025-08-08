@@ -151,6 +151,7 @@ bool FrameDecoder::allocateFrameBuffers() {
     D3D12_RESOURCE_DESC texDesc = {};
     texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     texDesc.Alignment = 0;
+    texDesc.DepthOrArraySize = 1;
     texDesc.MipLevels = 1;
     texDesc.SampleDesc.Count = 1;
     texDesc.Layout = D3D12_TEXTURE_LAYOUT_64KB_UNDEFINED_SWIZZLE;
