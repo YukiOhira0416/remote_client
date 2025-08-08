@@ -10,10 +10,11 @@
                 "${workspaceFolder}/enet_x64-windows/include",
                 "${workspaceFolder}/gf-complete/include",
                 "${workspaceFolder}/Jerasure/include",
-
+                "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.5/include"
             ],
             "defines": [
                 "_DEBUG",
+                "USE_NVDEC",
                 "UNICODE",
                 "_UNICODE",
                 "NOMINMAX",

@@ -21,6 +21,32 @@ add_definitions(-DUNICODE -D_UNICODE)
 # プリプロセッサ定義
 add_definitions(-DNOMINMAX -DWIN32_LEAN_AND_MEAN)
 
+# NVIDIA Video Codec SDK の検索
+# 環境変数 CUDA_PATH が設定されていることを期待
+find_path(NVDEC_INCLUDE_DIR NvDec/nvcuvid.h
+    PATHS
+        "$ENV{CUDA_PATH}/include"
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.5/include"
+    DOC "NVIDIA Video Decoder include path"
+)
+find_library(NVDEC_LIB nvcuvid
+    PATHS
+        "$ENV{CUDA_PATH}/lib/x64"
+        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.5/lib/x64"
+    DOC "NVIDIA Video Decoder library"
+)
+
+if(NOT NVDEC_INCLUDE_DIR OR NOT NVDEC_LIB)
+    message(WARNING "NVIDIA Video Codec SDK not found. NVDEC functionality will be disabled.")
+else()
+    message(STATUS "Found NVIDIA Video Codec SDK:")
+    message(STATUS "  Include Dir: ${NVDEC_INCLUDE_DIR}")
+    message(STATUS "  Library: ${NVDEC_LIB}")
+    # プリプロセッサ定義に USE_NVDEC を追加
+    add_definitions(-DUSE_NVDEC)
+endif()
+
+
 # インクルードディレクトリ
 include_directories(
     ${CMAKE_SOURCE_DIR}
@@ -29,6 +55,7 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/enet_x64-windows/include
     ${CMAKE_SOURCE_DIR}/gf-complete/include
     ${CMAKE_SOURCE_DIR}/Jerasure/include
+    ${NVDEC_INCLUDE_DIR}
 )
 
 # Jerasure and gf-complete libraries
@@ -48,6 +75,10 @@ set(SOURCES
     Globals.cpp
     ReedSolomon.cpp
 )
+if(NVDEC_LIB)
+    list(APPEND SOURCES Nvdec.cpp)
+endif()
+
 
 # ヘッダーファイル
 set(HEADERS
@@ -57,6 +88,9 @@ set(HEADERS
     Globals.h
     ReedSolomon.h
 )
+if(NVDEC_LIB)
+    list(APPEND HEADERS Nvdec.h)
+endif()
 
 # 実行ファイルを作成
 add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})
@@ -90,9 +124,12 @@ target_link_libraries(${PROJECT_NAME}
     # Jerasure and gf-complete libraries
     ${JERASURE_LIB}
     ${GF_COMPLETE_LIB}
-    
-    
 )
+
+# NVDECライブラリのリンク (見つかった場合のみ)
+if(NVDEC_LIB)
+    target_link_libraries(${PROJECT_NAME} ${NVDEC_LIB})
+endif()
 
 
 

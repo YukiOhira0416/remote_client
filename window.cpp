@@ -646,29 +646,34 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         }
     }
 
-    if (hasFrameToRender && outFrameToRender.hw_decoded_texture_Y && outFrameToRender.hw_decoded_texture_UV) {
+    if (hasFrameToRender && outFrameToRender.hw_decoded_texture_Y) { // We only need to check one, as they point to the same NV12 resource
+        // The incoming texture is a single NV12 resource. We create two SRVs from it.
+        // One for the Y plane (Format R8_UNORM)
+        // One for the UV plane (Format R8G8_UNORM)
 
-
-        // Create SRVs for Y and UV textures
         CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleCpu(g_srvHeap->GetCPUDescriptorHandleForHeapStart());
-        
+        ID3D12Resource* nv12Texture = outFrameToRender.hw_decoded_texture_Y.Get();
+
+        // Create SRV for Y plane
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDescY = {};
         srvDescY.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDescY.Format = DXGI_FORMAT_R8_UNORM; // Y plane
-        if (!outFrameToRender.hw_decoded_texture_Y) { DebugLog(L"PopulateCommandList: frameToRender.hw_decoded_texture_Y is NULL."); return false; }
+        srvDescY.Format = DXGI_FORMAT_R8_UNORM; // Y plane is single-channel
         srvDescY.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srvDescY.Texture2D.MipLevels = 1;
-        g_d3d12Device->CreateShaderResourceView(outFrameToRender.hw_decoded_texture_Y.Get(), &srvDescY, srvHandleCpu);
+        srvDescY.Texture2D.PlaneSlice = 0; // Plane 0 for Y
+        g_d3d12Device->CreateShaderResourceView(nv12Texture, &srvDescY, srvHandleCpu);
 
-        srvHandleCpu.Offset(1, g_srvDescriptorSize); // Move to next descriptor for UV
+        // Move to next descriptor for UV plane
+        srvHandleCpu.Offset(1, g_srvDescriptorSize);
 
+        // Create SRV for UV plane
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDescUV = {};
         srvDescUV.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDescUV.Format = DXGI_FORMAT_R8G8_UNORM; // UV plane (NV12)
-        if (!outFrameToRender.hw_decoded_texture_UV) { DebugLog(L"PopulateCommandList: frameToRender.hw_decoded_texture_UV is NULL."); return false; }
+        srvDescUV.Format = DXGI_FORMAT_R8G8_UNORM; // UV plane is two-channel
         srvDescUV.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srvDescUV.Texture2D.MipLevels = 1;
-        g_d3d12Device->CreateShaderResourceView(outFrameToRender.hw_decoded_texture_UV.Get(), &srvDescUV, srvHandleCpu);
+        srvDescUV.Texture2D.PlaneSlice = 1; // Plane 1 for UV
+        g_d3d12Device->CreateShaderResourceView(nv12Texture, &srvDescUV, srvHandleCpu);
 
         // Set descriptor heap for SRVs
         ID3D12DescriptorHeap* ppHeaps[] = { g_srvHeap.Get() };

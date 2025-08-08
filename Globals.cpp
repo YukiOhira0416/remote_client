@@ -25,3 +25,6 @@ HWND g_hWnd = nullptr;
 std::deque<ReadyGpuFrame> g_readyGpuFrameQueue;
 std::mutex g_readyGpuFrameQueueMutex;
 std::condition_variable g_readyGpuFrameQueueCV;
+
+// Definition for the H.264 frame queue to the decoder
+moodycamel::ConcurrentQueue<H264Frame> g_h264FrameQueue;

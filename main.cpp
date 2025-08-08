@@ -40,6 +40,9 @@
 #include "concurrentqueue/concurrentqueue.h"
 #include <enet/enet.h>
 #include "Globals.h"
+#ifdef USE_NVDEC
+#include "Nvdec.h"
+#endif
 #include <d3dx12.h>
 #include <d3d12.h>
 #pragma comment(lib, "ws2_32.lib")
@@ -71,6 +74,12 @@ std::atomic<bool> send_bandw_Running = true;
 std::atomic<bool> receive_resend_Running = true;
 std::atomic<bool> receive_raw_packet_Running = true;
 std::atomic<bool> g_fec_worker_Running = true;
+std::atomic<bool> g_nvdec_worker_Running = true;
+
+#ifdef USE_NVDEC
+// Global NVDEC decoder instance
+std::unique_ptr<NvdecDecoder> g_nvdecDecoder;
+#endif
 
 // Mutexes for synchronization
 std::mutex logMutex;
@@ -797,6 +806,60 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
     DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"] stopped.");
 }
 
+#ifdef USE_NVDEC
+void NvdecWorkerThread(int threadId) {
+    DebugLog(L"NvdecWorkerThread [" + std::to_wstring(threadId) + L"] started.");
+    const std::chrono::milliseconds EMPTY_QUEUE_WAIT_MS(1);
+
+    while (g_nvdec_worker_Running || g_h264FrameQueue.size_approx() > 0) {
+        H264Frame frame;
+        if (g_h264FrameQueue.try_dequeue(frame)) {
+            if (g_nvdecDecoder && !frame.frameData.empty()) {
+                // Decode the frame
+                if (g_nvdecDecoder->Decode(frame.frameData.data(), frame.frameData.size(), frame.timestamp)) {
+                    // The Decode API is async. We need to poll for the decoded frame.
+                    Microsoft::WRL::ComPtr<ID3D12Resource> decodedTexture;
+                    uint64_t decodedTimestamp;
+
+                    // This loop is a placeholder for a more robust callback/event system.
+                    // It will try to get the frame immediately.
+                    while (g_nvdecDecoder->GetDecodedFrame(decodedTexture, decodedTimestamp)) {
+                        if (decodedTexture) {
+                            ReadyGpuFrame rgf;
+                            rgf.timestamp = decodedTimestamp;
+                            rgf.originalFrameNumber = frame.frameNumber;
+                            rgf.id = g_rgbaFrameIdCounter.fetch_add(1);
+
+                            // The renderer expects two textures, but NVDEC gives one NV12 texture.
+                            // We will put the same resource in both and handle it in the renderer.
+                            rgf.hw_decoded_texture_Y = decodedTexture;
+                            rgf.hw_decoded_texture_UV = decodedTexture; // Same resource
+
+                            // Get texture dimensions
+                            D3D12_RESOURCE_DESC desc = decodedTexture->GetDesc();
+                            rgf.width = static_cast<int>(desc.Width);
+                            rgf.height = desc.Height;
+
+                            {
+                                std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
+                                g_readyGpuFrameQueue.push_back(std::move(rgf));
+                            }
+                            g_readyGpuFrameQueueCV.notify_one();
+                        }
+                    }
+                }
+            }
+        } else {
+            if (!g_nvdec_worker_Running && g_h264FrameQueue.size_approx() == 0) {
+                break; // Exit if flag is false AND queue is empty
+            }
+            std::this_thread::sleep_for(EMPTY_QUEUE_WAIT_MS);
+        }
+    }
+    DebugLog(L"NvdecWorkerThread [" + std::to_wstring(threadId) + L"] stopped.");
+}
+#endif
+
 void FecWorkerThread(int threadId) {
     DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"] started.");
     UINT64 count = 0;
@@ -880,12 +943,15 @@ void FecWorkerThread(int threadId) {
                 uint32_t originalLenForDecode = currentFrameMetaForAttempt.originalDataLen;
 
                 if (g_matrix_initialized && DecodeFEC_Jerasure(shardsForDecodeAttempt, RS_K, RS_M, originalLenForDecode, decodedFrameData, g_jerasure_matrix)) {
-                    ReadyGpuFrame rgf;
-                    rgf.timestamp = currentFrameMetaForAttempt.firstTimestamp;
-                    rgf.originalFrameNumber = frameNumber;
-                    rgf.id = g_rgbaFrameIdCounter.fetch_add(1);
+                    // FEC decode successful, enqueue for NVDEC
+                    H264Frame h264_frame;
+                    h264_frame.timestamp = currentFrameMetaForAttempt.firstTimestamp;
+                    h264_frame.frameNumber = frameNumber;
+                    h264_frame.frameData = std::move(decodedFrameData);
+
+                    g_h264FrameQueue.enqueue(std::move(h264_frame));
                     
-                    // 追加のデバッグログ
+                    // Log proccessing time
                     auto fec_worker_thread_end = std::chrono::system_clock::now();
                     uint64_t fec_worker_thread_end_ts = std::chrono::duration_cast<std::chrono::milliseconds>(fec_worker_thread_end.time_since_epoch()).count();
                     int64_t elapsed_fec_worker_thread = static_cast<int64_t>(fec_worker_thread_end_ts) - static_cast<int64_t>(fec_worker_thread_start_ts);
@@ -1008,6 +1074,29 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         fecWorkerThreads.emplace_back(FecWorkerThread, i);
     }
 
+#ifdef USE_NVDEC
+    // Initialize NVDEC Decoder
+    g_nvdecDecoder = std::make_unique<NvdecDecoder>();
+    // We need the D3D device and command queue, which are in g_d3d12Device and g_d3d12CommandQueue
+    // These are initialized in InitD3D(). We need to get them. Let's assume g_d3d12Device is accessible.
+    // InitD3D() is in window.cpp and g_d3d12Device is in Globals.h/cpp, so it should be available.
+    // The command queue is not global. I need to check window.cpp again.
+    // Ah, g_d3d12CommandQueue is indeed global in window.cpp. I will need to make it extern in Globals.h
+    // Let me check window.cpp... yes, it is `Microsoft::WRL::ComPtr<ID3D12CommandQueue> g_d3d12CommandQueue;`
+    // I need to add `extern Microsoft::WRL::ComPtr<ID3D12CommandQueue> g_d3d12CommandQueue;` to Globals.h
+    // and initialize it in window.cpp. It seems it is already a global.
+    // Let's assume it is accessible here.
+    if (!g_nvdecDecoder->Init(g_d3d12Device.Get(), g_d3d12CommandQueue.Get())) {
+        DebugLog(L"wWinMain: Failed to initialize NVDEC decoder. Exiting.");
+        return -1;
+    }
+
+    std::vector<std::thread> nvdecWorkerThreads;
+    for (int i = 0; i < getOptimalThreadConfig().decoder; ++i) {
+        nvdecWorkerThreads.emplace_back(NvdecWorkerThread, i);
+    }
+#endif
+
     bool app_running = true;
     std::thread windowSenderThread([&app_running]() {
         while (app_running && send_bandw_Running) {
@@ -1049,6 +1138,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     receive_resend_Running = false;
     receive_raw_packet_Running = false;
     g_fec_worker_Running = false;
+#ifdef USE_NVDEC
+    g_nvdec_worker_Running = false;
+#endif
     
     if (bandwidthThread.joinable()) bandwidthThread.join();
     if (resendThread.joinable()) resendThread.join();
@@ -1060,6 +1152,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     for (auto& fwt : fecWorkerThreads) {
         if (fwt.joinable()) fwt.join();
     }
+
+#ifdef USE_NVDEC
+    for (auto& nwt : nvdecWorkerThreads) {
+        if (nwt.joinable()) nwt.join();
+    }
+    g_nvdecDecoder.reset(); // Release the decoder
+#endif
 
     if(windowSenderThread.joinable()) windowSenderThread.join();
     

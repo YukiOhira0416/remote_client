@@ -15,14 +15,26 @@
 #include <iostream>
 #include <iomanip>
 #include <condition_variable>
+#include "concurrentqueue/concurrentqueue.h"
 
 #define SIZE_PACKET_SIZE 258
+
+// Struct to hold data for the NVDEC decoder
+struct H264Frame {
+    uint64_t timestamp;
+    uint32_t frameNumber;
+    std::vector<uint8_t> frameData;
+};
+
+// Queue for passing H.264 frames from FEC workers to NVDEC workers
+extern moodycamel::ConcurrentQueue<H264Frame> g_h264FrameQueue;
 
 extern std::atomic<int> currentResolutionWidth;
 extern std::atomic<int> currentResolutionHeight;
 extern HWND g_hWnd;
 // D3D12 Globals (defined in window.cpp)
 extern Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;
+extern Microsoft::WRL::ComPtr<ID3D12CommandQueue> g_d3d12CommandQueue;
 
 extern const int RS_K;
 extern const int RS_M;
