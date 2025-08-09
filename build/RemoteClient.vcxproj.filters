@@ -16,6 +16,9 @@
     <ClCompile Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\ReedSolomon.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\Nvdec.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\main.h">
@@ -31,6 +34,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\ReedSolomon.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\Nvdec.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

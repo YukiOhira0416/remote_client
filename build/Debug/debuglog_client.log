@@ -10,27 +10,27 @@
 10: InitD3D (D3D12): Root Signature created.
 11: InitD3D (D3D12): PSO created.
 12: InitD3D (D3D12): SRV Descriptor Heap created.
-13: ListenForResendRequests thread started.
-14: ReceiveRawPacketsThread [0] started.
-15: ReceiveRawPacketsThread [1] started.
-16: ReceiveRawPacketsThread [2] started.
-17: FecWorkerThread [0] started.
-18: FecWorkerThread [1] started.
-19: FecWorkerThread [2] started.
+13: FrameDecoder initialized successfully.
+14: ListenForResendRequests thread started.
+15: ReceiveRawPacketsThread [0] started.
+16: ReceiveRawPacketsThread [1] started.
+17: ReceiveRawPacketsThread [2] started.
+18: FecWorkerThread [0] started.
+19: FecWorkerThread [1] started.
 20: Waiting for RESEND signal...
-21: ReceiveRawPacketsThread [0]: ENet server started, listening on port 8130
-22: ReceiveRawPacketsThread [1]: ENet server started, listening on port 8131
-23: ReceiveRawPacketsThread [2]: ENet server started, listening on port 8132
-24: RenderFrame Execution Time: 8 ms.
-25: RenderFrame Execution Time: 1 ms.
-26: RenderFrame Execution Time: 0 ms.
-27: RenderFrame Execution Time: 0 ms.
-28: RenderFrame Execution Time: 0 ms.
+21: FecWorkerThread [2] started.
+22: NvdecThread [0] started.
+23: NvdecThread [1] started.
+24: ReceiveRawPacketsThread [0]: ENet server started, listening on port 8130
+25: ReceiveRawPacketsThread [1]: ENet server started, listening on port 8131
+26: ReceiveRawPacketsThread [2]: ENet server started, listening on port 8132
+27: RenderFrame Execution Time: 5 ms.
+28: RenderFrame Execution Time: 1 ms.
 29: RenderFrame Execution Time: 0 ms.
 30: RenderFrame Execution Time: 0 ms.
 31: RenderFrame Execution Time: 0 ms.
 32: RenderFrame Execution Time: 0 ms.
-33: RenderFrame Execution Time: 0 ms.
+33: RenderFrame Execution Time: 1 ms.
 34: RenderFrame Execution Time: 0 ms.
 35: RenderFrame Execution Time: 0 ms.
 36: RenderFrame Execution Time: 0 ms.
@@ -42,7 +42,7 @@
 42: RenderFrame Execution Time: 0 ms.
 43: RenderFrame Execution Time: 0 ms.
 44: RenderFrame Execution Time: 0 ms.
-45: RenderFrame Execution Time: 4 ms.
+45: RenderFrame Execution Time: 0 ms.
 46: RenderFrame Execution Time: 0 ms.
 47: RenderFrame Execution Time: 0 ms.
 48: RenderFrame Execution Time: 0 ms.
@@ -54,7 +54,7 @@
 54: RenderFrame Execution Time: 0 ms.
 55: RenderFrame Execution Time: 0 ms.
 56: RenderFrame Execution Time: 0 ms.
-57: RenderFrame Execution Time: 1 ms.
+57: RenderFrame Execution Time: 0 ms.
 58: RenderFrame Execution Time: 0 ms.
 59: RenderFrame Execution Time: 0 ms.
 60: RenderFrame Execution Time: 0 ms.
@@ -72,148 +72,155 @@
 72: RenderFrame Execution Time: 0 ms.
 73: RenderFrame Execution Time: 0 ms.
 74: RenderFrame Execution Time: 0 ms.
-75: RenderFrame Execution Time: 0 ms.
-76: RenderFrame Execution Time: 0 ms.
-77: RenderFrame Execution Time: 0 ms.
-78: ReceiveRawPacketsThread [1]: Client connected from 16777343:61479
-79: RenderFrame Execution Time: 1 ms.
-80: ReceiveRawPacketsThread [0]: Client connected from 16777343:61480
-81: ReceiveRawPacketsThread [2]: Client connected from 16777343:61481
+75: ReceiveRawPacketsThread [0]: Client connected from 16777343:58085
+76: ReceiveRawPacketsThread [2]: Client connected from 16777343:58086
+77: ReceiveRawPacketsThread [1]: Client connected from 16777343:58087
+78: RenderFrame Execution Time: 0 ms.
+79: RenderFrame Execution Time: 0 ms.
+80: RenderFrame Execution Time: 0 ms.
+81: RenderFrame Execution Time: 0 ms.
 82: RenderFrame Execution Time: 0 ms.
-83: RenderFrame Execution Time: 0 ms.
+83: RenderFrame Execution Time: 1 ms.
 84: RenderFrame Execution Time: 0 ms.
 85: RenderFrame Execution Time: 0 ms.
-86: RenderFrame Execution Time: 0 ms.
-87: RenderFrame Execution Time: 0 ms.
-88: RenderFrame Execution Time: 0 ms.
-89: RenderFrame Execution Time: 0 ms.
-90: RenderFrame Execution Time: 0 ms.
-91: RenderFrame Execution Time: 0 ms.
-92: RenderFrame Execution Time: 0 ms.
-93: RenderFrame Execution Time: 0 ms.
-94: RenderFrame Execution Time: 0 ms.
-95: RenderFrame Execution Time: 0 ms.
-96: RenderFrame Execution Time: 0 ms.
-97: RenderFrame Execution Time: 0 ms.
-98: RenderFrame Execution Time: 0 ms.
-99: RenderFrame Execution Time: 0 ms.
-100: RenderFrame Execution Time: 0 ms.
-101: RenderFrame Execution Time: 0 ms.
-102: RenderFrame Execution Time: 0 ms.
-103: RenderFrame Execution Time: 0 ms.
-104: RenderFrame Execution Time: 0 ms.
-105: RenderFrame Execution Time: 0 ms.
-106: RenderFrame Execution Time: 0 ms.
-107: RenderFrame Execution Time: 0 ms.
-108: RenderFrame Execution Time: 0 ms.
-109: RenderFrame Execution Time: 0 ms.
-110: RenderFrame Execution Time: 0 ms.
-111: RenderFrame Execution Time: 0 ms.
-112: RenderFrame Execution Time: 0 ms.
-113: RenderFrame Execution Time: 0 ms.
-114: RenderFrame Execution Time: 0 ms.
-115: RenderFrame Execution Time: 0 ms.
-116: RenderFrame Execution Time: 0 ms.
-117: RenderFrame Execution Time: 0 ms.
-118: RenderFrame Execution Time: 0 ms.
-119: RenderFrame Execution Time: 1 ms.
-120: RenderFrame Execution Time: 0 ms.
-121: RenderFrame Execution Time: 0 ms.
-122: RenderFrame Execution Time: 0 ms.
-123: RenderFrame Execution Time: 0 ms.
-124: RenderFrame Execution Time: 0 ms.
-125: RenderFrame Execution Time: 0 ms.
-126: RenderFrame Execution Time: 0 ms.
-127: RenderFrame Execution Time: 0 ms.
-128: RenderFrame Execution Time: 0 ms.
-129: RenderFrame Execution Time: 0 ms.
-130: RenderFrame Execution Time: 0 ms.
-131: RenderFrame Execution Time: 0 ms.
-132: RenderFrame Execution Time: 0 ms.
-133: RenderFrame Execution Time: 0 ms.
-134: RenderFrame Execution Time: 0 ms.
-135: RenderFrame Execution Time: 0 ms.
-136: RenderFrame Execution Time: 0 ms.
-137: RenderFrame Execution Time: 0 ms.
-138: RenderFrame Execution Time: 0 ms.
-139: RenderFrame Execution Time: 0 ms.
-140: RenderFrame Execution Time: 0 ms.
-141: RenderFrame Execution Time: 0 ms.
-142: RenderFrame Execution Time: 0 ms.
-143: RenderFrame Execution Time: 0 ms.
-144: RenderFrame Execution Time: 0 ms.
-145: RenderFrame Execution Time: 0 ms.
-146: RenderFrame Execution Time: 0 ms.
-147: RenderFrame Execution Time: 0 ms.
-148: RenderFrame Execution Time: 0 ms.
-149: RenderFrame Execution Time: 0 ms.
-150: RenderFrame Execution Time: 0 ms.
-151: RenderFrame Execution Time: 0 ms.
-152: RenderFrame Execution Time: 0 ms.
-153: RenderFrame Execution Time: 0 ms.
-154: RenderFrame Execution Time: 0 ms.
-155: RenderFrame Execution Time: 0 ms.
-156: RenderFrame Execution Time: 0 ms.
-157: RenderFrame Execution Time: 0 ms.
-158: RenderFrame Execution Time: 0 ms.
-159: RenderFrame Execution Time: 0 ms.
-160: RenderFrame Execution Time: 0 ms.
-161: RenderFrame Execution Time: 0 ms.
-162: RenderFrame Execution Time: 0 ms.
-163: RenderFrame Execution Time: 0 ms.
-164: RenderFrame Execution Time: 0 ms.
-165: RenderFrame Execution Time: 0 ms.
-166: RenderFrame Execution Time: 0 ms.
-167: RenderFrame Execution Time: 0 ms.
-168: RenderFrame Execution Time: 0 ms.
-169: RenderFrame Execution Time: 0 ms.
-170: RenderFrame Execution Time: 1 ms.
-171: RenderFrame Execution Time: 0 ms.
-172: RenderFrame Execution Time: 0 ms.
-173: RenderFrame Execution Time: 0 ms.
-174: RenderFrame Execution Time: 0 ms.
-175: RenderFrame Execution Time: 0 ms.
-176: RenderFrame Execution Time: 0 ms.
-177: RenderFrame Execution Time: 0 ms.
-178: RenderFrame Execution Time: 0 ms.
-179: RenderFrame Execution Time: 0 ms.
-180: RenderFrame Execution Time: 0 ms.
-181: RenderFrame Execution Time: 0 ms.
-182: RenderFrame Execution Time: 0 ms.
-183: RenderFrame Execution Time: 0 ms.
-184: RenderFrame Execution Time: 0 ms.
-185: RenderFrame Execution Time: 0 ms.
-186: RenderFrame Execution Time: 0 ms.
-187: RenderFrame Execution Time: 0 ms.
-188: RenderFrame Execution Time: 0 ms.
-189: RenderFrame Execution Time: 0 ms.
-190: RenderFrame Execution Time: 0 ms.
-191: RenderFrame Execution Time: 0 ms.
-192: RenderFrame Execution Time: 0 ms.
-193: RenderFrame Execution Time: 0 ms.
-194: RenderFrame Execution Time: 0 ms.
-195: RenderFrame Execution Time: 0 ms.
-196: RenderFrame Execution Time: 1 ms.
-197: FecWorkerThread: Queue Size 0
-198: FecWorkerThread: Queue Size 0
-199: FecWorkerThread: Queue Size 0
-200: FecWorkerThread: Queue Duration Time 0 ms
-201: RenderFrame Execution Time: 1 ms.
-202: FecWorkerThread: Queue Duration Time 0 ms
-203: FecWorkerThread: Queue Duration Time 1 ms
-204: FecWorkerThread [2]: F#2 has 1 shards, (less than K=8) waiting for more.
-205: FecWorkerThread [0]: F#2 has 2 shards, (less than K=8) waiting for more.
-206: FecWorkerThread [1]: F#2 has 3 shards, (less than K=8) waiting for more.
-207: FecWorkerThread [2]: F#1 has 1 shards, (less than K=8) waiting for more.
-208: FecWorkerThread [0]: F#1 has 2 shards, (less than K=8) waiting for more.
-209: FecWorkerThread [1]: F#1 has 3 shards, (less than K=8) waiting for more.
-210: FecWorkerThread [2]: F#1 has 4 shards, (less than K=8) waiting for more.
-211: FecWorkerThread [0]: F#1 has 5 shards, (less than K=8) waiting for more.
-212: FecWorkerThread [1]: F#1 has 6 shards, (less than K=8) waiting for more.
-213: FecWorkerThread [2]: F#0 has 1 shards, (less than K=8) waiting for more.
-214: FecWorkerThread [0]: F#0 has 2 shards, (less than K=8) waiting for more.
-215: FecWorkerThread [1]: F#0 has 3 shards, (less than K=8) waiting for more.
-216: FecWorkerThread [1]: F#0 has 4 shards, (less than K=8) waiting for more.
-217: FecWorkerThread [0]: F#0 has 5 shards, (less than K=8) waiting for more.
-218: FecWorkerThread [2]: F#0 has 6 shards, (less than K=8) waiting for more.
-219: FecWorkerThread [1]: F#0 has 7 shards, (less than K=8) waiting for more.
+86: FecWorkerThread: Queue Size 0
+87: FecWorkerThread: Queue Size 0
+88: FecWorkerThread: Queue Size 0
+89: FecWorkerThread: Queue Duration Time 0 ms
+90: FecWorkerThread: Queue Duration Time 0 ms
+91: FecWorkerThread: Queue Duration Time 0 ms
+92: FecWorkerThread [1]: F#0 has 1 shards, (less than K=8) waiting for more.
+93: FecWorkerThread [0]: F#0 has 2 shards, (less than K=8) waiting for more.
+94: FecWorkerThread [2]: F#0 has 3 shards, (less than K=8) waiting for more.
+95: FecWorkerThread [1]: F#0 has 4 shards, (less than K=8) waiting for more.
+96: FecWorkerThread [0]: F#0 has 5 shards, (less than K=8) waiting for more.
+97: FecWorkerThread [0]: F#0 has 6 shards, (less than K=8) waiting for more.
+98: FecWorkerThread [1]: F#0 has 7 shards, (less than K=8) waiting for more.
+99: FecWorkerThread [1]: F#0 has 1 shards, (less than K=8) waiting for more.
+100: FecWorkerThread [0]: F#0 has 2 shards, (less than K=8) waiting for more.
+101: RenderFrame Execution Time: 1 ms.
+102: FecWorkerThread [2]: F#1 has 1 shards, (less than K=8) waiting for more.
+103: FecWorkerThread [1]: F#1 has 2 shards, (less than K=8) waiting for more.
+104: FecWorkerThread [0]: F#1 has 3 shards, (less than K=8) waiting for more.
+105: FecWorkerThread [2]: F#1 has 4 shards, (less than K=8) waiting for more.
+106: FecWorkerThread [1]: F#1 has 5 shards, (less than K=8) waiting for more.
+107: FecWorkerThread [0]: F#1 has 6 shards, (less than K=8) waiting for more.
+108: FecWorkerThread [2]: F#1 has 7 shards, (less than K=8) waiting for more.
+109: FecWorkerThread [0]: F#1 has 1 shards, (less than K=8) waiting for more.
+110: FecWorkerThread [2]: F#1 has 2 shards, (less than K=8) waiting for more.
+111: HandleVideoSequence: Codec: 4, Resolution: 1920x1088
+112: FecWorkerThread [1]: F#2 has 1 shards, (less than K=8) waiting for more.
+113: FecWorkerThread [0]: F#2 has 2 shards, (less than K=8) waiting for more.
+114: FecWorkerThread [2]: F#2 has 3 shards, (less than K=8) waiting for more.
+115: FecWorkerThread [2]: F#2 has 4 shards, (less than K=8) waiting for more.
+116: FecWorkerThread [0]: F#2 has 5 shards, (less than K=8) waiting for more.
+117: FecWorkerThread [1]: F#2 has 6 shards, (less than K=8) waiting for more.
+118: RenderFrame Execution Time: 1 ms.
+119: FecWorkerThread [2]: F#2 has 7 shards, (less than K=8) waiting for more.
+120: FecWorkerThread [1]: F#2 has 1 shards, (less than K=8) waiting for more.
+121: FecWorkerThread [2]: F#2 has 2 shards, (less than K=8) waiting for more.
+122: FecWorkerThread [0]: F#3 has 1 shards, (less than K=8) waiting for more.
+123: FecWorkerThread [1]: F#3 has 2 shards, (less than K=8) waiting for more.
+124: FecWorkerThread [1]: F#3 has 3 shards, (less than K=8) waiting for more.
+125: FecWorkerThread [0]: F#3 has 4 shards, (less than K=8) waiting for more.
+126: FecWorkerThread [2]: F#3 has 5 shards, (less than K=8) waiting for more.
+127: FecWorkerThread [1]: F#3 has 6 shards, (less than K=8) waiting for more.
+128: FecWorkerThread [0]: F#3 has 7 shards, (less than K=8) waiting for more.
+129: FecWorkerThread [1]: F#3 has 1 shards, (less than K=8) waiting for more.
+130: FecWorkerThread [0]: F#3 has 2 shards, (less than K=8) waiting for more.
+131: FecWorkerThread [2]: F#4 has 1 shards, (less than K=8) waiting for more.
+132: FecWorkerThread [1]: F#4 has 2 shards, (less than K=8) waiting for more.
+133: FecWorkerThread [1]: F#4 has 3 shards, (less than K=8) waiting for more.
+134: FecWorkerThread [1]: F#4 has 4 shards, (less than K=8) waiting for more.
+135: FecWorkerThread [0]: F#4 has 5 shards, (less than K=8) waiting for more.
+136: FecWorkerThread [2]: F#4 has 6 shards, (less than K=8) waiting for more.
+137: FecWorkerThread [1]: F#4 has 7 shards, (less than K=8) waiting for more.
+138: RenderFrame Execution Time: 1 ms.
+139: FecWorkerThread [0]: F#4 has 1 shards, (less than K=8) waiting for more.
+140: FecWorkerThread [2]: F#4 has 2 shards, (less than K=8) waiting for more.
+141: FecWorkerThread [1]: F#5 has 1 shards, (less than K=8) waiting for more.
+142: FecWorkerThread [0]: F#5 has 2 shards, (less than K=8) waiting for more.
+143: FecWorkerThread [2]: F#5 has 3 shards, (less than K=8) waiting for more.
+144: FecWorkerThread [1]: F#5 has 4 shards, (less than K=8) waiting for more.
+145: FecWorkerThread [0]: F#5 has 5 shards, (less than K=8) waiting for more.
+146: FecWorkerThread [2]: F#5 has 6 shards, (less than K=8) waiting for more.
+147: FecWorkerThread [1]: F#5 has 7 shards, (less than K=8) waiting for more.
+148: FecWorkerThread [2]: F#5 has 1 shards, (less than K=8) waiting for more.
+149: FecWorkerThread [0]: F#5 has 2 shards, (less than K=8) waiting for more.
+150: FecWorkerThread [1]: F#6 has 1 shards, (less than K=8) waiting for more.
+151: FecWorkerThread [2]: F#6 has 2 shards, (less than K=8) waiting for more.
+152: FecWorkerThread [0]: F#6 has 3 shards, (less than K=8) waiting for more.
+153: FecWorkerThread [1]: F#6 has 4 shards, (less than K=8) waiting for more.
+154: FecWorkerThread [2]: F#6 has 5 shards, (less than K=8) waiting for more.
+155: RenderFrame Execution Time: 4 ms.
+156: FecWorkerThread [0]: F#6 has 6 shards, (less than K=8) waiting for more.
+157: FecWorkerThread [1]: F#6 has 7 shards, (less than K=8) waiting for more.
+158: FecWorkerThread [1]: F#6 has 1 shards, (less than K=8) waiting for more.
+159: FecWorkerThread [0]: F#6 has 2 shards, (less than K=8) waiting for more.
+160: FecWorkerThread [2]: F#7 has 1 shards, (less than K=8) waiting for more.
+161: FecWorkerThread [1]: F#7 has 2 shards, (less than K=8) waiting for more.
+162: FecWorkerThread [0]: F#7 has 3 shards, (less than K=8) waiting for more.
+163: FecWorkerThread [2]: F#7 has 4 shards, (less than K=8) waiting for more.
+164: FecWorkerThread [1]: F#7 has 5 shards, (less than K=8) waiting for more.
+165: FecWorkerThread [0]: F#7 has 6 shards, (less than K=8) waiting for more.
+166: FecWorkerThread [2]: F#7 has 7 shards, (less than K=8) waiting for more.
+167: FecWorkerThread [0]: F#7 has 1 shards, (less than K=8) waiting for more.
+168: FecWorkerThread [2]: F#7 has 2 shards, (less than K=8) waiting for more.
+169: FecWorkerThread [1]: F#8 has 1 shards, (less than K=8) waiting for more.
+170: FecWorkerThread [0]: F#8 has 2 shards, (less than K=8) waiting for more.
+171: FecWorkerThread [2]: F#8 has 3 shards, (less than K=8) waiting for more.
+172: FecWorkerThread [2]: F#8 has 4 shards, (less than K=8) waiting for more.
+173: FecWorkerThread [0]: F#8 has 5 shards, (less than K=8) waiting for more.
+174: RenderFrame Execution Time: 1 ms.
+175: FecWorkerThread [0]: F#8 has 6 shards, (less than K=8) waiting for more.
+176: FecWorkerThread [2]: F#8 has 7 shards, (less than K=8) waiting for more.
+177: FecWorkerThread [0]: F#8 has 1 shards, (less than K=8) waiting for more.
+178: FecWorkerThread [2]: F#8 has 2 shards, (less than K=8) waiting for more.
+179: FecWorkerThread [1]: F#9 has 1 shards, (less than K=8) waiting for more.
+180: FecWorkerThread [0]: F#9 has 2 shards, (less than K=8) waiting for more.
+181: FecWorkerThread [2]: F#9 has 3 shards, (less than K=8) waiting for more.
+182: FecWorkerThread [1]: F#9 has 4 shards, (less than K=8) waiting for more.
+183: FecWorkerThread [0]: F#9 has 5 shards, (less than K=8) waiting for more.
+184: FecWorkerThread [2]: F#9 has 6 shards, (less than K=8) waiting for more.
+185: FecWorkerThread [1]: F#9 has 7 shards, (less than K=8) waiting for more.
+186: FecWorkerThread [2]: F#9 has 1 shards, (less than K=8) waiting for more.
+187: FecWorkerThread [0]: F#9 has 2 shards, (less than K=8) waiting for more.
+188: FecWorkerThread [0]: F#10 has 1 shards, (less than K=8) waiting for more.
+189: FecWorkerThread [2]: F#10 has 2 shards, (less than K=8) waiting for more.
+190: FecWorkerThread [1]: F#10 has 3 shards, (less than K=8) waiting for more.
+191: FecWorkerThread [0]: F#10 has 4 shards, (less than K=8) waiting for more.
+192: RenderFrame Execution Time: 1 ms.
+193: FecWorkerThread [2]: F#10 has 5 shards, (less than K=8) waiting for more.
+194: FecWorkerThread [1]: F#10 has 6 shards, (less than K=8) waiting for more.
+195: FecWorkerThread [0]: F#10 has 7 shards, (less than K=8) waiting for more.
+196: FecWorkerThread [1]: F#10 has 1 shards, (less than K=8) waiting for more.
+197: FecWorkerThread [0]: F#10 has 2 shards, (less than K=8) waiting for more.
+198: FecWorkerThread [2]: F#11 has 1 shards, (less than K=8) waiting for more.
+199: FecWorkerThread [1]: F#11 has 2 shards, (less than K=8) waiting for more.
+200: FecWorkerThread [0]: F#11 has 3 shards, (less than K=8) waiting for more.
+201: FecWorkerThread [2]: F#11 has 4 shards, (less than K=8) waiting for more.
+202: FecWorkerThread [1]: F#11 has 5 shards, (less than K=8) waiting for more.
+203: FecWorkerThread [0]: F#11 has 6 shards, (less than K=8) waiting for more.
+204: FecWorkerThread [2]: F#11 has 7 shards, (less than K=8) waiting for more.
+205: FecWorkerThread [0]: F#11 has 1 shards, (less than K=8) waiting for more.
+206: FecWorkerThread [2]: F#11 has 2 shards, (less than K=8) waiting for more.
+207: FecWorkerThread [1]: F#12 has 1 shards, (less than K=8) waiting for more.
+208: FecWorkerThread [0]: F#12 has 2 shards, (less than K=8) waiting for more.
+209: FecWorkerThread [2]: F#12 has 3 shards, (less than K=8) waiting for more.
+210: RenderFrame Execution Time: 1 ms.
+211: FecWorkerThread [1]: F#12 has 4 shards, (less than K=8) waiting for more.
+212: FecWorkerThread [0]: F#12 has 5 shards, (less than K=8) waiting for more.
+213: FecWorkerThread [2]: F#12 has 6 shards, (less than K=8) waiting for more.
+214: FecWorkerThread [1]: F#12 has 7 shards, (less than K=8) waiting for more.
+215: FecWorkerThread [2]: F#12 has 1 shards, (less than K=8) waiting for more.
+216: FecWorkerThread [1]: F#12 has 2 shards, (less than K=8) waiting for more.
+217: FecWorkerThread [0]: F#13 has 1 shards, (less than K=8) waiting for more.
+218: FecWorkerThread [2]: F#13 has 2 shards, (less than K=8) waiting for more.
+219: FecWorkerThread [1]: F#13 has 3 shards, (less than K=8) waiting for more.
+220: FecWorkerThread [0]: F#13 has 4 shards, (less than K=8) waiting for more.
+221: Allocated D3D12/CUDA frame buffers.
+222: FecWorkerThread [2]: F#13 has 5 shards, (less than K=8) waiting for more.
+223: FecWorkerThread [1]: F#13 has 6 shards, (less than K=8) waiting for more.
+224: RenderFrame Execution Time: 36 ms.
+225: FecWorkerThread [0]: F#13 has 7 shards, (less than K=8) waiting for more.
+226: CUDA Error in callback: invalid argument in C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\Nvdec.cpp at line 414
