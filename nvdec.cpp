@@ -254,9 +254,24 @@ int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoForm
 }
 
 bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
-    m_frameWidth = pVideoFormat->coded_width;
-    m_frameHeight = pVideoFormat->coded_height;
+    // Get the target display resolution from global variables.
+    // This resolution is determined by the window size and sent to the server.
+    int targetWidth = ::currentResolutionWidth.load();
+    int targetHeight = ::currentResolutionHeight.load();
 
+    // If the target resolution hasn't been set yet, default to the stream's coded size.
+    if (targetWidth == 0 || targetHeight == 0) {
+        targetWidth = pVideoFormat->coded_width;
+        targetHeight = pVideoFormat->coded_height;
+    }
+
+    // Set the class members to the target display size.
+    // This will be used for texture allocation and the copy size.
+    m_frameWidth = targetWidth;
+    m_frameHeight = targetHeight;
+
+    // The rest of the function initializes the decoder with the *actual* stream
+    // dimensions, but allocates buffers for the *target* dimensions.
     memset(&m_videoDecoderCreateInfo, 0, sizeof(m_videoDecoderCreateInfo));
     m_videoDecoderCreateInfo.CodecType = pVideoFormat->codec;
     m_videoDecoderCreateInfo.ChromaFormat = pVideoFormat->chroma_format;
@@ -265,14 +280,16 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
     m_videoDecoderCreateInfo.ulNumDecodeSurfaces = 20; // A pool of surfaces
     m_videoDecoderCreateInfo.ulCreationFlags = cudaVideoCreate_PreferCUVID;
     m_videoDecoderCreateInfo.DeinterlaceMode = cudaVideoDeinterlaceMode_Weave;
-    m_videoDecoderCreateInfo.ulTargetWidth = m_frameWidth;
-    m_videoDecoderCreateInfo.ulTargetHeight = m_frameHeight;
+    // Set target size to the actual coded size so decoder does NO scaling.
+    // We will perform a crop manually during the cuMemcpy2D.
+    m_videoDecoderCreateInfo.ulTargetWidth = pVideoFormat->coded_width;
+    m_videoDecoderCreateInfo.ulTargetHeight = pVideoFormat->coded_height;
     m_videoDecoderCreateInfo.ulNumOutputSurfaces = 2;
     m_videoDecoderCreateInfo.OutputFormat = cudaVideoSurfaceFormat_NV12;
 
     CUDA_CHECK(cuvidCreateDecoder(&m_hDecoder, &m_videoDecoderCreateInfo));
 
-    if (!allocateFrameBuffers()) {
+    if (!allocateFrameBuffers()) { // This will now use targetWidth x targetHeight
         DebugLog(L"createDecoder: Failed to allocate frame buffers.");
         return false;
     }
@@ -398,59 +415,62 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     unsigned int nDecodedPitch = 0;
     CUDA_CHECK_CALLBACK(cuvidMapVideoFrame(self->m_hDecoder, pDispInfo->picture_index, &pDecodedFrame, &nDecodedPitch, &oVPP));
 
-    if (self->m_frameWidth > 0 && self->m_frameHeight > 0) {
-        // Copy to our D3D12 textures
-        void* pTexY_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrY;
-        void* pTexUV_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrUV;
+    // Copy to our D3D12 textures
+    void* pTexY_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrY;
+    void* pTexUV_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrUV;
 
-        CUDA_MEMCPY2D m = { 0 };
-        m.srcMemoryType = CU_MEMORYTYPE_DEVICE;
-        m.srcDevice = pDecodedFrame;
-        m.srcPitch = nDecodedPitch;
-        m.dstMemoryType = CU_MEMORYTYPE_DEVICE;
-        m.dstDevice = (CUdeviceptr)pTexY_void;
-        m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchY;
-        m.WidthInBytes = self->m_frameWidth;
-        m.Height = self->m_frameHeight;
-        CUDA_CHECK_CALLBACK(cuMemcpy2D(&m));
+    CUDA_MEMCPY2D m = { 0 };
+    m.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+    m.srcDevice = pDecodedFrame;
+    m.srcPitch = nDecodedPitch;
+    m.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+    m.dstDevice = (CUdeviceptr)pTexY_void;
+    m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchY;
+    m.WidthInBytes = self->m_frameWidth;
+    m.Height = self->m_frameHeight;
+    CUDA_CHECK_CALLBACK(cuMemcpy2D(&m));
 
-        m.srcDevice = pDecodedFrame + (size_t)self->m_frameHeight * nDecodedPitch;
-        m.dstDevice = (CUdeviceptr)pTexUV_void;
-        m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchUV;
-        m.WidthInBytes = self->m_frameWidth;
-        m.Height = self->m_frameHeight / 2;
-        CUDA_CHECK_CALLBACK(cuMemcpy2D(&m));
-
-        // Enqueue for rendering
-        ReadyGpuFrame readyFrame;
-        readyFrame.hw_decoded_texture_Y = self->m_frameResources[pDispInfo->picture_index].pTextureY;
-        readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
-        readyFrame.timestamp = pDispInfo->timestamp;
-        readyFrame.originalFrameNumber = self->m_nDecodedFrameCount++;
-        readyFrame.id = readyFrame.originalFrameNumber;
-        readyFrame.width = self->m_frameWidth;
-        readyFrame.height = self->m_frameHeight;
-
-        // Save Y and UV planes as BMP files
-        static int bmpCounter = 0;
-        std::string yFilename = "frame_Y_" + std::to_string(bmpCounter) + ".bmp";
-        std::string uvFilename = "frame_UV_" + std::to_string(bmpCounter) + ".bmp";
-
-        SaveYUVPlaneAsBMP(pTexY_void, self->m_frameWidth, self->m_frameHeight,
-            self->m_frameResources[pDispInfo->picture_index].pitchY, yFilename);
-        SaveYUVPlaneAsBMP(pTexUV_void, self->m_frameWidth / 2, self->m_frameHeight / 2,
-            self->m_frameResources[pDispInfo->picture_index].pitchUV, uvFilename);
-        bmpCounter++;
-
-        {
-            std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
-            g_readyGpuFrameQueue.push_back(std::move(readyFrame));
-        }
-        g_readyGpuFrameQueueCV.notify_one();
-    }
+    m.srcDevice = pDecodedFrame + (size_t)self->m_frameHeight * nDecodedPitch;
+    m.dstDevice = (CUdeviceptr)pTexUV_void;
+    m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchUV;
+    m.WidthInBytes = self->m_frameWidth;
+    m.Height = self->m_frameHeight / 2;
+    CUDA_CHECK_CALLBACK(cuMemcpy2D(&m));
 
     // Unmap the frame
     CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
+
+    // Enqueue for rendering
+    ReadyGpuFrame readyFrame;
+    readyFrame.hw_decoded_texture_Y = self->m_frameResources[pDispInfo->picture_index].pTextureY;
+    readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
+    readyFrame.timestamp = pDispInfo->timestamp;
+    // We need original frame number, but pDispInfo doesn't have it. We can use a counter.
+    readyFrame.originalFrameNumber = self->m_nDecodedFrameCount++;
+    readyFrame.id = readyFrame.originalFrameNumber;
+    readyFrame.width = self->m_frameWidth;
+    readyFrame.height = self->m_frameHeight;
+
+    // Save Y and UV planes as BMP files
+    static int bmpCounter = 0;
+    std::string yFilename = "frame_Y_" + std::to_string(bmpCounter) + ".bmp";
+    std::string uvFilename = "frame_UV_" + std::to_string(bmpCounter) + ".bmp";
+
+    // Note: SaveYUVPlaneAsBMP uses the throwing CUDA_RUNTIME_CHECK internally.
+    // To make this callback fully exception-safe, we would need to refactor SaveYUVPlaneAsBMP
+    // or wrap these calls in a try-catch block. For this fix, we focus on the reported crash area.
+    SaveYUVPlaneAsBMP(pTexY_void, self->m_frameWidth, self->m_frameHeight,
+        self->m_frameResources[pDispInfo->picture_index].pitchY, yFilename);
+    SaveYUVPlaneAsBMP(pTexUV_void, self->m_frameWidth / 2, self->m_frameHeight / 2,
+        self->m_frameResources[pDispInfo->picture_index].pitchUV, uvFilename);
+    bmpCounter++;
+
+
+    {
+        std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
+        g_readyGpuFrameQueue.push_back(std::move(readyFrame));
+    }
+    g_readyGpuFrameQueueCV.notify_one();
 
     cuCtxPopCurrent(NULL);
     return 1;
