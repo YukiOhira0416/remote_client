@@ -416,7 +416,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     m.srcDevice = pDecodedFrame + (size_t)self->m_frameHeight * nDecodedPitch;
     m.dstDevice = (CUdeviceptr)pTexUV_void;
     m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchUV;
-    m.WidthInBytes = self->m_frameWidth / 2 * 2; // width for R8G8
+    m.WidthInBytes = self->m_frameWidth;
     m.Height = self->m_frameHeight / 2;
     CUDA_CHECK_CALLBACK(cuMemcpy2D(&m));
 
