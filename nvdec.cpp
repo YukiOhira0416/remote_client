@@ -419,6 +419,13 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     void* pTexY_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrY;
     void* pTexUV_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrUV;
 
+    // To handle cases where the texture size is different from the video's coded size,
+    // we need to copy only the overlapping region. The copy width and height
+    // must be the minimum of the source (decoded frame) and destination (texture).
+    const unsigned int copyWidth = min((unsigned int)self->m_frameWidth, self->m_videoDecoderCreateInfo.ulWidth);
+    const unsigned int copyHeight = min((unsigned int)self->m_frameHeight, self->m_videoDecoderCreateInfo.ulHeight);
+
+    // Copy Y plane
     CUDA_MEMCPY2D m = { 0 };
     m.srcMemoryType = CU_MEMORYTYPE_DEVICE;
     m.srcDevice = pDecodedFrame;
@@ -426,15 +433,18 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     m.dstMemoryType = CU_MEMORYTYPE_DEVICE;
     m.dstDevice = (CUdeviceptr)pTexY_void;
     m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchY;
-    m.WidthInBytes = self->m_videoDecoderCreateInfo.ulWidth;
-    m.Height = self->m_videoDecoderCreateInfo.ulHeight;
+    m.WidthInBytes = copyWidth;
+    m.Height = copyHeight;
     CUDA_CHECK_CALLBACK(cuMemcpy2D(&m));
 
+    // Copy UV plane
+    // The source pointer for the UV plane starts after the Y plane.
+    // The Y plane's size is based on the *coded* height of the video, not the texture height.
     m.srcDevice = pDecodedFrame + (size_t)self->m_videoDecoderCreateInfo.ulHeight * nDecodedPitch;
     m.dstDevice = (CUdeviceptr)pTexUV_void;
     m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchUV;
-    m.WidthInBytes = self->m_videoDecoderCreateInfo.ulWidth;
-    m.Height = self->m_videoDecoderCreateInfo.ulHeight / 2;
+    m.WidthInBytes = copyWidth; // For NV12, the UV plane has the same byte-width as Y
+    m.Height = copyHeight / 2;    // And half the height
     CUDA_CHECK_CALLBACK(cuMemcpy2D(&m));
 
     // Unmap the frame
