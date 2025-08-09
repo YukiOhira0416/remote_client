@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <fstream>
 #include <vector>
+#include <algorithm>
 
 // CUDA API error checking
 #define CUDA_RUNTIME_CHECK(call)                                                                    \
@@ -422,8 +423,8 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     // To handle cases where the texture size is different from the video's coded size,
     // we need to copy only the overlapping region. The copy width and height
     // must be the minimum of the source (decoded frame) and destination (texture).
-    const unsigned int copyWidth = min((unsigned int)self->m_frameWidth, self->m_videoDecoderCreateInfo.ulWidth);
-    const unsigned int copyHeight = min((unsigned int)self->m_frameHeight, self->m_videoDecoderCreateInfo.ulHeight);
+    const unsigned int copyWidth = std::min((unsigned int)self->m_frameWidth, (unsigned int)self->m_videoDecoderCreateInfo.ulWidth);
+    const unsigned int copyHeight = std::min((unsigned int)self->m_frameHeight, (unsigned int)self->m_videoDecoderCreateInfo.ulHeight);
 
     // Copy Y plane
     CUDA_MEMCPY2D m = { 0 };
