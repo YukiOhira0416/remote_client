@@ -1,0 +1,68 @@
+# Build directories
+build/
+out/
+
+# Visual Studio generated files
+*.vcxproj.user
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Visual Studio temporary files
+*.tmp
+*.temp
+
+# Visual Studio 2015/2017/2019/2022 cache/options directories
+.vs/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Executables
+*.exe
+*.out
+*.app
+*.dll
+*.lib
+*.pdb
+*.ilk
+
+# Object files
+*.o
+*.obj
+
+# Debug files
+*.log
+*.log.back
+
+# CUDA generated files
+*.ptx
+*.cubin
+
+# Temporary files
+*~
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/settings.json
+.vscode/launch.json
+.vscode/extensions.json
+*.code-workspace
+
+# Keep .vscode/tasks.json for build configuration
+!.vscode/tasks.json
+!.vscode/c_cpp_properties.json
