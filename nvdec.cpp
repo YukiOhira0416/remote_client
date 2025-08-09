@@ -426,27 +426,30 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     const unsigned int copyWidth = std::min((unsigned int)self->m_frameWidth, (unsigned int)self->m_videoDecoderCreateInfo.ulWidth);
     const unsigned int copyHeight = std::min((unsigned int)self->m_frameHeight, (unsigned int)self->m_videoDecoderCreateInfo.ulHeight);
 
-    // Copy Y plane
-    CUDA_MEMCPY2D m = { 0 };
-    m.srcMemoryType = CU_MEMORYTYPE_DEVICE;
-    m.srcDevice = pDecodedFrame;
-    m.srcPitch = nDecodedPitch;
-    m.dstMemoryType = CU_MEMORYTYPE_DEVICE;
-    m.dstDevice = (CUdeviceptr)pTexY_void;
-    m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchY;
-    m.WidthInBytes = copyWidth;
-    m.Height = copyHeight;
-    CUDA_CHECK_CALLBACK(cuMemcpy2D(&m));
+    // Copy Y plane using the Runtime API
+    CUDA_RUNTIME_CHECK_CALLBACK(cudaMemcpy2D(
+        pTexY_void,
+        self->m_frameResources[pDispInfo->picture_index].pitchY,
+        (const void*)pDecodedFrame,
+        nDecodedPitch,
+        copyWidth,
+        copyHeight,
+        cudaMemcpyDeviceToDevice
+    ));
 
-    // Copy UV plane
+    // Copy UV plane using the Runtime API
     // The source pointer for the UV plane starts after the Y plane.
-    // The Y plane's size is based on the *coded* height of the video, not the texture height.
-    m.srcDevice = pDecodedFrame + (size_t)self->m_videoDecoderCreateInfo.ulHeight * nDecodedPitch;
-    m.dstDevice = (CUdeviceptr)pTexUV_void;
-    m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchUV;
-    m.WidthInBytes = copyWidth; // For NV12, the UV plane has the same byte-width as Y
-    m.Height = copyHeight / 2;    // And half the height
-    CUDA_CHECK_CALLBACK(cuMemcpy2D(&m));
+    // The Y plane's size is based on the *coded* height of the video.
+    const void* pSrcUV = (const uint8_t*)pDecodedFrame + (size_t)self->m_videoDecoderCreateInfo.ulHeight * nDecodedPitch;
+    CUDA_RUNTIME_CHECK_CALLBACK(cudaMemcpy2D(
+        pTexUV_void,
+        self->m_frameResources[pDispInfo->picture_index].pitchUV,
+        pSrcUV,
+        nDecodedPitch, // Source pitch is the same for the whole frame buffer
+        copyWidth,     // For NV12, the UV plane has the same byte-width as Y
+        copyHeight / 2,
+        cudaMemcpyDeviceToDevice
+    ));
 
     // Unmap the frame
     CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
