@@ -398,62 +398,59 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     unsigned int nDecodedPitch = 0;
     CUDA_CHECK_CALLBACK(cuvidMapVideoFrame(self->m_hDecoder, pDispInfo->picture_index, &pDecodedFrame, &nDecodedPitch, &oVPP));
 
-    // Copy to our D3D12 textures
-    void* pTexY_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrY;
-    void* pTexUV_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrUV;
+    if (self->m_frameWidth > 0 && self->m_frameHeight > 0) {
+        // Copy to our D3D12 textures
+        void* pTexY_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrY;
+        void* pTexUV_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrUV;
 
-    CUDA_MEMCPY2D m = { 0 };
-    m.srcMemoryType = CU_MEMORYTYPE_DEVICE;
-    m.srcDevice = pDecodedFrame;
-    m.srcPitch = nDecodedPitch;
-    m.dstMemoryType = CU_MEMORYTYPE_DEVICE;
-    m.dstDevice = (CUdeviceptr)pTexY_void;
-    m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchY;
-    m.WidthInBytes = self->m_frameWidth;
-    m.Height = self->m_frameHeight;
-    CUDA_CHECK_CALLBACK(cuMemcpy2D(&m));
+        CUDA_MEMCPY2D m = { 0 };
+        m.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+        m.srcDevice = pDecodedFrame;
+        m.srcPitch = nDecodedPitch;
+        m.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+        m.dstDevice = (CUdeviceptr)pTexY_void;
+        m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchY;
+        m.WidthInBytes = self->m_frameWidth;
+        m.Height = self->m_frameHeight;
+        CUDA_CHECK_CALLBACK(cuMemcpy2D(&m));
 
-    m.srcDevice = pDecodedFrame + (size_t)self->m_frameHeight * nDecodedPitch;
-    m.dstDevice = (CUdeviceptr)pTexUV_void;
-    m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchUV;
-    m.WidthInBytes = self->m_frameWidth;
-    m.Height = self->m_frameHeight / 2;
-    CUDA_CHECK_CALLBACK(cuMemcpy2D(&m));
+        m.srcDevice = pDecodedFrame + (size_t)self->m_frameHeight * nDecodedPitch;
+        m.dstDevice = (CUdeviceptr)pTexUV_void;
+        m.dstPitch = self->m_frameResources[pDispInfo->picture_index].pitchUV;
+        m.WidthInBytes = self->m_frameWidth;
+        m.Height = self->m_frameHeight / 2;
+        CUDA_CHECK_CALLBACK(cuMemcpy2D(&m));
+
+        // Enqueue for rendering
+        ReadyGpuFrame readyFrame;
+        readyFrame.hw_decoded_texture_Y = self->m_frameResources[pDispInfo->picture_index].pTextureY;
+        readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
+        readyFrame.timestamp = pDispInfo->timestamp;
+        readyFrame.originalFrameNumber = self->m_nDecodedFrameCount++;
+        readyFrame.id = readyFrame.originalFrameNumber;
+        readyFrame.width = self->m_frameWidth;
+        readyFrame.height = self->m_frameHeight;
+
+        // Save Y and UV planes as BMP files
+        static int bmpCounter = 0;
+        std::string yFilename = "frame_Y_" + std::to_string(bmpCounter) + ".bmp";
+        std::string uvFilename = "frame_UV_" + std::to_string(bmpCounter) + ".bmp";
+
+        SaveYUVPlaneAsBMP(pTexY_void, self->m_frameWidth, self->m_frameHeight,
+            self->m_frameResources[pDispInfo->picture_index].pitchY, yFilename);
+        SaveYUVPlaneAsBMP(pTexUV_void, self->m_frameWidth / 2, self->m_frameHeight / 2,
+            self->m_frameResources[pDispInfo->picture_index].pitchUV, uvFilename);
+        bmpCounter++;
+
+        {
+            std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
+            g_readyGpuFrameQueue.push_back(std::move(readyFrame));
+        }
+        g_readyGpuFrameQueueCV.notify_one();
+    }
 
     // Unmap the frame
     CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
-
-    // Enqueue for rendering
-    ReadyGpuFrame readyFrame;
-    readyFrame.hw_decoded_texture_Y = self->m_frameResources[pDispInfo->picture_index].pTextureY;
-    readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
-    readyFrame.timestamp = pDispInfo->timestamp;
-    // We need original frame number, but pDispInfo doesn't have it. We can use a counter.
-    readyFrame.originalFrameNumber = self->m_nDecodedFrameCount++;
-    readyFrame.id = readyFrame.originalFrameNumber;
-    readyFrame.width = self->m_frameWidth;
-    readyFrame.height = self->m_frameHeight;
-
-    // Save Y and UV planes as BMP files
-    static int bmpCounter = 0;
-    std::string yFilename = "frame_Y_" + std::to_string(bmpCounter) + ".bmp";
-    std::string uvFilename = "frame_UV_" + std::to_string(bmpCounter) + ".bmp";
-
-    // Note: SaveYUVPlaneAsBMP uses the throwing CUDA_RUNTIME_CHECK internally.
-    // To make this callback fully exception-safe, we would need to refactor SaveYUVPlaneAsBMP
-    // or wrap these calls in a try-catch block. For this fix, we focus on the reported crash area.
-    SaveYUVPlaneAsBMP(pTexY_void, self->m_frameWidth, self->m_frameHeight,
-        self->m_frameResources[pDispInfo->picture_index].pitchY, yFilename);
-    SaveYUVPlaneAsBMP(pTexUV_void, self->m_frameWidth / 2, self->m_frameHeight / 2,
-        self->m_frameResources[pDispInfo->picture_index].pitchUV, uvFilename);
-    bmpCounter++;
-
-
-    {
-        std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
-        g_readyGpuFrameQueue.push_back(std::move(readyFrame));
-    }
-    g_readyGpuFrameQueueCV.notify_one();
 
     cuCtxPopCurrent(NULL);
     return 1;
