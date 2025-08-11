@@ -426,6 +426,19 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     const unsigned int copyWidth = std::min((unsigned int)self->m_frameWidth, (unsigned int)self->m_videoDecoderCreateInfo.ulWidth);
     const unsigned int copyHeight = std::min((unsigned int)self->m_frameHeight, (unsigned int)self->m_videoDecoderCreateInfo.ulHeight);
 
+    // --- BEGIN DEBUG LOGGING ---
+    {
+        std::wstringstream wss;
+        wss << L"HPD Debug Info (Frame " << self->m_nDecodedFrameCount << L", PicIdx " << pDispInfo->picture_index << L"):\n";
+        wss << L"  - Src Ptr: " << pDecodedFrame << L", Src Pitch: " << nDecodedPitch << L"\n";
+        wss << L"  - Dst Ptr: " << pTexY_void << L", Dst Pitch: " << self->m_frameResources[pDispInfo->picture_index].pitchY << L"\n";
+        wss << L"  - Copy Size: " << copyWidth << L"x" << copyHeight << L"\n";
+        wss << L"  - Dst Texture Size: " << self->m_frameWidth << L"x" << self->m_frameHeight << L"\n";
+        wss << L"  - Src Video Size: " << self->m_videoDecoderCreateInfo.ulWidth << L"x" << self->m_videoDecoderCreateInfo.ulHeight << L"\n";
+        DebugLog(wss.str());
+    }
+    // --- END DEBUG LOGGING ---
+
     // Copy Y plane using the Runtime API
     CUDA_RUNTIME_CHECK_CALLBACK(cudaMemcpy2D(
         pTexY_void,
