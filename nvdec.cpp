@@ -311,7 +311,9 @@ bool FrameDecoder::allocateFrameBuffers() {
         texDescY.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         texDescY.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
         texDescY.Width = m_frameWidth;
-        texDescY.Height = m_frameHeight;
+        // Allocate based on the coded height of the video stream to avoid cropping during copy.
+        // The logical frame height (m_frameHeight) is still used for rendering.
+        texDescY.Height = m_videoDecoderCreateInfo.ulHeight;
         texDescY.Format = DXGI_FORMAT_R8_UNORM;
 
         D3D12_RESOURCE_ALLOCATION_INFO allocInfoY = m_pD3D12Device->GetResourceAllocationInfo(0, 1, &texDescY);
@@ -335,7 +337,7 @@ bool FrameDecoder::allocateFrameBuffers() {
         // --- UV Plane ---
         D3D12_RESOURCE_DESC texDescUV = texDescY;
         texDescUV.Width = m_frameWidth / 2;
-        texDescUV.Height = m_frameHeight / 2;
+        texDescUV.Height = m_videoDecoderCreateInfo.ulHeight / 2;
         texDescUV.Format = DXGI_FORMAT_R8G8_UNORM;
 
         D3D12_RESOURCE_ALLOCATION_INFO allocInfoUV = m_pD3D12Device->GetResourceAllocationInfo(0, 1, &texDescUV);
@@ -420,24 +422,11 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     void* pTexY_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrY;
     void* pTexUV_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrUV;
 
-    // To handle cases where the texture size is different from the video's coded size,
-    // we need to copy only the overlapping region. The copy width and height
-    // must be the minimum of the source (decoded frame) and destination (texture).
-    const unsigned int copyWidth = std::min((unsigned int)self->m_frameWidth, (unsigned int)self->m_videoDecoderCreateInfo.ulWidth);
-    const unsigned int copyHeight = std::min((unsigned int)self->m_frameHeight, (unsigned int)self->m_videoDecoderCreateInfo.ulHeight);
-
-    // --- BEGIN DEBUG LOGGING ---
-    {
-        std::wstringstream wss;
-        wss << L"HPD Debug Info (Frame " << self->m_nDecodedFrameCount << L", PicIdx " << pDispInfo->picture_index << L"):\n";
-        wss << L"  - Src Ptr: " << pDecodedFrame << L", Src Pitch: " << nDecodedPitch << L"\n";
-        wss << L"  - Dst Ptr: " << pTexY_void << L", Dst Pitch: " << self->m_frameResources[pDispInfo->picture_index].pitchY << L"\n";
-        wss << L"  - Copy Size: " << copyWidth << L"x" << copyHeight << L"\n";
-        wss << L"  - Dst Texture Size: " << self->m_frameWidth << L"x" << self->m_frameHeight << L"\n";
-        wss << L"  - Src Video Size: " << self->m_videoDecoderCreateInfo.ulWidth << L"x" << self->m_videoDecoderCreateInfo.ulHeight << L"\n";
-        DebugLog(wss.str());
-    }
-    // --- END DEBUG LOGGING ---
+    // To avoid an 'invalid argument' error, we perform a full-frame copy.
+    // The destination texture is allocated with the same dimensions as the source video.
+    // Cropping to the display size (m_frameWidth/m_frameHeight) is handled by the renderer.
+    const unsigned int copyWidth = self->m_videoDecoderCreateInfo.ulWidth;
+    const unsigned int copyHeight = self->m_videoDecoderCreateInfo.ulHeight;
 
     // Copy Y plane using the Runtime API
     CUDA_RUNTIME_CHECK_CALLBACK(cudaMemcpy2D(
