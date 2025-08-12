@@ -188,10 +188,10 @@ FrameDecoder::~FrameDecoder() {
     // Free CUDA external memory and mapped pointers
     for (auto& resource : m_frameResources) {
         if (resource.cudaExtMemY) {
-            cudaDestroyExternalMemory(resource.cudaExtMemY);
+            cuDestroyExternalMemory(resource.cudaExtMemY);
         }
         if (resource.cudaExtMemUV) {
-            cudaDestroyExternalMemory(resource.cudaExtMemUV);
+            cuDestroyExternalMemory(resource.cudaExtMemUV);
         }
         if(resource.sharedHandleY) CloseHandle(resource.sharedHandleY);
         if(resource.sharedHandleUV) CloseHandle(resource.sharedHandleUV);
@@ -391,29 +391,35 @@ bool FrameDecoder::allocateFrameBuffers() {
         m_pD3D12Device->CreateSharedHandle(m_frameResources[i].pHeapY.Get(), nullptr, GENERIC_ALL, nullptr, &m_frameResources[i].sharedHandleY);
         m_pD3D12Device->CreateSharedHandle(m_frameResources[i].pHeapUV.Get(), nullptr, GENERIC_ALL, nullptr, &m_frameResources[i].sharedHandleUV);
 
-        // Import D3D12 heaps into CUDA as external memory
-        cudaExternalMemoryHandleDesc extMemHandleDescY = {};
-        extMemHandleDescY.type = cudaExternalMemoryHandleTypeD3D12Heap;
+        // Import D3D12 heaps into CUDA as external memory using Driver API
+        CUDA_EXTERNAL_MEMORY_HANDLE_DESC extMemHandleDescY = {};
+        extMemHandleDescY.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_HEAP;
         extMemHandleDescY.handle.win32.handle = m_frameResources[i].sharedHandleY;
         extMemHandleDescY.size = allocInfoY.SizeInBytes;
-        CUDA_RUNTIME_CHECK(cudaImportExternalMemory(&m_frameResources[i].cudaExtMemY, &extMemHandleDescY));
+        CUDA_CHECK(cuImportExternalMemory(&m_frameResources[i].cudaExtMemY, &extMemHandleDescY));
 
-        cudaExternalMemoryHandleDesc extMemHandleDescUV = {};
-        extMemHandleDescUV.type = cudaExternalMemoryHandleTypeD3D12Heap;
+        CUDA_EXTERNAL_MEMORY_HANDLE_DESC extMemHandleDescUV = {};
+        extMemHandleDescUV.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_HEAP;
         extMemHandleDescUV.handle.win32.handle = m_frameResources[i].sharedHandleUV;
         extMemHandleDescUV.size = allocInfoUV.SizeInBytes;
-        CUDA_RUNTIME_CHECK(cudaImportExternalMemory(&m_frameResources[i].cudaExtMemUV, &extMemHandleDescUV));
+        CUDA_CHECK(cuImportExternalMemory(&m_frameResources[i].cudaExtMemUV, &extMemHandleDescUV));
 
-        // Map external memory to CUDA device pointers
-        cudaExternalMemoryBufferDesc bufferDescY = {};
+        // Map external memory to CUDA device pointers using Driver API
+        CUdeviceptr devPtrY = 0;
+        CUDA_EXTERNAL_MEMORY_BUFFER_DESC bufferDescY = {};
         bufferDescY.offset = 0;
         bufferDescY.size = allocInfoY.SizeInBytes;
-        CUDA_RUNTIME_CHECK(cudaExternalMemoryGetMappedBuffer(&m_frameResources[i].mappedCudaPtrY, m_frameResources[i].cudaExtMemY, &bufferDescY));
+        bufferDescY.flags = 0;
+        CUDA_CHECK(cuExternalMemoryGetMappedBuffer(&devPtrY, m_frameResources[i].cudaExtMemY, &bufferDescY));
+        m_frameResources[i].mappedCudaPtrY = (void*)devPtrY;
 
-        cudaExternalMemoryBufferDesc bufferDescUV = {};
+        CUdeviceptr devPtrUV = 0;
+        CUDA_EXTERNAL_MEMORY_BUFFER_DESC bufferDescUV = {};
         bufferDescUV.offset = 0;
         bufferDescUV.size = allocInfoUV.SizeInBytes;
-        CUDA_RUNTIME_CHECK(cudaExternalMemoryGetMappedBuffer(&m_frameResources[i].mappedCudaPtrUV, m_frameResources[i].cudaExtMemUV, &bufferDescUV));
+        bufferDescUV.flags = 0;
+        CUDA_CHECK(cuExternalMemoryGetMappedBuffer(&devPtrUV, m_frameResources[i].cudaExtMemUV, &bufferDescUV));
+        m_frameResources[i].mappedCudaPtrUV = (void*)devPtrUV;
     }
 
     DebugLog(L"Allocated D3D12/CUDA frame buffers.");
