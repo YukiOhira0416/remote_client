@@ -118,10 +118,10 @@ struct BMPInfoHeader {
 };
 #pragma pack(pop)
 
-void SaveYUVPlaneAsBMP(void* cudaPtr, int width, int height, int pitch, const std::string& filename) {
+int SaveYUVPlaneAsBMP(void* cudaPtr, int width, int height, int pitch, const std::string& filename) {
     // Copy data from GPU to CPU
     std::vector<uint8_t> hostData(pitch * height);
-    CUDA_RUNTIME_CHECK(cudaMemcpy(hostData.data(), cudaPtr, pitch * height, cudaMemcpyDeviceToHost));
+    CUDA_RUNTIME_CHECK_CALLBACK(cudaMemcpy(hostData.data(), cudaPtr, pitch * height, cudaMemcpyDeviceToHost));
     
     // Calculate BMP parameters
     int bmpWidth = width;
@@ -138,7 +138,7 @@ void SaveYUVPlaneAsBMP(void* cudaPtr, int width, int height, int pitch, const st
     infoHeader.biSizeImage = imageSize;
     
     std::ofstream file(filename, std::ios::binary);
-    if (!file) return;
+    if (!file) return 0;
     
     // Write headers
     file.write(reinterpret_cast<const char*>(&fileHeader), sizeof(fileHeader));
@@ -156,6 +156,7 @@ void SaveYUVPlaneAsBMP(void* cudaPtr, int width, int height, int pitch, const st
         std::memcpy(row.data(), hostData.data() + y * pitch, std::min(bmpWidth, pitch));
         file.write(reinterpret_cast<const char*>(row.data()), rowSize);
     }
+    return 1;
 }
 
 FrameDecoder::FrameDecoder(CUcontext cuContext, ID3D12Device* pD3D12Device)
@@ -485,19 +486,26 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     readyFrame.width = self->m_frameWidth;
     readyFrame.height = self->m_frameHeight;
 
-    // Save Y and UV planes as BMP files
+    // Save Y and UV planes as BMP files for debugging, capped to first 10 frames.
     static int bmpCounter = 0;
-    std::string yFilename = "frame_Y_" + std::to_string(bmpCounter) + ".bmp";
-    std::string uvFilename = "frame_UV_" + std::to_string(bmpCounter) + ".bmp";
+    if (bmpCounter < 10) {
+        std::string yFilename = "frame_Y_" + std::to_string(bmpCounter) + ".bmp";
+        std::string uvFilename = "frame_UV_" + std::to_string(bmpCounter) + ".bmp";
 
-    // Note: SaveYUVPlaneAsBMP uses the throwing CUDA_RUNTIME_CHECK internally.
-    // To make this callback fully exception-safe, we would need to refactor SaveYUVPlaneAsBMP
-    // or wrap these calls in a try-catch block. For this fix, we focus on the reported crash area.
-    SaveYUVPlaneAsBMP(pTexY_void, self->m_frameWidth, self->m_frameHeight,
-        self->m_frameResources[pDispInfo->picture_index].pitchY, yFilename);
-    SaveYUVPlaneAsBMP(pTexUV_void, self->m_frameWidth / 2, self->m_frameHeight / 2,
-        self->m_frameResources[pDispInfo->picture_index].pitchUV, uvFilename);
-    bmpCounter++;
+        if (SaveYUVPlaneAsBMP(pTexY_void, self->m_frameWidth, self->m_frameHeight,
+            self->m_frameResources[pDispInfo->picture_index].pitchY, yFilename) == 0) {
+            // Error is logged within the function.
+            DebugLog(L"HandlePictureDisplay: Failed to save Y plane BMP, aborting callback.");
+            return 0;
+        }
+        if (SaveYUVPlaneAsBMP(pTexUV_void, self->m_frameWidth / 2, self->m_frameHeight / 2,
+            self->m_frameResources[pDispInfo->picture_index].pitchUV, uvFilename) == 0) {
+            // Error is logged within the function.
+            DebugLog(L"HandlePictureDisplay: Failed to save UV plane BMP, aborting callback.");
+            return 0;
+        }
+        bmpCounter++;
+    }
 
 
     {
