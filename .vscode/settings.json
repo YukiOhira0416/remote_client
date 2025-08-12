@@ -29,6 +29,8 @@
         "iomanip": "cpp",
         "cstring": "cpp",
         "condition_variable": "cpp",
-        "sstream": "cpp"
+        "sstream": "cpp",
+        "cmath": "cpp",
+        "atomic": "cpp"
     }
 }

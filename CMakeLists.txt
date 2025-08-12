@@ -54,7 +54,6 @@ set(SOURCES
     Globals.cpp
     ReedSolomon.cpp
     Nvdec.cpp
-    NvdecKernels.cu
 )
 
 # ヘッダーファイル
@@ -65,7 +64,6 @@ set(HEADERS
     Globals.h
     ReedSolomon.h
     Nvdec.h
-    NvdecKernels.h
 )
 
 # 実行ファイルを作成

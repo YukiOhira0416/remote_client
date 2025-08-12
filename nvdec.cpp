@@ -1,6 +1,5 @@
 #include "nvdec.h"
 #include "Globals.h"
-#include "NvdecKernels.h"
 #include <stdexcept>
 #include <fstream>
 #include <vector>
