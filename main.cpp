@@ -992,9 +992,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     }
 
     // Initialize CUDA and NVDEC
+    // Per Yuki's recommendation, use the primary context to ensure Runtime and Driver APIs work together.
+    cudaSetDevice(0); // Ensure runtime API is targeting the correct device.
+    CUdevice cuDev = 0;
+    cuDeviceGet(&cuDev, 0);
     CUcontext cuContext = nullptr;
-    cuInit(0);
-    cuCtxCreate(&cuContext, 0, 0); // Using default device
+    cuDevicePrimaryCtxRetain(&cuContext, cuDev);
 
     g_frameDecoder = std::make_unique<FrameDecoder>(cuContext, g_d3d12Device.Get());
     if (!g_frameDecoder->Init()) {
@@ -1081,7 +1084,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     if(windowSenderThread.joinable()) windowSenderThread.join();
 
     g_frameDecoder.reset(); // Release the decoder resources
-    cuCtxDestroy(cuContext); // Destroy the CUDA context
+    cuDevicePrimaryCtxRelease(0); // Release the primary context
     
     WSACleanup();
     DebugLog(L"WSACleanup complete. Exiting.");
