@@ -16,6 +16,24 @@ __global__ void CopyPlane_8bit(const unsigned char* pSrc, int nSrcPitch, unsigne
     }
 }
 
+/*
+ *  Simple CUDA kernel to copy a 2D plane of 16-bit data (e.g., interleaved UV plane of NV12 to an R8G8 texture).
+ *  Width is given in pixels (not bytes).
+ */
+__global__ void CopyPlane_16bit(const unsigned short* pSrc, int nSrcPitch, unsigned short* pDst, int nDstPitch, int nWidthInPixels, int nHeight)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x < nWidthInPixels && y < nHeight)
+    {
+        // Pitches are in bytes, so we cast pointers to char to do byte-level arithmetic
+        const unsigned short* pSrc_line = (const unsigned short*)((const unsigned char*)pSrc + ((size_t)y * nSrcPitch));
+        unsigned short* pDst_line = (unsigned short*)((unsigned char*)pDst + ((size_t)y * nDstPitch));
+        pDst_line[x] = pSrc_line[x];
+    }
+}
+
 // Host-side wrapper to launch the 8-bit copy kernel
 void LaunchCopyPlane_8bit(
     const unsigned char* pSrc,
@@ -46,22 +64,4 @@ void LaunchCopyPlane_16bit(
     dim3 gridDim((nWidthInPixels + blockDim.x - 1) / blockDim.x, (nHeight + blockDim.y - 1) / blockDim.y);
 
     CopyPlane_16bit<<<gridDim, blockDim, 0, stream>>>(pSrc, nSrcPitch, pDst, nDstPitch, nWidthInPixels, nHeight);
-}
-
-/*
- *  Simple CUDA kernel to copy a 2D plane of 16-bit data (e.g., interleaved UV plane of NV12 to an R8G8 texture).
- *  Width is given in pixels (not bytes).
- */
-__global__ void CopyPlane_16bit(const unsigned short* pSrc, int nSrcPitch, unsigned short* pDst, int nDstPitch, int nWidthInPixels, int nHeight)
-{
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-
-    if (x < nWidthInPixels && y < nHeight)
-    {
-        // Pitches are in bytes, so we cast pointers to char to do byte-level arithmetic
-        const unsigned short* pSrc_line = (const unsigned short*)((const unsigned char*)pSrc + ((size_t)y * nSrcPitch));
-        unsigned short* pDst_line = (unsigned short*)((unsigned char*)pDst + ((size_t)y * nDstPitch));
-        pDst_line[x] = pSrc_line[x];
-    }
 }
