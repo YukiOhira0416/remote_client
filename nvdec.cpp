@@ -187,6 +187,14 @@ FrameDecoder::~FrameDecoder() {
 
     // Free CUDA external memory and mapped pointers
     for (auto& resource : m_frameResources) {
+        // The CUarray and CUmipmappedArray are derived from the external memory and
+        // are invalidated when the external memory is destroyed. We don't need to
+        // free them separately, but we null them out for correctness.
+        resource.pCudaArrayY = nullptr;
+        resource.pCudaArrayUV = nullptr;
+        resource.pMipmappedArrayY = nullptr;
+        resource.pMipmappedArrayUV = nullptr;
+
         if (resource.cudaExtMemY) {
             cuDestroyExternalMemory(resource.cudaExtMemY);
         }
@@ -195,7 +203,7 @@ FrameDecoder::~FrameDecoder() {
         }
         if(resource.sharedHandleY) CloseHandle(resource.sharedHandleY);
         if(resource.sharedHandleUV) CloseHandle(resource.sharedHandleUV);
-        // Heaps are released by ComPtr automatically
+        // Heaps and textures are released by ComPtr automatically
     }
 
     if (m_hParser) {
@@ -387,39 +395,41 @@ bool FrameDecoder::allocateFrameBuffers() {
         m_frameResources[i].pitchUV = placedFootprintUV.Footprint.RowPitch;
 
         // --- CUDA Interop ---
-        // Create shared handles for the heaps
-        m_pD3D12Device->CreateSharedHandle(m_frameResources[i].pHeapY.Get(), nullptr, GENERIC_ALL, nullptr, &m_frameResources[i].sharedHandleY);
-        m_pD3D12Device->CreateSharedHandle(m_frameResources[i].pHeapUV.Get(), nullptr, GENERIC_ALL, nullptr, &m_frameResources[i].sharedHandleUV);
+        // Create shared handles for the D3D12 resources (textures)
+        m_pD3D12Device->CreateSharedHandle(m_frameResources[i].pTextureY.Get(), nullptr, GENERIC_ALL, nullptr, &m_frameResources[i].sharedHandleY);
+        m_pD3D12Device->CreateSharedHandle(m_frameResources[i].pTextureUV.Get(), nullptr, GENERIC_ALL, nullptr, &m_frameResources[i].sharedHandleUV);
 
-        // Import D3D12 heaps into CUDA as external memory using Driver API
+        // Import D3D12 resources into CUDA as external memory
         CUDA_EXTERNAL_MEMORY_HANDLE_DESC extMemHandleDescY = {};
-        extMemHandleDescY.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_HEAP;
+        extMemHandleDescY.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE;
         extMemHandleDescY.handle.win32.handle = m_frameResources[i].sharedHandleY;
         extMemHandleDescY.size = allocInfoY.SizeInBytes;
         CUDA_CHECK(cuImportExternalMemory(&m_frameResources[i].cudaExtMemY, &extMemHandleDescY));
 
         CUDA_EXTERNAL_MEMORY_HANDLE_DESC extMemHandleDescUV = {};
-        extMemHandleDescUV.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_HEAP;
+        extMemHandleDescUV.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE;
         extMemHandleDescUV.handle.win32.handle = m_frameResources[i].sharedHandleUV;
         extMemHandleDescUV.size = allocInfoUV.SizeInBytes;
         CUDA_CHECK(cuImportExternalMemory(&m_frameResources[i].cudaExtMemUV, &extMemHandleDescUV));
 
-        // Map external memory to CUDA device pointers using Driver API
-        CUdeviceptr devPtrY = 0;
-        CUDA_EXTERNAL_MEMORY_BUFFER_DESC bufferDescY = {};
-        bufferDescY.offset = 0;
-        bufferDescY.size = allocInfoY.SizeInBytes;
-        bufferDescY.flags = 0;
-        CUDA_CHECK(cuExternalMemoryGetMappedBuffer(&devPtrY, m_frameResources[i].cudaExtMemY, &bufferDescY));
-        m_frameResources[i].mappedCudaPtrY = (void*)devPtrY;
+        // Map external memory to CUDA mipmapped arrays
+        CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC mipmapDescY = {};
+        mipmapDescY.formatDesc.NumChannels = 1;
+        mipmapDescY.formatDesc.f = CU_AD_FORMAT_UNSIGNED_INT8;
+        mipmapDescY.extent = { m_videoDecoderCreateInfo.ulWidth, m_videoDecoderCreateInfo.ulHeight, 0 };
+        mipmapDescY.numLevels = 1;
+        CUDA_CHECK(cuExternalMemoryGetMappedMipmappedArray(&m_frameResources[i].pMipmappedArrayY, m_frameResources[i].cudaExtMemY, &mipmapDescY));
 
-        CUdeviceptr devPtrUV = 0;
-        CUDA_EXTERNAL_MEMORY_BUFFER_DESC bufferDescUV = {};
-        bufferDescUV.offset = 0;
-        bufferDescUV.size = allocInfoUV.SizeInBytes;
-        bufferDescUV.flags = 0;
-        CUDA_CHECK(cuExternalMemoryGetMappedBuffer(&devPtrUV, m_frameResources[i].cudaExtMemUV, &bufferDescUV));
-        m_frameResources[i].mappedCudaPtrUV = (void*)devPtrUV;
+        CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC mipmapDescUV = {};
+        mipmapDescUV.formatDesc.NumChannels = 2;
+        mipmapDescUV.formatDesc.f = CU_AD_FORMAT_UNSIGNED_INT8;
+        mipmapDescUV.extent = { m_videoDecoderCreateInfo.ulWidth / 2, m_videoDecoderCreateInfo.ulHeight / 2, 0 };
+        mipmapDescUV.numLevels = 1;
+        CUDA_CHECK(cuExternalMemoryGetMappedMipmappedArray(&m_frameResources[i].pMipmappedArrayUV, m_frameResources[i].cudaExtMemUV, &mipmapDescUV));
+
+        // Get the CUarray for the first mipmap level
+        CUDA_CHECK(cuMipmappedArrayGetLevel(&m_frameResources[i].pCudaArrayY, m_frameResources[i].pMipmappedArrayY, 0));
+        CUDA_CHECK(cuMipmappedArrayGetLevel(&m_frameResources[i].pCudaArrayUV, m_frameResources[i].pMipmappedArrayUV, 0));
     }
 
     DebugLog(L"Allocated D3D12/CUDA frame buffers.");
@@ -458,86 +468,50 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     // 2) ランタイムAPIの cudaMemcpy2D と混用すると invalid argument を起こすことがある
     // 3) cuMemcpy2D{Async} は CUdeviceptr を正式に扱える
 
-    // 事前検証：nullptrや0ピッチ、幅超過などを明示チェック
+    // --- Copy decoded frame to our D3D12 texture that is mapped as a CUDA array ---
     auto& fr = self->m_frameResources[pDispInfo->picture_index];
 
-    if (!fr.mappedCudaPtrY || !fr.mappedCudaPtrUV) {
-        DebugLog(L"HandlePictureDisplay: mapped CUDA pointers are null. Aborting.");
+    if (!fr.pCudaArrayY || !fr.pCudaArrayUV) {
+        DebugLog(L"HandlePictureDisplay: mapped CUDA arrays are null. Aborting.");
         CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
         cuCtxPopCurrent(NULL);
         return 0;
     }
 
-    const size_t dpitchY  = static_cast<size_t>(fr.pitchY);
-    const size_t dpitchUV = static_cast<size_t>(fr.pitchUV);
-    const size_t spitch   = static_cast<size_t>(nDecodedPitch);
-
-    const size_t srcWidthBytes_Y  = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulWidth);       // NV12 Y: 1B/px
+    const size_t srcWidthBytes_Y  = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulWidth);
     const size_t srcHeightRows_Y  = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulHeight);
-    const size_t srcWidthBytes_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulWidth);       // NV12 UV: 幅は同じ(2chで計2B/2px)
+    const size_t srcWidthBytes_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulWidth); // For NV12, UV plane width in bytes is same as Y
     const size_t srcHeightRows_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulHeight / 2);
 
-    auto logParams = [&](const wchar_t* tag, size_t w, size_t h, size_t dp, size_t sp) {
-        std::wstringstream wss;
-        wss << L"[CopyParams-" << tag << L"] widthBytes=" << w
-            << L", height=" << h
-            << L", dpitch=" << dp
-            << L", spitch=" << sp;
-        DebugLog(wss.str());
-    };
-
-    logParams(L"Y",  srcWidthBytes_Y,  srcHeightRows_Y,  dpitchY,  spitch);
-    logParams(L"UV", srcWidthBytes_UV, srcHeightRows_UV, dpitchUV, spitch);
-
-    // 幅チェック: widthInBytes は dpitch と spitch を超えてはいけない
-    if (srcWidthBytes_Y  == 0 || srcHeightRows_Y  == 0 ||
-        srcWidthBytes_UV == 0 || srcHeightRows_UV == 0 ||
-        dpitchY  == 0 || dpitchUV == 0 || spitch == 0) {
-        DebugLog(L"HandlePictureDisplay: zero width/height/pitch detected. Aborting.");
-        CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
-        cuCtxPopCurrent(NULL);
-        return 0;
-    }
-
-    if (srcWidthBytes_Y  > dpitchY || srcWidthBytes_Y  > spitch ||
-        srcWidthBytes_UV > dpitchUV || srcWidthBytes_UV > spitch) {
-        DebugLog(L"HandlePictureDisplay: widthInBytes exceeds pitch (Y/UV). Aborting copy.");
-        CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
-        cuCtxPopCurrent(NULL);
-        return 0;
-    }
-
-    // ドライバAPIの2Dコピー記述子を用意
+    // Setup copy for Y plane
     CUDA_MEMCPY2D cpyY = {};
     cpyY.srcMemoryType = CU_MEMORYTYPE_DEVICE;
-    cpyY.dstMemoryType = CU_MEMORYTYPE_DEVICE;
-    cpyY.srcDevice     = (CUdeviceptr)pDecodedFrame;
-    cpyY.srcPitch      = nDecodedPitch;
-    cpyY.dstDevice     = (CUdeviceptr)fr.mappedCudaPtrY;
-    cpyY.dstPitch      = fr.pitchY;
-    cpyY.WidthInBytes  = (unsigned int)srcWidthBytes_Y;
-    cpyY.Height        = (unsigned int)srcHeightRows_Y;
+    cpyY.srcDevice = pDecodedFrame;
+    cpyY.srcPitch = nDecodedPitch;
+    cpyY.dstMemoryType = CU_MEMORYTYPE_ARRAY;
+    cpyY.dstArray = fr.pCudaArrayY;
+    cpyY.WidthInBytes = srcWidthBytes_Y;
+    cpyY.Height = srcHeightRows_Y;
 
-    const uint8_t* pSrcUV = (const uint8_t*)pDecodedFrame + (size_t)srcHeightRows_Y * nDecodedPitch;
+    CUDA_CHECK_CALLBACK(cuMemcpy2D(&cpyY));
 
+    // Setup copy for UV plane
+    const CUdeviceptr pSrcUV = pDecodedFrame + (size_t)srcHeightRows_Y * nDecodedPitch;
     CUDA_MEMCPY2D cpyUV = {};
     cpyUV.srcMemoryType = CU_MEMORYTYPE_DEVICE;
-    cpyUV.dstMemoryType = CU_MEMORYTYPE_DEVICE;
-    cpyUV.srcDevice     = (CUdeviceptr)pSrcUV;
-    cpyUV.srcPitch      = nDecodedPitch;
-    cpyUV.dstDevice     = (CUdeviceptr)fr.mappedCudaPtrUV;
-    cpyUV.dstPitch      = fr.pitchUV;
-    cpyUV.WidthInBytes  = (unsigned int)srcWidthBytes_UV;
-    cpyUV.Height       = (unsigned int)srcHeightRows_UV;
+    cpyUV.srcDevice = pSrcUV;
+    cpyUV.srcPitch = nDecodedPitch;
+    cpyUV.dstMemoryType = CU_MEMORYTYPE_ARRAY;
+    cpyUV.dstArray = fr.pCudaArrayUV;
+    cpyUV.WidthInBytes = srcWidthBytes_UV;
+    cpyUV.Height = srcHeightRows_UV;
 
-    // 同期コピー（非同期にしたい場合は cuMemcpy2DAsync(&cpy, 0) を使う）
-    CUDA_CHECK_CALLBACK(cuMemcpy2D(&cpyY));
     CUDA_CHECK_CALLBACK(cuMemcpy2D(&cpyUV));
 
-    // エラーを早期検出（ドライバAPIなら cuCtxSynchronize を使う）
+    // Synchronize to ensure copy is complete before unmapping
     CUDA_CHECK_CALLBACK(cuCtxSynchronize());
 
-    // 以降は現行の処理を継続
+    // Unmap the video frame
     CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
 
     // Enqueue for rendering
@@ -545,35 +519,32 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     readyFrame.hw_decoded_texture_Y = self->m_frameResources[pDispInfo->picture_index].pTextureY;
     readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
     readyFrame.timestamp = pDispInfo->timestamp;
-    // We need original frame number, but pDispInfo doesn't have it. We can use a counter.
     readyFrame.originalFrameNumber = self->m_nDecodedFrameCount++;
     readyFrame.id = readyFrame.originalFrameNumber;
     readyFrame.width = self->m_frameWidth;
     readyFrame.height = self->m_frameHeight;
 
-    // Save Y and UV planes as BMP files for debugging, capped to first 10 frames.
+    // The SaveYUVPlaneAsBMP function is incompatible with CUarray destinations.
+    // It has been disabled to allow the primary fix to work.
+    /*
     static int bmpCounter = 0;
     if (bmpCounter < 10) {
         std::string yFilename = "frame_Y_" + std::to_string(bmpCounter) + ".bmp";
         std::string uvFilename = "frame_UV_" + std::to_string(bmpCounter) + ".bmp";
 
-        // For debugging, save the raw decoded buffer. Use the buffer's actual allocated height
-        // (m_videoDecoderCreateInfo.ulHeight) for the copy, not the logical display height (m_frameHeight),
-        // to prevent reading out of bounds. The saved BMP will have the dimensions of the buffer.
         if (SaveYUVPlaneAsBMP(fr.mappedCudaPtrY, self->m_frameWidth, self->m_videoDecoderCreateInfo.ulHeight,
             fr.pitchY, yFilename) == 0) {
-            // Error is logged within the function.
             DebugLog(L"HandlePictureDisplay: Failed to save Y plane BMP, aborting callback.");
             return 0;
         }
         if (SaveYUVPlaneAsBMP(fr.mappedCudaPtrUV, self->m_frameWidth / 2, self->m_videoDecoderCreateInfo.ulHeight / 2,
             fr.pitchUV, uvFilename) == 0) {
-            // Error is logged within the function.
             DebugLog(L"HandlePictureDisplay: Failed to save UV plane BMP, aborting callback.");
             return 0;
         }
         bmpCounter++;
     }
+    */
 
 
     {
