@@ -414,17 +414,23 @@ bool FrameDecoder::allocateFrameBuffers() {
 
         // Map external memory to CUDA mipmapped arrays
         CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC mipmapDescY = {};
-        mipmapDescY.formatDesc.NumChannels = 1;
-        mipmapDescY.formatDesc.f = CU_AD_FORMAT_UNSIGNED_INT8;
-        mipmapDescY.extent = { m_videoDecoderCreateInfo.ulWidth, m_videoDecoderCreateInfo.ulHeight, 0 };
+        mipmapDescY.format = CU_AD_FORMAT_UNSIGNED_INT8;
+        mipmapDescY.numChannels = 1;
+        mipmapDescY.width = static_cast<unsigned int>(m_videoDecoderCreateInfo.ulWidth);
+        mipmapDescY.height = static_cast<unsigned int>(m_videoDecoderCreateInfo.ulHeight);
+        mipmapDescY.depth = 0;
         mipmapDescY.numLevels = 1;
+        mipmapDescY.flags = 0;
         CUDA_CHECK(cuExternalMemoryGetMappedMipmappedArray(&m_frameResources[i].pMipmappedArrayY, m_frameResources[i].cudaExtMemY, &mipmapDescY));
 
         CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC mipmapDescUV = {};
-        mipmapDescUV.formatDesc.NumChannels = 2;
-        mipmapDescUV.formatDesc.f = CU_AD_FORMAT_UNSIGNED_INT8;
-        mipmapDescUV.extent = { m_videoDecoderCreateInfo.ulWidth / 2, m_videoDecoderCreateInfo.ulHeight / 2, 0 };
+        mipmapDescUV.format = CU_AD_FORMAT_UNSIGNED_INT8;
+        mipmapDescUV.numChannels = 2;
+        mipmapDescUV.width = static_cast<unsigned int>(m_videoDecoderCreateInfo.ulWidth / 2);
+        mipmapDescUV.height = static_cast<unsigned int>(m_videoDecoderCreateInfo.ulHeight / 2);
+        mipmapDescUV.depth = 0;
         mipmapDescUV.numLevels = 1;
+        mipmapDescUV.flags = 0;
         CUDA_CHECK(cuExternalMemoryGetMappedMipmappedArray(&m_frameResources[i].pMipmappedArrayUV, m_frameResources[i].cudaExtMemUV, &mipmapDescUV));
 
         // Get the CUarray for the first mipmap level
