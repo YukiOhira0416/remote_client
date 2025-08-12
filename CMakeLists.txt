@@ -1,9 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
-project(RemoteClient LANGUAGES CXX)
+project(RemoteClient LANGUAGES CXX CUDA)
 
 # C++20 標準を設定
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# CUDA 20 標準を設定
+set(CMAKE_CUDA_STANDARD 20)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 # Windowsプラットフォームの確認
 if(NOT WIN32)
@@ -50,6 +54,7 @@ set(SOURCES
     Globals.cpp
     ReedSolomon.cpp
     Nvdec.cpp
+    NvdecKernels.cu
 )
 
 # ヘッダーファイル
@@ -60,6 +65,7 @@ set(HEADERS
     Globals.h
     ReedSolomon.h
     Nvdec.h
+    NvdecKernels.h
 )
 
 # 実行ファイルを作成

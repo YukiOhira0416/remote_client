@@ -1,5 +1,6 @@
 #include "nvdec.h"
 #include "Globals.h"
+#include "NvdecKernels.h"
 #include <stdexcept>
 #include <fstream>
 #include <vector>
@@ -428,30 +429,30 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     const unsigned int copyWidth = self->m_videoDecoderCreateInfo.ulWidth;
     const unsigned int copyHeight = self->m_videoDecoderCreateInfo.ulHeight;
 
-    // Copy Y plane using the Runtime API
-    CUDA_RUNTIME_CHECK_CALLBACK(cudaMemcpy2D(
-        pTexY_void,
-        self->m_frameResources[pDispInfo->picture_index].pitchY,
-        (const void*)pDecodedFrame,
+    // Copy Y plane using a custom kernel
+    LaunchCopyPlane_8bit(
+        (const unsigned char*)pDecodedFrame,
         nDecodedPitch,
+        (unsigned char*)pTexY_void,
+        self->m_frameResources[pDispInfo->picture_index].pitchY,
         copyWidth,
         copyHeight,
-        cudaMemcpyDeviceToDevice
-    ));
+        0 // Using default stream
+    );
+    CUDA_RUNTIME_CHECK_CALLBACK(cudaGetLastError()); // Check for errors after kernel launch
 
-    // Copy UV plane using the Runtime API
-    // The source pointer for the UV plane starts after the Y plane.
-    // The Y plane's size is based on the *coded* height of the video.
+    // Copy UV plane using a custom kernel
     const void* pSrcUV = (const uint8_t*)pDecodedFrame + (size_t)self->m_videoDecoderCreateInfo.ulHeight * nDecodedPitch;
-    CUDA_RUNTIME_CHECK_CALLBACK(cudaMemcpy2D(
-        pTexUV_void,
+    LaunchCopyPlane_16bit(
+        (const unsigned short*)pSrcUV,
+        nDecodedPitch,
+        (unsigned short*)pTexUV_void,
         self->m_frameResources[pDispInfo->picture_index].pitchUV,
-        pSrcUV,
-        nDecodedPitch, // Source pitch is the same for the whole frame buffer
-        copyWidth,     // For NV12, the UV plane has the same byte-width as Y
+        copyWidth / 2, // Width in pixels for 16-bit format
         copyHeight / 2,
-        cudaMemcpyDeviceToDevice
-    ));
+        0 // Using default stream
+    );
+    CUDA_RUNTIME_CHECK_CALLBACK(cudaGetLastError()); // Check for errors after kernel launch
 
     // Unmap the frame
     CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
