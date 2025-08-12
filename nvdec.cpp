@@ -171,6 +171,84 @@ int SaveYUVPlaneAsBMP(void* cudaPtr, int width, int height, int pitch, const std
     return 1;
 }
 
+// CUarray から Y/UV 平面を 8bit グレースケールBMPに保存する
+int SaveCUarrayPlaneAsBMP(CUarray cuArr, int width, int height, const std::string& filename) {
+    if (!cuArr || width <= 0 || height <= 0) {
+        DebugLog(L"SaveCUarrayPlaneAsBMP: Invalid parameters");
+        return 0;
+    }
+
+    // ホスト側一時バッファ（1バイト/画素）
+    // NV12のUV面可視化では「U,V,U,V,...」の交互バイト列がそのまま並ぶ形になります
+    size_t srcBytesPerRow = static_cast<size_t>(width); // 1B/pixel として扱う（Y面は1ch、UV面は2chの交互バイト列）
+    std::vector<uint8_t> hostData(srcBytesPerRow * height, 0);
+
+    // CUarray -> Host へ2Dコピー
+    CUDA_MEMCPY2D cpy = {};
+    cpy.srcMemoryType = CU_MEMORYTYPE_ARRAY;
+    cpy.srcArray      = cuArr;
+    cpy.dstMemoryType = CU_MEMORYTYPE_HOST;
+    cpy.dstHost       = hostData.data();
+    cpy.dstPitch      = srcBytesPerRow;           // ホスト側行ピッチ = width
+    cpy.WidthInBytes  = srcBytesPerRow;           // 1B/px として width バイト
+    cpy.Height        = static_cast<size_t>(height);
+
+    // コールバック安全版：エラー時は0を返す
+    {
+        CUresult err = cuMemcpy2D(&cpy);
+        if (err != CUDA_SUCCESS) {
+            const char* errStr = nullptr;
+            cuGetErrorString(err, &errStr);
+            std::wstring msg = L"SaveCUarrayPlaneAsBMP: cuMemcpy2D failed: ";
+            if (errStr) {
+                std::string narrow(errStr);
+                msg += std::wstring(narrow.begin(), narrow.end());
+            }
+            DebugLog(msg);
+            return 0;
+        }
+    }
+
+    // BMP 書き出し（8bit, 下から上, 4Bアライン）
+    int bmpWidth  = width;
+    int bmpHeight = height;
+    int rowSize   = ((bmpWidth + 3) / 4) * 4;     // 4バイト境界
+    int imageSize = rowSize * bmpHeight;
+
+    BMPFileHeader fileHeader;
+    fileHeader.bfSize = sizeof(BMPFileHeader) + sizeof(BMPInfoHeader) + 256*4 + imageSize;
+
+    BMPInfoHeader infoHeader;
+    infoHeader.biWidth     = bmpWidth;
+    infoHeader.biHeight    = bmpHeight;
+    infoHeader.biSizeImage = imageSize;
+
+    std::ofstream file(filename, std::ios::binary);
+    if (!file) {
+        DebugLog(L"SaveCUarrayPlaneAsBMP: Failed to open file");
+        return 0;
+    }
+
+    // ヘッダ
+    file.write(reinterpret_cast<const char*>(&fileHeader), sizeof(fileHeader));
+    file.write(reinterpret_cast<const char*>(&infoHeader), sizeof(infoHeader));
+
+    // 256階調パレット
+    for (int i = 0; i < 256; ++i) {
+        uint8_t color[4] = { static_cast<uint8_t>(i), static_cast<uint8_t>(i), static_cast<uint8_t>(i), 0 };
+        file.write(reinterpret_cast<const char*>(color), 4);
+    }
+
+    // 画像データ（ボトムアップ）
+    std::vector<uint8_t> row(rowSize, 0);
+    for (int y = bmpHeight - 1; y >= 0; --y) {
+        std::memcpy(row.data(), hostData.data() + static_cast<size_t>(y) * srcBytesPerRow, bmpWidth);
+        file.write(reinterpret_cast<const char*>(row.data()), rowSize);
+    }
+
+    return 1;
+}
+
 FrameDecoder::FrameDecoder(CUcontext cuContext, ID3D12Device* pD3D12Device)
     : m_cuContext(cuContext), m_pD3D12Device(pD3D12Device) {
     CUDA_CHECK(cuCtxPushCurrent(m_cuContext));
@@ -573,28 +651,31 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     readyFrame.width = self->m_frameWidth;
     readyFrame.height = self->m_frameHeight;
 
-    // The SaveYUVPlaneAsBMP function is incompatible with CUarray destinations.
-    // It has been disabled to allow the primary fix to work.
-    /*
     static int bmpCounter = 0;
     if (bmpCounter < 10) {
-        std::string yFilename = "frame_Y_" + std::to_string(bmpCounter) + ".bmp";
+        std::string yFilename  = "frame_Y_"  + std::to_string(bmpCounter) + ".bmp";
         std::string uvFilename = "frame_UV_" + std::to_string(bmpCounter) + ".bmp";
 
-        if (SaveYUVPlaneAsBMP(fr.mappedCudaPtrY, self->m_frameWidth, self->m_videoDecoderCreateInfo.ulHeight,
-            fr.pitchY, yFilename) == 0) {
+        // Y面: width=ulWidth, height=ulHeight
+        if (SaveCUarrayPlaneAsBMP(fr.pCudaArrayY,
+                                  static_cast<int>(self->m_videoDecoderCreateInfo.ulWidth),
+                                  static_cast<int>(self->m_videoDecoderCreateInfo.ulHeight),
+                                  yFilename) == 0) {
             DebugLog(L"HandlePictureDisplay: Failed to save Y plane BMP, aborting callback.");
             return 0;
         }
-        if (SaveYUVPlaneAsBMP(fr.mappedCudaPtrUV, self->m_frameWidth / 2, self->m_videoDecoderCreateInfo.ulHeight / 2,
-            fr.pitchUV, uvFilename) == 0) {
+
+        // UV面(NV12): 幅はバイト数として Y と同じ ulWidth、 高さは ulHeight/2
+        if (SaveCUarrayPlaneAsBMP(fr.pCudaArrayUV,
+                                  static_cast<int>(self->m_videoDecoderCreateInfo.ulWidth),
+                                  static_cast<int>(self->m_videoDecoderCreateInfo.ulHeight / 2),
+                                  uvFilename) == 0) {
             DebugLog(L"HandlePictureDisplay: Failed to save UV plane BMP, aborting callback.");
             return 0;
         }
+
         bmpCounter++;
     }
-    */
-
 
     {
         std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
