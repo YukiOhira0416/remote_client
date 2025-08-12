@@ -251,6 +251,286 @@ int SaveCUarrayPlaneAsBMP(CUarray cuArr, int width, int height, int pitch, const
     return 1;
 }
 
+// === ここから追加: UV面のカラー/グレー保存ユーティリティ ===
+
+#include <cmath>
+
+// 8bitグレースケールBMPを書き出す共通関数
+static int SaveGrayscale8bppBMP(const uint8_t* src, int width, int height, int srcPitch, const std::string& filename) {
+    if (!src || width <= 0 || height <= 0 || srcPitch <= 0) {
+        DebugLog(L"SaveGrayscale8bppBMP: Invalid parameters");
+        return 0;
+    }
+
+    // BMPヘッダ（既存の構造体を流用）
+    BMPFileHeader fileHeader;
+    BMPInfoHeader infoHeader;
+    infoHeader.biWidth     = width;
+    infoHeader.biHeight    = height;
+    infoHeader.biBitCount  = 8;     // グレースケール
+    infoHeader.biClrUsed   = 256;
+    infoHeader.biSizeImage = ((width + 3) / 4) * 4 * height;
+
+    fileHeader.bfOffBits   = 54 + 256*4;
+    fileHeader.bfSize      = fileHeader.bfOffBits + infoHeader.biSizeImage;
+
+    std::ofstream fp(filename, std::ios::binary);
+    if (!fp) {
+        DebugLog(L"SaveGrayscale8bppBMP: Failed to open file");
+        return 0;
+    }
+
+    // ヘッダ
+    fp.write(reinterpret_cast<const char*>(&fileHeader), sizeof(fileHeader));
+    fp.write(reinterpret_cast<const char*>(&infoHeader), sizeof(infoHeader));
+
+    // パレット（グレースケール）
+    for (int i = 0; i < 256; ++i) {
+        uint8_t c[4] = { (uint8_t)i, (uint8_t)i, (uint8_t)i, 0 };
+        fp.write(reinterpret_cast<const char*>(c), 4);
+    }
+
+    // 本体（ボトムアップ & 4Bパディング）
+    const int rowSize = ((width + 3) / 4) * 4;
+    std::vector<uint8_t> row(rowSize, 0);
+
+    for (int y = height - 1; y >= 0; --y) {
+        const uint8_t* s = src + (size_t)y * (size_t)srcPitch;
+        std::memcpy(row.data(), s, width);
+        fp.write(reinterpret_cast<const char*>(row.data()), rowSize);
+    }
+    return 1;
+}
+
+// 24bit BMP（BGR）を書き出す共通関数
+static int SaveRGB24BMP(const uint8_t* rgbBGR, int width, int height, int srcRowBytes, const std::string& filename) {
+    if (!rgbBGR || width <= 0 || height <= 0 || srcRowBytes <= 0) {
+        DebugLog(L"SaveRGB24BMP: Invalid parameters");
+        return 0;
+    }
+
+    BMPFileHeader fileHeader;
+    BMPInfoHeader infoHeader;
+    infoHeader.biWidth     = width;
+    infoHeader.biHeight    = height;
+    infoHeader.biBitCount  = 24;    // 24bpp
+    infoHeader.biClrUsed   = 0;
+    infoHeader.biSizeImage = ((width * 3 + 3) / 4) * 4 * height;
+
+    fileHeader.bfOffBits   = 54;    // パレットなし
+    fileHeader.bfSize      = fileHeader.bfOffBits + infoHeader.biSizeImage;
+
+    std::ofstream fp(filename, std::ios::binary);
+    if (!fp) {
+        DebugLog(L"SaveRGB24BMP: Failed to open file");
+        return 0;
+    }
+
+    fp.write(reinterpret_cast<const char*>(&fileHeader), sizeof(fileHeader));
+    fp.write(reinterpret_cast<const char*>(&infoHeader), sizeof(infoHeader));
+
+    // 本体（ボトムアップ & 4Bパディング）
+    const int rowSize = ((width * 3 + 3) / 4) * 4;
+    std::vector<uint8_t> row(rowSize, 0);
+
+    for (int y = height - 1; y >= 0; --y) {
+        const uint8_t* s = rgbBGR + (size_t)y * (size_t)srcRowBytes;
+        std::memcpy(row.data(), s, width * 3);
+        // 末尾のパディングは既に0クリア済み
+        fp.write(reinterpret_cast<const char*>(row.data()), rowSize);
+    }
+    return 1;
+}
+
+// CUarray(UV, R8G8) -> Hostへ2Dコピー
+static int CopyCUarrayUVToHost(CUarray cuArrUV, int codedWidth, int codedHeight, int srcPitchBytes, std::vector<uint8_t>& hostUV) {
+    if (!cuArrUV || codedWidth <= 0 || codedHeight <= 0 || srcPitchBytes <= 0) {
+        DebugLog(L"CopyCUarrayUVToHost: Invalid parameters");
+        return 0;
+    }
+    const int uvW = codedWidth  / 2; // 画素数
+    const int uvH = codedHeight / 2;
+    const size_t srcBytesPerRow = (size_t)srcPitchBytes; // = codedWidth bytes (U,V交互)
+
+    hostUV.assign(srcBytesPerRow * uvH, 0);
+
+    CUDA_MEMCPY2D cpy = {};
+    cpy.srcMemoryType = CU_MEMORYTYPE_ARRAY;
+    cpy.srcArray      = cuArrUV;
+    cpy.dstMemoryType = CU_MEMORYTYPE_HOST;
+    cpy.dstHost       = hostUV.data();
+    cpy.dstPitch      = srcBytesPerRow;
+    cpy.WidthInBytes  = srcBytesPerRow; // 行全体（U,V交互でcodedWidthバイト）
+    cpy.Height        = (size_t)uvH;
+
+    CUresult err = cuMemcpy2D(&cpy);
+    if (err != CUDA_SUCCESS) {
+        const char* errStr = nullptr;
+        cuGetErrorString(err, &errStr);
+        std::wstring msg = L"CopyCUarrayUVToHost: cuMemcpy2D failed: ";
+        if (errStr) { std::string narrow(errStr); msg += std::wstring(narrow.begin(), narrow.end()); }
+        DebugLog(msg);
+        return 0;
+    }
+    return 1;
+}
+
+// 方式A: “色だけを直観表示” (R=V, G=U, B=0) の24bit BMPを生成
+// uvOrderVU=true の場合は (R=U, G=V, B=0) として入替表示
+static int SaveUV_AsColorBMP_Chromatic(const std::vector<uint8_t>& uvInterleavedRowMajor,
+                                       int codedWidth, int codedHeight, int srcPitchBytes,
+                                       const std::string& filename, bool uvOrderVU = false)
+{
+    const int uvW = codedWidth  / 2;
+    const int uvH = codedHeight / 2;
+    if (uvW <= 0 || uvH <= 0) {
+        DebugLog(L"SaveUV_AsColorBMP_Chromatic: invalid UV size");
+        return 0;
+    }
+
+    const int dstRowBytes = uvW * 3; // 24bpp
+    std::vector<uint8_t> rgb( (size_t)dstRowBytes * uvH );
+
+    for (int y = 0; y < uvH; ++y) {
+        const uint8_t* src = uvInterleavedRowMajor.data() + (size_t)y * (size_t)srcPitchBytes;
+        uint8_t*       dst = rgb.data() + (size_t)y * (size_t)dstRowBytes;
+
+        for (int x = 0; x < uvW; ++x) {
+            // UVUV... (1画素=U,V)
+            const uint8_t U = src[2*x + 0];
+            const uint8_t V = src[2*x + 1];
+
+            uint8_t r, g, b;
+            if (!uvOrderVU) {
+                // 標準: R=V, G=U, B=0 -> U,Vともに大きいと黄色に見える
+                r = V; g = U; b = 0;
+            } else {
+                // 入替: R=U, G=V, B=0（必要に応じて切替）
+                r = U; g = V; b = 0;
+            }
+
+            // BMPはB,G,Rの順
+            dst[3*x + 0] = b;
+            dst[3*x + 1] = g;
+            dst[3*x + 2] = r;
+        }
+    }
+    return SaveRGB24BMP(rgb.data(), uvW, uvH, dstRowBytes, filename);
+}
+
+// 方式B: Y=128固定でYUV→RGBして24bit BMPを生成（より“映像らしい”色）
+static inline uint8_t clampByte(float v) {
+    if (v < 0.0f)   return 0;
+    if (v > 255.0f) return 255;
+    return (uint8_t)(v + 0.5f);
+}
+
+static int SaveUV_AsColorBMP_Y128(const std::vector<uint8_t>& uvInterleavedRowMajor,
+                                  int codedWidth, int codedHeight, int srcPitchBytes,
+                                  const std::string& filename, bool uvOrderVU = false)
+{
+    const int uvW = codedWidth  / 2;
+    const int uvH = codedHeight / 2;
+    if (uvW <= 0 || uvH <= 0) {
+        DebugLog(L"SaveUV_AsColorBMP_Y128: invalid UV size");
+        return 0;
+    }
+
+    const int dstRowBytes = uvW * 3; // 24bpp
+    std::vector<uint8_t> rgb( (size_t)dstRowBytes * uvH );
+
+    for (int y = 0; y < uvH; ++y) {
+        const uint8_t* src = uvInterleavedRowMajor.data() + (size_t)y * (size_t)srcPitchBytes;
+        uint8_t*       dst = rgb.data() + (size_t)y * (size_t)dstRowBytes;
+
+        for (int x = 0; x < uvW; ++x) {
+            uint8_t U = src[2*x + 0];
+            uint8_t V = src[2*x + 1];
+            if (uvOrderVU) std::swap(U, V);
+
+            const float Y  = 128.0f;
+            const float Cb = (float)U - 128.0f;
+            const float Cr = (float)V - 128.0f;
+
+            const float Rf = Y + 1.402f    * Cr;
+            const float Gf = Y - 0.344136f * Cb - 0.714136f * Cr;
+            const float Bf = Y + 1.772f    * Cb;
+
+            const uint8_t R = clampByte(Rf);
+            const uint8_t G = clampByte(Gf);
+            const uint8_t B = clampByte(Bf);
+
+            dst[3*x + 0] = B;
+            dst[3*x + 1] = G;
+            dst[3*x + 2] = R;
+        }
+    }
+    return SaveRGB24BMP(rgb.data(), uvW, uvH, dstRowBytes, filename);
+}
+
+// U面/V面を個別に8bitグレースケールBMPで保存
+static int SaveUV_AsTwoGrayBMP(const std::vector<uint8_t>& uvInterleavedRowMajor,
+                               int codedWidth, int codedHeight, int srcPitchBytes,
+                               const std::string& uFilename, const std::string& vFilename,
+                               bool uvOrderVU = false)
+{
+    const int uvW = codedWidth  / 2;
+    const int uvH = codedHeight / 2;
+    if (uvW <= 0 || uvH <= 0) {
+        DebugLog(L"SaveUV_AsTwoGrayBMP: invalid UV size");
+        return 0;
+    }
+
+    std::vector<uint8_t> Uplane( (size_t)uvW * uvH );
+    std::vector<uint8_t> Vplane( (size_t)uvW * uvH );
+
+    for (int y = 0; y < uvH; ++y) {
+        const uint8_t* src = uvInterleavedRowMajor.data() + (size_t)y * (size_t)srcPitchBytes;
+        uint8_t* Ud = Uplane.data() + (size_t)y * (size_t)uvW;
+        uint8_t* Vd = Vplane.data() + (size_t)y * (size_t)uvW;
+
+        for (int x = 0; x < uvW; ++x) {
+            uint8_t U = src[2*x + 0];
+            uint8_t V = src[2*x + 1];
+            if (!uvOrderVU) {
+                Ud[x] = U; Vd[x] = V;
+            } else {
+                Ud[x] = V; Vd[x] = U;
+            }
+        }
+    }
+
+    if (!SaveGrayscale8bppBMP(Uplane.data(), uvW, uvH, uvW, uFilename)) return 0;
+    if (!SaveGrayscale8bppBMP(Vplane.data(), uvW, uvH, uvW, vFilename)) return 0;
+    return 1;
+}
+
+// エントリポイント相当: CUarray(UV)を受けて希望のフォーマットで保存
+// mode: 0=Chromatic(R=V,G=U,B=0), 1=Y=128でYUV→RGB, 2=U/V別グレー
+static int SaveCUarrayUV_WithMode(CUarray cuArrUV, int codedWidth, int codedHeight, int srcPitchBytes,
+                                  const std::string& baseName, int mode, bool uvOrderVU = false)
+{
+    std::vector<uint8_t> hostUV;
+    if (!CopyCUarrayUVToHost(cuArrUV, codedWidth, codedHeight, srcPitchBytes, hostUV)) {
+        DebugLog(L"SaveCUarrayUV_WithMode: Copy failed");
+        return 0;
+    }
+
+    if (mode == 0) {
+        std::string fn = baseName + "_UV_chroma.bmp";
+        return SaveUV_AsColorBMP_Chromatic(hostUV, codedWidth, codedHeight, srcPitchBytes, fn, uvOrderVU);
+    } else if (mode == 1) {
+        std::string fn = baseName + "_UV_y128.bmp";
+        return SaveUV_AsColorBMP_Y128(hostUV, codedWidth, codedHeight, srcPitchBytes, fn, uvOrderVU);
+    } else {
+        std::string fu = baseName + "_U_gray.bmp";
+        std::string fv = baseName + "_V_gray.bmp";
+        return SaveUV_AsTwoGrayBMP(hostUV, codedWidth, codedHeight, srcPitchBytes, fu, fv, uvOrderVU);
+    }
+}
+
+// === ここまで追加 ===
+
 FrameDecoder::FrameDecoder(CUcontext cuContext, ID3D12Device* pD3D12Device)
     : m_cuContext(cuContext), m_pD3D12Device(pD3D12Device) {
     CUDA_CHECK(cuCtxPushCurrent(m_cuContext));
@@ -668,16 +948,26 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
             return 0;
         }
 
-        // UV面(NV12): bmpWidth=ulWidth/2, height=ulHeight/2, pitch=ulWidth
-        if (SaveCUarrayPlaneAsBMP(fr.pCudaArrayUV,
-                                  static_cast<int>(self->m_videoDecoderCreateInfo.ulWidth / 2),
-                                  static_cast<int>(self->m_videoDecoderCreateInfo.ulHeight / 2),
-                                  static_cast<int>(self->m_videoDecoderCreateInfo.ulWidth), // pitch
-                                  uvFilename) == 0) {
-            DebugLog(L"HandlePictureDisplay: Failed to save UV plane BMP, aborting callback.");
-            return 0;
-        }
+        // 新: UV面のカラー/グレー保存を選択可能に
+        {
+            // 0: R=V,G=U,B=0（“黄色”など直観色）
+            // 1: Y=128でYUV→RGB（映像っぽい色）
+            // 2: U/Vを別グレー保存（数値確認）
+            const int uvSaveMode = 0;
 
+            // 必要なら並び入替（通常はfalseのままでOK）
+            const bool uvOrderVU = false;
+
+            std::string base = "frame_" + std::to_string(bmpCounter);
+            if (SaveCUarrayUV_WithMode(fr.pCudaArrayUV,
+                                       (int)self->m_videoDecoderCreateInfo.ulWidth,
+                                       (int)self->m_videoDecoderCreateInfo.ulHeight,
+                                       (int)self->m_videoDecoderCreateInfo.ulWidth, // pitch = codedWidth bytes
+                                       base, uvSaveMode, uvOrderVU) == 0) {
+                DebugLog(L"HandlePictureDisplay: Failed to save UV visualization BMP(s), aborting callback.");
+                return 0;
+            }
+        }
         bmpCounter++;
     }
 
