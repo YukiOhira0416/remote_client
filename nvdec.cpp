@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <sstream>
 
+const int FrameDecoder::NUM_DECODE_SURFACES = 20;
+
 // CUDA API error checking
 #define CUDA_RUNTIME_CHECK(call)                                                                    \
     do {                                                                                            \
@@ -205,7 +207,7 @@ bool FrameDecoder::Init() {
 
     CUVIDPARSERPARAMS videoParserParameters = {};
     videoParserParameters.CodecType = cudaVideoCodec_H264;
-    videoParserParameters.ulMaxNumDecodeSurfaces = 1; // Should be at least 1
+    videoParserParameters.ulMaxNumDecodeSurfaces = FrameDecoder::NUM_DECODE_SURFACES;
     videoParserParameters.ulMaxDisplayDelay = 0; // Low latency
     videoParserParameters.pUserData = this;
     videoParserParameters.pfnSequenceCallback = HandleVideoSequence;
@@ -297,7 +299,7 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
     m_videoDecoderCreateInfo.ChromaFormat = pVideoFormat->chroma_format;
     m_videoDecoderCreateInfo.ulWidth = pVideoFormat->coded_width;
     m_videoDecoderCreateInfo.ulHeight = pVideoFormat->coded_height;
-    m_videoDecoderCreateInfo.ulNumDecodeSurfaces = 20; // A pool of surfaces
+    m_videoDecoderCreateInfo.ulNumDecodeSurfaces = FrameDecoder::NUM_DECODE_SURFACES; // A pool of surfaces
     m_videoDecoderCreateInfo.ulCreationFlags = cudaVideoCreate_PreferCUVID;
     m_videoDecoderCreateInfo.DeinterlaceMode = cudaVideoDeinterlaceMode_Weave;
     // Set target size to the actual coded size so decoder does NO scaling.
@@ -492,13 +494,16 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         std::string yFilename = "frame_Y_" + std::to_string(bmpCounter) + ".bmp";
         std::string uvFilename = "frame_UV_" + std::to_string(bmpCounter) + ".bmp";
 
-        if (SaveYUVPlaneAsBMP(pTexY_void, self->m_frameWidth, self->m_frameHeight,
+        // For debugging, save the raw decoded buffer. Use the buffer's actual allocated height
+        // (m_videoDecoderCreateInfo.ulHeight) for the copy, not the logical display height (m_frameHeight),
+        // to prevent reading out of bounds. The saved BMP will have the dimensions of the buffer.
+        if (SaveYUVPlaneAsBMP(pTexY_void, self->m_frameWidth, self->m_videoDecoderCreateInfo.ulHeight,
             self->m_frameResources[pDispInfo->picture_index].pitchY, yFilename) == 0) {
             // Error is logged within the function.
             DebugLog(L"HandlePictureDisplay: Failed to save Y plane BMP, aborting callback.");
             return 0;
         }
-        if (SaveYUVPlaneAsBMP(pTexUV_void, self->m_frameWidth / 2, self->m_frameHeight / 2,
+        if (SaveYUVPlaneAsBMP(pTexUV_void, self->m_frameWidth / 2, self->m_videoDecoderCreateInfo.ulHeight / 2,
             self->m_frameResources[pDispInfo->picture_index].pitchUV, uvFilename) == 0) {
             // Error is logged within the function.
             DebugLog(L"HandlePictureDisplay: Failed to save UV plane BMP, aborting callback.");
