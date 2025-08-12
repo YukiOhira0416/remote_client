@@ -350,7 +350,8 @@ static int CopyCUarrayUVToHost(CUarray cuArrUV, int codedWidth, int codedHeight,
     }
     const int uvW = codedWidth  / 2; // 画素数
     const int uvH = codedHeight / 2;
-    const size_t srcBytesPerRow = (size_t)srcPitchBytes; // = codedWidth bytes (U,V交互)
+    // srcPitchBytes はD3D12から取得したアライン済みの行バイト数（パディング含む）
+    const size_t srcBytesPerRow = (size_t)srcPitchBytes;
 
     hostUV.assign(srcBytesPerRow * uvH, 0);
 
@@ -359,8 +360,9 @@ static int CopyCUarrayUVToHost(CUarray cuArrUV, int codedWidth, int codedHeight,
     cpy.srcArray      = cuArrUV;
     cpy.dstMemoryType = CU_MEMORYTYPE_HOST;
     cpy.dstHost       = hostUV.data();
-    cpy.dstPitch      = srcBytesPerRow;
-    cpy.WidthInBytes  = srcBytesPerRow; // 行全体（U,V交互でcodedWidthバイト）
+    cpy.srcPitch      = srcBytesPerRow;            // = pitchUV
+    cpy.dstPitch      = srcBytesPerRow;            // = pitchUV
+    cpy.WidthInBytes  = (size_t)uvW * 2;           // 実データ幅（U+V）
     cpy.Height        = (size_t)uvH;
 
     CUresult err = cuMemcpy2D(&cpy);
@@ -962,7 +964,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
             if (SaveCUarrayUV_WithMode(fr.pCudaArrayUV,
                                        (int)self->m_videoDecoderCreateInfo.ulWidth,
                                        (int)self->m_videoDecoderCreateInfo.ulHeight,
-                                       (int)self->m_videoDecoderCreateInfo.ulWidth, // pitch = codedWidth bytes
+                                       (int)fr.pitchUV, // ← 修正: pitchUV を渡す
                                        base, uvSaveMode, uvOrderVU) == 0) {
                 DebugLog(L"HandlePictureDisplay: Failed to save UV visualization BMP(s), aborting callback.");
                 return 0;
