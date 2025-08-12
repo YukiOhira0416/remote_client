@@ -31,6 +31,8 @@
         "condition_variable": "cpp",
         "sstream": "cpp",
         "cmath": "cpp",
-        "atomic": "cpp"
+        "atomic": "cpp",
+        "stdexcept": "cpp",
+        "mutex": "cpp"
     }
 }
