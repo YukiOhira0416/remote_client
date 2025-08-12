@@ -172,15 +172,16 @@ int SaveYUVPlaneAsBMP(void* cudaPtr, int width, int height, int pitch, const std
 }
 
 // CUarray から Y/UV 平面を 8bit グレースケールBMPに保存する
-int SaveCUarrayPlaneAsBMP(CUarray cuArr, int width, int height, const std::string& filename) {
-    if (!cuArr || width <= 0 || height <= 0) {
+// width/height はBMP画像の寸法, pitch は元データの1行あたりバイト数
+int SaveCUarrayPlaneAsBMP(CUarray cuArr, int width, int height, int pitch, const std::string& filename) {
+    if (!cuArr || width <= 0 || height <= 0 || pitch <= 0) {
         DebugLog(L"SaveCUarrayPlaneAsBMP: Invalid parameters");
         return 0;
     }
 
-    // ホスト側一時バッファ（1バイト/画素）
-    // NV12のUV面可視化では「U,V,U,V,...」の交互バイト列がそのまま並ぶ形になります
-    size_t srcBytesPerRow = static_cast<size_t>(width); // 1B/pixel として扱う（Y面は1ch、UV面は2chの交互バイト列）
+    // ホスト側一時バッファ
+    // pitch は CUDA Array からコピーする1行あたりのバイト数
+    size_t srcBytesPerRow = static_cast<size_t>(pitch);
     std::vector<uint8_t> hostData(srcBytesPerRow * height, 0);
 
     // CUarray -> Host へ2Dコピー
@@ -189,8 +190,8 @@ int SaveCUarrayPlaneAsBMP(CUarray cuArr, int width, int height, const std::strin
     cpy.srcArray      = cuArr;
     cpy.dstMemoryType = CU_MEMORYTYPE_HOST;
     cpy.dstHost       = hostData.data();
-    cpy.dstPitch      = srcBytesPerRow;           // ホスト側行ピッチ = width
-    cpy.WidthInBytes  = srcBytesPerRow;           // 1B/px として width バイト
+    cpy.dstPitch      = srcBytesPerRow;           // ホスト側行ピッチ = pitch
+    cpy.WidthInBytes  = srcBytesPerRow;           // 1行あたり pitch バイトをコピー
     cpy.Height        = static_cast<size_t>(height);
 
     // コールバック安全版：エラー時は0を返す
@@ -210,7 +211,7 @@ int SaveCUarrayPlaneAsBMP(CUarray cuArr, int width, int height, const std::strin
     }
 
     // BMP 書き出し（8bit, 下から上, 4Bアライン）
-    int bmpWidth  = width;
+    int bmpWidth  = width; // BMPの幅は引数 width
     int bmpHeight = height;
     int rowSize   = ((bmpWidth + 3) / 4) * 4;     // 4バイト境界
     int imageSize = rowSize * bmpHeight;
@@ -240,9 +241,10 @@ int SaveCUarrayPlaneAsBMP(CUarray cuArr, int width, int height, const std::strin
     }
 
     // 画像データ（ボトムアップ）
+    // hostData (pitchごと) から bmpWidth バイト分だけをコピーする
     std::vector<uint8_t> row(rowSize, 0);
     for (int y = bmpHeight - 1; y >= 0; --y) {
-        std::memcpy(row.data(), hostData.data() + static_cast<size_t>(y) * srcBytesPerRow, bmpWidth);
+        std::memcpy(row.data(), hostData.data() + static_cast<size_t>(y) * srcBytesPerRow, std::min((size_t)bmpWidth, srcBytesPerRow));
         file.write(reinterpret_cast<const char*>(row.data()), rowSize);
     }
 
@@ -656,19 +658,21 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         std::string yFilename  = "frame_Y_"  + std::to_string(bmpCounter) + ".bmp";
         std::string uvFilename = "frame_UV_" + std::to_string(bmpCounter) + ".bmp";
 
-        // Y面: width=ulWidth, height=ulHeight
+        // Y面: width=ulWidth, height=ulHeight, pitch=ulWidth
         if (SaveCUarrayPlaneAsBMP(fr.pCudaArrayY,
                                   static_cast<int>(self->m_videoDecoderCreateInfo.ulWidth),
                                   static_cast<int>(self->m_videoDecoderCreateInfo.ulHeight),
+                                  static_cast<int>(self->m_videoDecoderCreateInfo.ulWidth), // pitch
                                   yFilename) == 0) {
             DebugLog(L"HandlePictureDisplay: Failed to save Y plane BMP, aborting callback.");
             return 0;
         }
 
-        // UV面(NV12): 幅はバイト数として Y と同じ ulWidth、 高さは ulHeight/2
+        // UV面(NV12): bmpWidth=ulWidth/2, height=ulHeight/2, pitch=ulWidth
         if (SaveCUarrayPlaneAsBMP(fr.pCudaArrayUV,
-                                  static_cast<int>(self->m_videoDecoderCreateInfo.ulWidth),
+                                  static_cast<int>(self->m_videoDecoderCreateInfo.ulWidth / 2),
                                   static_cast<int>(self->m_videoDecoderCreateInfo.ulHeight / 2),
+                                  static_cast<int>(self->m_videoDecoderCreateInfo.ulWidth), // pitch
                                   uvFilename) == 0) {
             DebugLog(L"HandlePictureDisplay: Failed to save UV plane BMP, aborting callback.");
             return 0;
