@@ -187,12 +187,6 @@ FrameDecoder::~FrameDecoder() {
 
     // Free CUDA external memory and mapped pointers
     for (auto& resource : m_frameResources) {
-        if (resource.mappedCudaPtrY) {
-            cuMemFree((CUdeviceptr)resource.mappedCudaPtrY);
-        }
-        if (resource.mappedCudaPtrUV) {
-            cuMemFree((CUdeviceptr)resource.mappedCudaPtrUV);
-        }
         if (resource.cudaExtMemY) {
             cudaDestroyExternalMemory(resource.cudaExtMemY);
         }
@@ -462,30 +456,32 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     const unsigned int copyWidth = self->m_videoDecoderCreateInfo.ulWidth;
     const unsigned int copyHeight = self->m_videoDecoderCreateInfo.ulHeight;
 
-    // Copy Y plane using a custom kernel
-    LaunchCopyPlane_8bit(
-        (const unsigned char*)pDecodedFrame,
-        nDecodedPitch,
-        (unsigned char*)pTexY_void,
-        self->m_frameResources[pDispInfo->picture_index].pitchY,
-        copyWidth,
-        copyHeight,
-        0 // Using default stream
-    );
-    CUDA_RUNTIME_CHECK_CALLBACK(cudaGetLastError()); // Check for errors after kernel launch
+    // --- Y 面（D2Dでフルフレームコピー） ---
+    CUDA_RUNTIME_CHECK_CALLBACK(cudaMemcpy2D(
+        /*dst*/ self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrY,
+        /*dpitch*/ self->m_frameResources[pDispInfo->picture_index].pitchY,
+        /*src*/ (const void*)pDecodedFrame,
+        /*spitch*/ nDecodedPitch,
+        /*widthInBytes*/ copyWidth,
+        /*height*/ copyHeight,
+        cudaMemcpyDeviceToDevice
+    ));
 
-    // Copy UV plane using a custom kernel
-    const void* pSrcUV = (const uint8_t*)pDecodedFrame + (size_t)self->m_videoDecoderCreateInfo.ulHeight * nDecodedPitch;
-    LaunchCopyPlane_16bit(
-        (const unsigned short*)pSrcUV,
-        nDecodedPitch,
-        (unsigned short*)pTexUV_void,
-        self->m_frameResources[pDispInfo->picture_index].pitchUV,
-        copyWidth / 2, // Width in pixels for 16-bit format
-        copyHeight / 2,
-        0 // Using default stream
-    );
-    CUDA_RUNTIME_CHECK_CALLBACK(cudaGetLastError()); // Check for errors after kernel launch
+    // --- UV 面（NV12：幅はそのまま、行数は半分） ---
+    const uint8_t* pSrcUV = (const uint8_t*)pDecodedFrame + (size_t)copyHeight * nDecodedPitch;
+
+    CUDA_RUNTIME_CHECK_CALLBACK(cudaMemcpy2D(
+        /*dst*/ self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrUV,
+        /*dpitch*/ self->m_frameResources[pDispInfo->picture_index].pitchUV,
+        /*src*/ (const void*)pSrcUV,
+        /*spitch*/ nDecodedPitch,
+        /*widthInBytes*/ copyWidth,
+        /*height*/ copyHeight / 2,
+        cudaMemcpyDeviceToDevice
+    ));
+
+    // 念のため直後に同期して早めにエラーを拾う（コールバック安全マクロ）
+    CUDA_RUNTIME_CHECK_CALLBACK(cudaDeviceSynchronize());
 
     // Unmap the frame
     CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
