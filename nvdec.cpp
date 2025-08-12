@@ -446,44 +446,92 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     unsigned int nDecodedPitch = 0;
     CUDA_CHECK_CALLBACK(cuvidMapVideoFrame(self->m_hDecoder, pDispInfo->picture_index, &pDecodedFrame, &nDecodedPitch, &oVPP));
 
-    // Copy to our D3D12 textures
-    void* pTexY_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrY;
-    void* pTexUV_void = self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrUV;
+    // --- Y/UV コピーをドライバAPIで行う ---
+    // 理由:
+    // 1) pDecodedFrame は CUVID が返す CUdeviceptr（ドライバAPI領域）
+    // 2) ランタイムAPIの cudaMemcpy2D と混用すると invalid argument を起こすことがある
+    // 3) cuMemcpy2D{Async} は CUdeviceptr を正式に扱える
 
-    // To avoid an 'invalid argument' error, we perform a full-frame copy.
-    // The destination texture is allocated with the same dimensions as the source video.
-    // Cropping to the display size (m_frameWidth/m_frameHeight) is handled by the renderer.
-    const unsigned int copyWidth = self->m_videoDecoderCreateInfo.ulWidth;
-    const unsigned int copyHeight = self->m_videoDecoderCreateInfo.ulHeight;
+    // 事前検証：nullptrや0ピッチ、幅超過などを明示チェック
+    auto& fr = self->m_frameResources[pDispInfo->picture_index];
 
-    // --- Y 面（D2Dでフルフレームコピー） ---
-    CUDA_RUNTIME_CHECK_CALLBACK(cudaMemcpy2D(
-        /*dst*/ self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrY,
-        /*dpitch*/ self->m_frameResources[pDispInfo->picture_index].pitchY,
-        /*src*/ (const void*)pDecodedFrame,
-        /*spitch*/ nDecodedPitch,
-        /*widthInBytes*/ copyWidth,
-        /*height*/ copyHeight,
-        cudaMemcpyDeviceToDevice
-    ));
+    if (!fr.mappedCudaPtrY || !fr.mappedCudaPtrUV) {
+        DebugLog(L"HandlePictureDisplay: mapped CUDA pointers are null. Aborting.");
+        CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
+        cuCtxPopCurrent(NULL);
+        return 0;
+    }
 
-    // --- UV 面（NV12：幅はそのまま、行数は半分） ---
-    const uint8_t* pSrcUV = (const uint8_t*)pDecodedFrame + (size_t)copyHeight * nDecodedPitch;
+    const size_t dpitchY  = static_cast<size_t>(fr.pitchY);
+    const size_t dpitchUV = static_cast<size_t>(fr.pitchUV);
+    const size_t spitch   = static_cast<size_t>(nDecodedPitch);
 
-    CUDA_RUNTIME_CHECK_CALLBACK(cudaMemcpy2D(
-        /*dst*/ self->m_frameResources[pDispInfo->picture_index].mappedCudaPtrUV,
-        /*dpitch*/ self->m_frameResources[pDispInfo->picture_index].pitchUV,
-        /*src*/ (const void*)pSrcUV,
-        /*spitch*/ nDecodedPitch,
-        /*widthInBytes*/ copyWidth,
-        /*height*/ copyHeight / 2,
-        cudaMemcpyDeviceToDevice
-    ));
+    const size_t srcWidthBytes_Y  = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulWidth);       // NV12 Y: 1B/px
+    const size_t srcHeightRows_Y  = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulHeight);
+    const size_t srcWidthBytes_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulWidth);       // NV12 UV: 幅は同じ(2chで計2B/2px)
+    const size_t srcHeightRows_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulHeight / 2);
 
-    // 念のため直後に同期して早めにエラーを拾う（コールバック安全マクロ）
-    CUDA_RUNTIME_CHECK_CALLBACK(cudaDeviceSynchronize());
+    auto logParams = [&](const wchar_t* tag, size_t w, size_t h, size_t dp, size_t sp) {
+        std::wstringstream wss;
+        wss << L"[CopyParams-" << tag << L"] widthBytes=" << w
+            << L", height=" << h
+            << L", dpitch=" << dp
+            << L", spitch=" << sp;
+        DebugLog(wss.str());
+    };
 
-    // Unmap the frame
+    logParams(L"Y",  srcWidthBytes_Y,  srcHeightRows_Y,  dpitchY,  spitch);
+    logParams(L"UV", srcWidthBytes_UV, srcHeightRows_UV, dpitchUV, spitch);
+
+    // 幅チェック: widthInBytes は dpitch と spitch を超えてはいけない
+    if (srcWidthBytes_Y  == 0 || srcHeightRows_Y  == 0 ||
+        srcWidthBytes_UV == 0 || srcHeightRows_UV == 0 ||
+        dpitchY  == 0 || dpitchUV == 0 || spitch == 0) {
+        DebugLog(L"HandlePictureDisplay: zero width/height/pitch detected. Aborting.");
+        CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
+        cuCtxPopCurrent(NULL);
+        return 0;
+    }
+
+    if (srcWidthBytes_Y  > dpitchY || srcWidthBytes_Y  > spitch ||
+        srcWidthBytes_UV > dpitchUV || srcWidthBytes_UV > spitch) {
+        DebugLog(L"HandlePictureDisplay: widthInBytes exceeds pitch (Y/UV). Aborting copy.");
+        CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
+        cuCtxPopCurrent(NULL);
+        return 0;
+    }
+
+    // ドライバAPIの2Dコピー記述子を用意
+    CUDA_MEMCPY2D cpyY = {};
+    cpyY.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+    cpyY.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+    cpyY.srcDevice     = (CUdeviceptr)pDecodedFrame;
+    cpyY.srcPitch      = nDecodedPitch;
+    cpyY.dstDevice     = (CUdeviceptr)fr.mappedCudaPtrY;
+    cpyY.dstPitch      = fr.pitchY;
+    cpyY.WidthInBytes  = (unsigned int)srcWidthBytes_Y;
+    cpyY.Height        = (unsigned int)srcHeightRows_Y;
+
+    const uint8_t* pSrcUV = (const uint8_t*)pDecodedFrame + (size_t)srcHeightRows_Y * nDecodedPitch;
+
+    CUDA_MEMCPY2D cpyUV = {};
+    cpyUV.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+    cpyUV.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+    cpyUV.srcDevice     = (CUdeviceptr)pSrcUV;
+    cpyUV.srcPitch      = nDecodedPitch;
+    cpyUV.dstDevice     = (CUdeviceptr)fr.mappedCudaPtrUV;
+    cpyUV.dstPitch      = fr.pitchUV;
+    cpyUV.WidthInBytes  = (unsigned int)srcWidthBytes_UV;
+    cpyUV.Height       = (unsigned int)srcHeightRows_UV;
+
+    // 同期コピー（非同期にしたい場合は cuMemcpy2DAsync(&cpy, 0) を使う）
+    CUDA_CHECK_CALLBACK(cuMemcpy2D(&cpyY));
+    CUDA_CHECK_CALLBACK(cuMemcpy2D(&cpyUV));
+
+    // エラーを早期検出（ドライバAPIなら cuCtxSynchronize を使う）
+    CUDA_CHECK_CALLBACK(cuCtxSynchronize());
+
+    // 以降は現行の処理を継続
     CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
 
     // Enqueue for rendering
@@ -506,14 +554,14 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         // For debugging, save the raw decoded buffer. Use the buffer's actual allocated height
         // (m_videoDecoderCreateInfo.ulHeight) for the copy, not the logical display height (m_frameHeight),
         // to prevent reading out of bounds. The saved BMP will have the dimensions of the buffer.
-        if (SaveYUVPlaneAsBMP(pTexY_void, self->m_frameWidth, self->m_videoDecoderCreateInfo.ulHeight,
-            self->m_frameResources[pDispInfo->picture_index].pitchY, yFilename) == 0) {
+        if (SaveYUVPlaneAsBMP(fr.mappedCudaPtrY, self->m_frameWidth, self->m_videoDecoderCreateInfo.ulHeight,
+            fr.pitchY, yFilename) == 0) {
             // Error is logged within the function.
             DebugLog(L"HandlePictureDisplay: Failed to save Y plane BMP, aborting callback.");
             return 0;
         }
-        if (SaveYUVPlaneAsBMP(pTexUV_void, self->m_frameWidth / 2, self->m_videoDecoderCreateInfo.ulHeight / 2,
-            self->m_frameResources[pDispInfo->picture_index].pitchUV, uvFilename) == 0) {
+        if (SaveYUVPlaneAsBMP(fr.mappedCudaPtrUV, self->m_frameWidth / 2, self->m_videoDecoderCreateInfo.ulHeight / 2,
+            fr.pitchUV, uvFilename) == 0) {
             // Error is logged within the function.
             DebugLog(L"HandlePictureDisplay: Failed to save UV plane BMP, aborting callback.");
             return 0;
