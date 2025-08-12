@@ -5,6 +5,12 @@
 #include <vector>
 #include <algorithm>
 #include <sstream>
+#include "src/NvCodec/bmp_writer.hpp"
+#include <atomic>
+
+// ---- BMP writer task queue (thread-safe) ----
+static BmpWriter g_bmpWriter;
+static std::atomic<uint64_t> g_bmpSeq{0};
 
 // CUDA API error checking
 #define CUDA_RUNTIME_CHECK(call)                                                                    \
@@ -934,43 +940,47 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     readyFrame.width = self->m_frameWidth;
     readyFrame.height = self->m_frameHeight;
 
-    static int bmpCounter = 0;
-    if (bmpCounter < 10) {
-        std::string yFilename  = "frame_Y_"  + std::to_string(bmpCounter) + ".bmp";
-        std::string uvFilename = "frame_UV_" + std::to_string(bmpCounter) + ".bmp";
+    // --- BEGIN BMP SAVE LOGIC (Replaced with async writer) ---
+    uint64_t seq = g_bmpSeq.fetch_add(1, std::memory_order_relaxed);
+    if (seq < 10) { // Save first 10 frames
+        const int width = static_cast<int>(self->m_videoDecoderCreateInfo.ulWidth);
+        const int height = static_cast<int>(self->m_videoDecoderCreateInfo.ulHeight);
+        const uint64_t frameNo = readyFrame.originalFrameNumber;
+        const uint64_t ts = readyFrame.timestamp;
 
-        // Y面: width=ulWidth, height=ulHeight, pitch=ulWidth
-        if (SaveCUarrayPlaneAsBMP(fr.pCudaArrayY,
-                                  static_cast<int>(self->m_videoDecoderCreateInfo.ulWidth),
-                                  static_cast<int>(self->m_videoDecoderCreateInfo.ulHeight),
-                                  static_cast<int>(self->m_videoDecoderCreateInfo.ulWidth), // pitch
-                                  yFilename) == 0) {
-            DebugLog(L"HandlePictureDisplay: Failed to save Y plane BMP, aborting callback.");
-            return 0;
+        // --- Save Y Plane ---
+        const size_t y_pitch_and_width = static_cast<size_t>(width);
+        std::vector<uint8_t> hostY(y_pitch_and_width * height);
+
+        CUDA_MEMCPY2D cpy = {};
+        cpy.srcMemoryType = CU_MEMORYTYPE_ARRAY;
+        cpy.srcArray      = fr.pCudaArrayY;
+        cpy.dstMemoryType = CU_MEMORYTYPE_HOST;
+        cpy.dstHost       = hostY.data();
+        cpy.dstPitch      = y_pitch_and_width;
+        cpy.WidthInBytes  = y_pitch_and_width; // Correct: Use actual data width, not source pitch
+        cpy.Height        = static_cast<size_t>(height);
+
+        CUresult res = cuMemcpy2D(&cpy);
+        if (res == CUDA_SUCCESS) {
+            BmpTask task;
+            std::ostringstream oss;
+            oss << "frame_" << frameNo << "_" << ts << "_Y.bmp";
+            task.filename = oss.str();
+            task.width = width;
+            task.height = height;
+            task.pitch = y_pitch_and_width;
+            task.data = std::move(hostY);
+            g_bmpWriter.enqueue(std::move(task));
+        } else {
+            const char* errStr = nullptr;
+            cuGetErrorString(res, &errStr);
+            std::wstring msg = L"HandlePictureDisplay: cuMemcpy2D for Y-plane failed: ";
+            if (errStr) { std::string narrow(errStr); msg += std::wstring(narrow.begin(), narrow.end()); }
+            DebugLog(msg);
         }
-
-        // 新: UV面のカラー/グレー保存を選択可能に
-        {
-            // 0: R=V,G=U,B=0（“黄色”など直観色）
-            // 1: Y=128でYUV→RGB（映像っぽい色）
-            // 2: U/Vを別グレー保存（数値確認）
-            const int uvSaveMode = 0;
-
-            // 必要なら並び入替（通常はfalseのままでOK）
-            const bool uvOrderVU = false;
-
-            std::string base = "frame_" + std::to_string(bmpCounter);
-            if (SaveCUarrayUV_WithMode(fr.pCudaArrayUV,
-                                       (int)self->m_videoDecoderCreateInfo.ulWidth,
-                                       (int)self->m_videoDecoderCreateInfo.ulHeight,
-                                       (int)fr.pitchUV, // ← 修正: pitchUV を渡す
-                                       base, uvSaveMode, uvOrderVU) == 0) {
-                DebugLog(L"HandlePictureDisplay: Failed to save UV visualization BMP(s), aborting callback.");
-                return 0;
-            }
-        }
-        bmpCounter++;
     }
+    // --- END BMP SAVE LOGIC ---
 
     {
         std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
