@@ -18,6 +18,17 @@
     },
     "files.associations": {
         "*.hlsl": "hlsl",
-        "iostream": "cpp"
+        "iostream": "cpp",
+        "utility": "cpp",
+        "fstream": "cpp",
+        "algorithm": "cpp",
+        "chrono": "cpp",
+        "ctime": "cpp",
+        "regex": "cpp",
+        "vector": "cpp",
+        "iomanip": "cpp",
+        "cstring": "cpp",
+        "condition_variable": "cpp",
+        "sstream": "cpp"
     }
 }

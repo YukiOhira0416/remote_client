@@ -22,6 +22,8 @@ struct H264Frame;
 
 class FrameDecoder {
 public:
+    static const int NUM_DECODE_SURFACES = 20;
+    
     FrameDecoder(CUcontext cuContext, ID3D12Device* pD3D12Device);
     ~FrameDecoder();
 

@@ -7,8 +7,6 @@
 #include <algorithm>
 #include <sstream>
 
-const int FrameDecoder::NUM_DECODE_SURFACES = 20;
-
 // CUDA API error checking
 #define CUDA_RUNTIME_CHECK(call)                                                                    \
     do {                                                                                            \
@@ -121,9 +119,21 @@ struct BMPInfoHeader {
 #pragma pack(pop)
 
 int SaveYUVPlaneAsBMP(void* cudaPtr, int width, int height, int pitch, const std::string& filename) {
-    // Copy data from GPU to CPU
+    if (!cudaPtr || width <= 0 || height <= 0 || pitch <= 0) {
+        DebugLog(L"SaveYUVPlaneAsBMP: Invalid parameters");
+        return 0;
+    }
+
+    // 一度に全データをコピーする方式に変更
     std::vector<uint8_t> hostData(pitch * height);
-    CUDA_RUNTIME_CHECK_CALLBACK(cudaMemcpy(hostData.data(), cudaPtr, pitch * height, cudaMemcpyDeviceToHost));
+    
+    // 非同期コピーの代わりに同期コピーを使用
+    CUDA_RUNTIME_CHECK_CALLBACK(cudaMemcpy(
+        hostData.data(),
+        cudaPtr,
+        pitch * height,
+        cudaMemcpyDeviceToHost
+    ));
     
     // Calculate BMP parameters
     int bmpWidth = width;
@@ -331,7 +341,9 @@ bool FrameDecoder::allocateFrameBuffers() {
         texDescY.SampleDesc.Count = 1;
         texDescY.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         texDescY.Flags = D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
-        texDescY.Width = m_frameWidth;
+        // Allocate based on the coded width of the video stream to avoid cropping during copy.
+        // The logical frame width (m_frameWidth) is still used for rendering/cropping.
+        texDescY.Width = m_videoDecoderCreateInfo.ulWidth;
         // Allocate based on the coded height of the video stream to avoid cropping during copy.
         // The logical frame height (m_frameHeight) is still used for rendering.
         texDescY.Height = m_videoDecoderCreateInfo.ulHeight;
@@ -357,7 +369,8 @@ bool FrameDecoder::allocateFrameBuffers() {
 
         // --- UV Plane ---
         D3D12_RESOURCE_DESC texDescUV = texDescY;
-        texDescUV.Width = m_frameWidth / 2;
+        // The width must also be based on the coded width.
+        texDescUV.Width = m_videoDecoderCreateInfo.ulWidth / 2;
         texDescUV.Height = m_videoDecoderCreateInfo.ulHeight / 2;
         texDescUV.Format = DXGI_FORMAT_R8G8_UNORM;
 
