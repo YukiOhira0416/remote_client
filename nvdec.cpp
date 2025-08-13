@@ -102,6 +102,47 @@ static std::atomic<uint64_t> g_bmpSeq{0};
 
 // === ここまで追加 ===
 
+// RAII helper for cuvidMapVideoFrame/cuvidUnmapVideoFrame
+class AutoUnmapVideoFrame {
+public:
+    AutoUnmapVideoFrame(CUvideodecoder decoder) : m_decoder(decoder), m_pFrame(0) {}
+    ~AutoUnmapVideoFrame() {
+        if (m_pFrame) {
+            // We shouldn't throw from a destructor, especially in a callback.
+            // Log the error if unmap fails.
+            CUresult err = cuvidUnmapVideoFrame(m_decoder, m_pFrame);
+            if (err != CUDA_SUCCESS) {
+                const char* error_string_ptr;
+                cuGetErrorString(err, &error_string_ptr);
+                std::wstringstream wss;
+                wss << L"CUDA Error in AutoUnmapVideoFrame destructor: ";
+                if (error_string_ptr == nullptr) {
+                    wss << L"Unknown error code " << err;
+                } else {
+                    char safe_error_string[256];
+                    strncpy(safe_error_string, error_string_ptr, sizeof(safe_error_string));
+                    safe_error_string[sizeof(safe_error_string) - 1] = '\0';
+                    std::string narrow_str(safe_error_string);
+                    wss << std::wstring(narrow_str.begin(), narrow_str.end());
+                }
+                wss << L" in " << __FILEW__ << L" at line " << __LINE__;
+                DebugLog(wss.str());
+            }
+        }
+    }
+
+    void set(CUdeviceptr pFrame) {
+        m_pFrame = pFrame;
+    }
+
+private:
+    AutoUnmapVideoFrame(const AutoUnmapVideoFrame&) = delete;
+    AutoUnmapVideoFrame& operator=(const AutoUnmapVideoFrame&) = delete;
+
+    CUvideodecoder m_decoder;
+    CUdeviceptr m_pFrame;
+};
+
 FrameDecoder::FrameDecoder(CUcontext cuContext, ID3D12Device* pD3D12Device)
     : m_cuContext(cuContext), m_pD3D12Device(pD3D12Device) {
     CUDA_CHECK(cuCtxPushCurrent(m_cuContext));
@@ -167,24 +208,28 @@ bool FrameDecoder::Init() {
 void FrameDecoder::Decode(const H264Frame& frame) {
     CUDA_CHECK(cuCtxPushCurrent(m_cuContext));
 
-    { // timestamp -> frameNumber を記録
-        std::lock_guard<std::mutex> lk(m_tsMapMutex);
-        m_tsToFrameNo[frame.timestamp] = frame.frameNumber;
+    // 1) Store the mapping from frame number to WGC capture timestamp (ms).
+    // This is passed to the Display callback.
+    {
+        std::lock_guard<std::mutex> lk(m_frameNoTsMutex);
+        m_frameNoToWgcTsMs[frame.frameNumber] = frame.timestamp; // frame.timestamp is assumed to be WGC(ms)
     }
 
+    // 2) Pass the frame number as the timestamp to NVDEC.
+    // This eliminates the ambiguity of the timestamp's meaning.
     CUVIDSOURCEDATAPACKET packet = {};
     packet.payload = frame.data.data();
     packet.payload_size = frame.data.size();
     packet.flags = CUVID_PKT_TIMESTAMP;
-    packet.timestamp = frame.timestamp;
+    packet.timestamp = static_cast<uint64_t>(frame.frameNumber); // Unified here
 
     if (!packet.payload || packet.payload_size == 0) {
         DebugLog(L"Decoder::Decode: Empty packet received.");
+        CUDA_CHECK(cuCtxPopCurrent(NULL)); // Pop context on early exit
         return;
     }
 
     CUDA_CHECK(cuvidParseVideoData(m_hParser, &packet));
-
     CUDA_CHECK(cuCtxPopCurrent(NULL));
 }
 
@@ -434,41 +479,58 @@ int FrameDecoder::HandlePictureDecode(void* pUserData, CUVIDPICPARAMS* pPicParam
 
 int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDispInfo) {
     FrameDecoder* const self = static_cast<FrameDecoder*>(pUserData);
+
+    // Prevent re-entrancy.
+    std::lock_guard<std::mutex> lk(self->m_displayMtx);
+
     cuCtxPushCurrent(self->m_cuContext);
 
-    // Map the decoded video frame
-    CUVIDPROCPARAMS oVPP = { 0 };
-    oVPP.progressive_frame = pDispInfo->progressive_frame;
-    oVPP.second_field = 0;
-    oVPP.top_field_first = pDispInfo->top_field_first;
-    oVPP.unpaired_field = (pDispInfo->progressive_frame == 1 || pDispInfo->repeat_first_field <= 1);
+    // --- RAII-based Unmap Management ---
+    AutoUnmapVideoFrame unmapper(self->m_hDecoder);
 
     CUdeviceptr pDecodedFrame = 0;
     unsigned int nDecodedPitch = 0;
-    CUDA_CHECK_CALLBACK(cuvidMapVideoFrame(self->m_hDecoder, pDispInfo->picture_index, &pDecodedFrame, &nDecodedPitch, &oVPP));
 
-    // --- Y/UV コピーをドライバAPIで行う ---
-    // 理由:
-    // 1) pDecodedFrame は CUVID が返す CUdeviceptr（ドライバAPI領域）
-    // 2) ランタイムAPIの cudaMemcpy2D と混用すると invalid argument を起こすことがある
-    // 3) cuMemcpy2D{Async} は CUdeviceptr を正式に扱える
+    CUVIDPROCPARAMS oVPP = {};
+    oVPP.progressive_frame = pDispInfo->progressive_frame;
+    oVPP.second_field      = 0;
+    oVPP.top_field_first   = pDispInfo->top_field_first;
+    oVPP.unpaired_field    = (pDispInfo->progressive_frame == 1 || pDispInfo->repeat_first_field <= 1);
 
-    // --- Copy decoded frame to our D3D12 texture that is mapped as a CUDA array ---
-    auto& fr = self->m_frameResources[pDispInfo->picture_index];
+    // === Map === (Set to RAII object only on success)
+    CUresult map_res = cuvidMapVideoFrame(self->m_hDecoder, pDispInfo->picture_index,
+                                          &pDecodedFrame, &nDecodedPitch, &oVPP);
+    if (map_res != CUDA_SUCCESS) {
+        const char* errStr = nullptr;
+        cuGetErrorString(map_res, &errStr);
+        std::wstringstream msg;
+        msg << L"cuvidMapVideoFrame failed";
+        if (errStr) {
+            std::string narrow(errStr);
+            msg << L": " << std::wstring(narrow.begin(), narrow.end());
+        }
+        DebugLog(msg.str());
 
-    if (!fr.pCudaArrayY || !fr.pCudaArrayUV) {
-        DebugLog(L"HandlePictureDisplay: mapped CUDA arrays are null. Aborting.");
-        CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
         cuCtxPopCurrent(NULL);
-        return 0;
+        return 0; // Map failed. No unmap needed.
+    }
+
+    // Map succeeded -> Set the pointer in the RAII object.
+    unmapper.set(pDecodedFrame);
+
+    // --- Y/UV Copy ---
+    auto& fr = self->m_frameResources[pDispInfo->picture_index];
+    if (!fr.pCudaArrayY || !fr.pCudaArrayUV) {
+        DebugLog(L"HandlePictureDisplay: Mapped CUDA arrays are null. Aborting frame copy.");
+        cuCtxPopCurrent(NULL);
+        return 0; // unmapper will automatically unmap.
     }
 
     const size_t srcWidthBytes_Y  = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulWidth);
     const size_t srcHeightRows_Y  = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulHeight);
-    const size_t srcWidthBytes_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulWidth); // For NV12, UV plane width in bytes is same as Y
+    const size_t srcWidthBytes_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulWidth);
     const size_t srcHeightRows_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulHeight / 2);
 
-    // Setup copy for Y plane
     CUDA_MEMCPY2D cpyY = {};
     cpyY.srcMemoryType = CU_MEMORYTYPE_DEVICE;
     cpyY.srcDevice = pDecodedFrame;
@@ -477,10 +539,8 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     cpyY.dstArray = fr.pCudaArrayY;
     cpyY.WidthInBytes = srcWidthBytes_Y;
     cpyY.Height = srcHeightRows_Y;
-
     CUDA_CHECK_CALLBACK(cuMemcpy2D(&cpyY));
 
-    // Setup copy for UV plane
     const CUdeviceptr pSrcUV = pDecodedFrame + (size_t)srcHeightRows_Y * nDecodedPitch;
     CUDA_MEMCPY2D cpyUV = {};
     cpyUV.srcMemoryType = CU_MEMORYTYPE_DEVICE;
@@ -490,91 +550,49 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     cpyUV.dstArray = fr.pCudaArrayUV;
     cpyUV.WidthInBytes = srcWidthBytes_UV;
     cpyUV.Height = srcHeightRows_UV;
-
     CUDA_CHECK_CALLBACK(cuMemcpy2D(&cpyUV));
 
-    // Synchronize to ensure copy is complete before unmapping
-    CUDA_CHECK_CALLBACK(cuCtxSynchronize());
+    CUDA_CHECK_CALLBACK(cuCtxSynchronize()); // Synchronize copy completion.
 
-    // Unmap the video frame
-    CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
+    // Unmapping is now handled by the 'unmapper' destructor. Manual calls are removed.
 
-    // Enqueue for rendering
+    // === Frame Info Creation and Enqueueing ===
     ReadyGpuFrame readyFrame;
-    readyFrame.hw_decoded_texture_Y = self->m_frameResources[pDispInfo->picture_index].pTextureY;
-    readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
-    readyFrame.timestamp = pDispInfo->timestamp;
+    readyFrame.hw_decoded_texture_Y = fr.pTextureY;
+    readyFrame.hw_decoded_texture_UV = fr.pTextureUV;
     readyFrame.originalFrameNumber = self->m_nDecodedFrameCount++;
     readyFrame.id = readyFrame.originalFrameNumber;
     readyFrame.width = self->m_frameWidth;
     readyFrame.height = self->m_frameHeight;
 
-    // 追加：timestamp から送信フレーム番号を復元
+    // --- New timestamp/frame number handling ---
+    const uint32_t streamFrameNo = static_cast<uint32_t>(pDispInfo->timestamp);
+    readyFrame.streamFrameNumber = streamFrameNo;
+
+    uint64_t wgcTsMs = 0;
     {
-        std::lock_guard<std::mutex> lk(self->m_tsMapMutex);
-        auto it = self->m_tsToFrameNo.find(readyFrame.timestamp);
-        if (it != self->m_tsToFrameNo.end()) {
-            readyFrame.streamFrameNumber = it->second;
-            self->m_lastStreamFrameNo = readyFrame.streamFrameNumber;
-            self->m_tsToFrameNo.erase(it);
+        std::lock_guard<std::mutex> lk(self->m_frameNoTsMutex);
+        auto it = self->m_frameNoToWgcTsMs.find(streamFrameNo);
+        if (it != self->m_frameNoToWgcTsMs.end()) {
+            wgcTsMs = it->second;
+            self->m_frameNoToWgcTsMs.erase(it); // Erase after retrieval
         } else {
-            // マップ未ヒット時のフォールバック（ログ付き）
-            readyFrame.streamFrameNumber = self->m_lastStreamFrameNo + 1;
-            self->m_lastStreamFrameNo = readyFrame.streamFrameNumber;
-            DebugLog(L"[NVDEC] ts->frameNo not found. Fallback to " + std::to_wstring(readyFrame.streamFrameNumber));
+            DebugLog(L"[NVDEC] streamFrameNo " + std::to_wstring(streamFrameNo) + L" not found in wgcTs map.");
         }
     }
+    readyFrame.wgcCaptureTsMs = wgcTsMs;
 
-    // --- BEGIN BMP SAVE LOGIC (Replaced with async writer) ---
-    uint64_t seq = g_bmpSeq.fetch_add(1, std::memory_order_relaxed);
-    /*if (seq < 10) { // Save first 10 frames
-        const int width = static_cast<int>(self->m_videoDecoderCreateInfo.ulWidth);
-        const int height = static_cast<int>(self->m_videoDecoderCreateInfo.ulHeight);
-        const uint64_t frameNo = readyFrame.originalFrameNumber;
-        const uint64_t ts = readyFrame.timestamp;
+    // The old `timestamp` field is no longer used for latency calculation.
+    // readyFrame.timestamp = pDispInfo->timestamp; // Removed.
 
-        // --- Save Y Plane ---
-        const size_t y_pitch_and_width = static_cast<size_t>(width);
-        std::vector<uint8_t> hostY(y_pitch_and_width * height);
-
-        CUDA_MEMCPY2D cpy = {};
-        cpy.srcMemoryType = CU_MEMORYTYPE_ARRAY;
-        cpy.srcArray      = fr.pCudaArrayY;
-        cpy.dstMemoryType = CU_MEMORYTYPE_HOST;
-        cpy.dstHost       = hostY.data();
-        cpy.dstPitch      = y_pitch_and_width;
-        cpy.WidthInBytes  = y_pitch_and_width; // Correct: Use actual data width, not source pitch
-        cpy.Height        = static_cast<size_t>(height);
-
-        CUresult res = cuMemcpy2D(&cpy);
-        if (res == CUDA_SUCCESS) {
-            BmpTask task;
-            std::ostringstream oss;
-            oss << "frame_" << frameNo << "_" << ts << "_Y.bmp";
-            task.filename = oss.str();
-            task.width = width;
-            task.height = height;
-            task.pitch = y_pitch_and_width;
-            task.data = std::move(hostY);
-            g_bmpWriter.enqueue(std::move(task));
-        } else {
-            const char* errStr = nullptr;
-            cuGetErrorString(res, &errStr);
-            std::wstring msg = L"HandlePictureDisplay: cuMemcpy2D for Y-plane failed: ";
-            if (errStr) { std::string narrow(errStr); msg += std::wstring(narrow.begin(), narrow.end()); }
-            DebugLog(msg);
-        }
-    }*/
-    // --- END BMP SAVE LOGIC ---
-
-    {   // レディキューへ投入（既存のロック/通知を踏襲）
+    {
         std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
         g_readyGpuFrameQueue.push_back(std::move(readyFrame));
     }
     g_readyGpuFrameQueueCV.notify_one();
 
     cuCtxPopCurrent(NULL);
-    return 1;
+    return 1; // Success
 }
 
 UINT64 DecoderCount = 0;

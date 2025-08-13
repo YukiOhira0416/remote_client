@@ -38,9 +38,14 @@ public:
     static int CUDAAPI HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDispInfo);
 
 private:
-    std::unordered_map<uint64_t, uint32_t> m_tsToFrameNo;
-    std::mutex m_tsMapMutex;
-    uint32_t m_lastStreamFrameNo = 0; // フォールバック用カウンタ
+    // --- New members for robust timestamping and display handling ---
+    // Maps frame number to the WGC capture timestamp (in milliseconds since epoch).
+    std::unordered_map<uint32_t, uint64_t> m_frameNoToWgcTsMs;
+    // Mutex to protect access to m_frameNoToWgcTsMs.
+    std::mutex m_frameNoTsMutex;
+    // Mutex to prevent re-entrancy in the HandlePictureDisplay callback.
+    std::mutex m_displayMtx;
+    // --- End of new members ---
 
     bool createDecoder(CUVIDEOFORMAT* pVideoFormat);
     bool allocateFrameBuffers();
