@@ -965,7 +965,7 @@ void FecWorkerThread(int threadId) {
                         g_frameBuffer.erase(frameNumber);
                     }
                 } else if (g_frameBuffer.count(frameNumber)) {
-                    DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: F#" + std::to_wstring(frameNumber) + L" has " + std::to_wstring(g_frameBuffer[frameNumber].size()) + L" shards, (less than K=" + std::to_wstring(RS_K) + L") waiting for more.");
+                    if(count % 200 == 0)DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: F#" + std::to_wstring(frameNumber) + L" has " + std::to_wstring(g_frameBuffer[frameNumber].size()) + L" shards, (less than K=" + std::to_wstring(RS_K) + L") waiting for more.");
                 }
             } // End Metadata and FrameBuffer scope
 

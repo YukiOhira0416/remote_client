@@ -37,6 +37,8 @@
 #include <ShellScalingApi.h> // AdjustWindowRectExForDpi 等
 #pragma comment(lib, "Shcore.lib")
 
+UINT64 RenderCount = 0;
+
 static UINT GetDpiForMonitorOrDefault(HMONITOR hMon) {
     UINT dpiX = 96, dpiY = 96;
     HMODULE hShcore = LoadLibraryW(L"Shcore.dll");
@@ -986,11 +988,14 @@ void RenderFrame() {
             std::chrono::duration_cast<std::chrono::milliseconds>(frameEndTime.time_since_epoch()).count();
         int64_t latencyMs =
             static_cast<int64_t>(frameEndTimeMs) - static_cast<int64_t>(renderedFrameData.timestamp);
-        DebugLog(L"RenderFrame Latency: StreamFrame #"
+        if(RenderCount++ % 60 == 0){
+            DebugLog(L"RenderFrame Latency: StreamFrame #"
             + std::to_wstring(renderedFrameData.streamFrameNumber)
             + L", OriginalFrame #" + std::to_wstring(renderedFrameData.originalFrameNumber)
             + L" (ID: " + std::to_wstring(renderedFrameData.id) + L")"
             + L" - WGC to RenderEnd: " + std::to_wstring(latencyMs) + L" ms.");
+        }
+        
     }
 
     auto renderDuration =
