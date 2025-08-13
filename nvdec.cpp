@@ -471,9 +471,66 @@ int FrameDecoder::HandlePictureDecode(void* pUserData, CUVIDPICPARAMS* pPicParam
     return 1;
 }
 
+namespace {
+// RAII helper for cuvidCtxLock
+class CudaCtxLocker {
+public:
+    explicit CudaCtxLocker(CUvideoctxlock lock) : m_lock(lock) {
+        if (m_lock) {
+            cuvidCtxLock(m_lock, 0);
+        }
+    }
+    ~CudaCtxLocker() {
+        if (m_lock) {
+            cuvidCtxUnlock(m_lock, 0);
+        }
+    }
+    CudaCtxLocker(const CudaCtxLocker&) = delete;
+    CudaCtxLocker& operator=(const CudaCtxLocker&) = delete;
+private:
+    CUvideoctxlock m_lock;
+};
+
+// RAII helper for a mapped video frame
+class MappedVideoFrame {
+public:
+    MappedVideoFrame(CUvideodecoder decoder, int picture_index, CUVIDPROCPARAMS* proc_params)
+        : m_decoder(decoder) {
+        m_result = cuvidMapVideoFrame(m_decoder, picture_index, &m_pDecodedFrame, &m_nDecodedPitch, proc_params);
+    }
+    ~MappedVideoFrame() {
+        if (IsValid()) {
+            CUresult ur = cuvidUnmapVideoFrame(m_decoder, m_pDecodedFrame);
+            if (ur != CUDA_SUCCESS) {
+                const char* es = nullptr; cuGetErrorString(ur, &es);
+                std::wstring msg = L"cuvidUnmapVideoFrame failed in RAII destructor: ";
+                if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
+                DebugLog(msg);
+            }
+        }
+    }
+    bool IsValid() const { return m_result == CUDA_SUCCESS; }
+    CUdeviceptr GetPointer() const { return m_pDecodedFrame; }
+    unsigned int GetPitch() const { return m_nDecodedPitch; }
+    CUresult GetMapResult() const { return m_result; }
+
+    MappedVideoFrame(const MappedVideoFrame&) = delete;
+    MappedVideoFrame& operator=(const MappedVideoFrame&) = delete;
+
+private:
+    CUvideodecoder m_decoder = nullptr;
+    CUdeviceptr m_pDecodedFrame = 0;
+    unsigned int m_nDecodedPitch = 0;
+    CUresult m_result = CUDA_ERROR_INVALID_VALUE;
+};
+} // anonymous namespace
+
 int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDispInfo) {
     FrameDecoder* const self = static_cast<FrameDecoder*>(pUserData);
     cuCtxPushCurrent(self->m_cuContext);
+
+    // RAII locker for the context lock. It will be unlocked automatically.
+    CudaCtxLocker ctxLocker(self->m_ctxLock);
 
     CUVIDPROCPARAMS oVPP = {};
     oVPP.progressive_frame = pDispInfo->progressive_frame;
@@ -481,33 +538,27 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     oVPP.top_field_first = pDispInfo->top_field_first;
     oVPP.unpaired_field = (pDispInfo->progressive_frame == 1 || pDispInfo->repeat_first_field <= 1);
 
-    CUdeviceptr pDecodedFrame = 0;
-    unsigned int nDecodedPitch = 0;
-    bool mapped = false;
-    bool ok = true;
-
-    // NVDEC公式のロックで排他（Map/Unmapは必ずロック下で）
-    cuvidCtxLock(self->m_ctxLock, 0);
-
-    CUresult cr = cuvidMapVideoFrame(self->m_hDecoder, pDispInfo->picture_index,
-                                     &pDecodedFrame, &nDecodedPitch, &oVPP);
-    if (cr != CUDA_SUCCESS) {
-        const char* es = nullptr; cuGetErrorString(cr, &es);
+    // RAII mapper for the video frame. It will be unmapped automatically.
+    MappedVideoFrame mappedFrame(self->m_hDecoder, pDispInfo->picture_index, &oVPP);
+    if (!mappedFrame.IsValid()) {
+        const char* es = nullptr; cuGetErrorString(mappedFrame.GetMapResult(), &es);
         std::wstring msg = L"cuvidMapVideoFrame failed: ";
         if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
         DebugLog(msg);
-        ok = false;
-        goto cleanup; // まだ mapped=false なので unmap は呼ばれない
+        cuCtxPopCurrent(NULL);
+        return 0;
     }
-    mapped = true;
 
-    // ここからコピー。driver API を使用（既存方針を踏襲）。
+    // From here, we can return on error and the destructors will handle cleanup.
     auto& fr = self->m_frameResources[pDispInfo->picture_index];
     if (!fr.pCudaArrayY || !fr.pCudaArrayUV) {
         DebugLog(L"HandlePictureDisplay: mapped CUDA arrays are null. Aborting.");
-        ok = false;
-        goto cleanup; // map 済みなので cleanup で unmap される
+        cuCtxPopCurrent(NULL);
+        return 0;
     }
+
+    const CUdeviceptr pDecodedFrame = mappedFrame.GetPointer();
+    const unsigned int nDecodedPitch = mappedFrame.GetPitch();
 
     const size_t srcWidthBytes_Y  = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulWidth);
     const size_t srcHeightRows_Y  = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulHeight);
@@ -523,14 +574,14 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     cpyY.WidthInBytes  = srcWidthBytes_Y;
     cpyY.Height        = srcHeightRows_Y;
 
-    cr = cuMemcpy2D(&cpyY);
+    CUresult cr = cuMemcpy2D(&cpyY);
     if (cr != CUDA_SUCCESS) {
         const char* es = nullptr; cuGetErrorString(cr, &es);
         std::wstring msg = L"cuMemcpy2D(Y) failed: ";
         if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
         DebugLog(msg);
-        ok = false;
-        goto cleanup;
+        cuCtxPopCurrent(NULL);
+        return 0;
     }
 
     const CUdeviceptr pSrcUV = pDecodedFrame + (size_t)srcHeightRows_Y * nDecodedPitch;
@@ -549,47 +600,23 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         std::wstring msg = L"cuMemcpy2D(UV) failed: ";
         if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
         DebugLog(msg);
-        ok = false;
-        goto cleanup;
+        cuCtxPopCurrent(NULL);
+        return 0;
     }
 
-    // 同期（必要最小限。必要なければ削っても良い）
     cr = cuCtxSynchronize();
     if (cr != CUDA_SUCCESS) {
         const char* es = nullptr; cuGetErrorString(cr, &es);
         std::wstring msg = L"cuCtxSynchronize failed: ";
         if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
         DebugLog(msg);
-        ok = false;
-        goto cleanup;
-    }
-
-cleanup:
-    if (mapped) {
-        CUresult ur = cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame);
-        if (ur != CUDA_SUCCESS) {
-            const char* es = nullptr; cuGetErrorString(ur, &es);
-            std::wstring msg = L"cuvidUnmapVideoFrame failed: ";
-            if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
-            DebugLog(msg);
-            // ここでは復帰を続行（ログのみ）
-        } else {
-            // デバッグ用：map/unmap の対応を観測
-            std::wstringstream wss;
-            wss << L"[NVDEC] Unmapped picture_index=" << pDispInfo->picture_index
-                << L" ptr=0x" << std::hex << (unsigned long long)pDecodedFrame;
-            DebugLog(wss.str());
-        }
-    }
-
-    cuvidCtxUnlock(self->m_ctxLock, 0);
-
-    if (!ok) {
         cuCtxPopCurrent(NULL);
         return 0;
     }
 
-    // ---- ここから下は既存の「描画キュー投入」ロジックを踏襲 ----
+    // If we get here, all CUDA operations were successful.
+    // The destructors for mappedFrame and ctxLocker will automatically clean up.
+
     ReadyGpuFrame readyFrame;
     readyFrame.hw_decoded_texture_Y  = self->m_frameResources[pDispInfo->picture_index].pTextureY;
     readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
@@ -599,7 +626,7 @@ cleanup:
     readyFrame.width                 = self->m_frameWidth;
     readyFrame.height                = self->m_frameHeight;
 
-    {   // 送信フレーム番号への合流（既存通り）
+    {
         std::lock_guard<std::mutex> lk(self->m_tsMapMutex);
         auto it = self->m_tsToFrameNo.find(readyFrame.timestamp);
         if (it != self->m_tsToFrameNo.end()) {
