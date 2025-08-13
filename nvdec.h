@@ -38,6 +38,7 @@ public:
     static int CUDAAPI HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDispInfo);
 
 private:
+    mutable std::mutex m_displayMtx;
     std::unordered_map<uint64_t, uint32_t> m_tsToFrameNo;
     std::mutex m_tsMapMutex;
     uint32_t m_lastStreamFrameNo = 0; // フォールバック用カウンタ
