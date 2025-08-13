@@ -33,6 +33,7 @@
         "cmath": "cpp",
         "atomic": "cpp",
         "stdexcept": "cpp",
-        "mutex": "cpp"
+        "mutex": "cpp",
+        "string": "cpp"
     }
 }
