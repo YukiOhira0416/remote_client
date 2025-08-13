@@ -105,7 +105,15 @@ static std::atomic<uint64_t> g_bmpSeq{0};
 FrameDecoder::FrameDecoder(CUcontext cuContext, ID3D12Device* pD3D12Device)
     : m_cuContext(cuContext), m_pD3D12Device(pD3D12Device) {
     CUDA_CHECK(cuCtxPushCurrent(m_cuContext));
-    // Further initialization
+    // NVDEC公式のコンテキストロックを作る（コールバック/内部スレッドと競合しないように）
+    CUresult cr = cuvidCtxLockCreate(&m_ctxLock, m_cuContext);
+    if (cr != CUDA_SUCCESS) {
+        const char* es = nullptr; cuGetErrorString(cr, &es);
+        std::wstring msg = L"cuvidCtxLockCreate failed: ";
+        if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
+        DebugLog(msg);
+        throw std::runtime_error("cuvidCtxLockCreate failed");
+    }
     CUDA_CHECK(cuCtxPopCurrent(NULL));
 }
 
@@ -141,6 +149,12 @@ FrameDecoder::~FrameDecoder() {
         cuvidDestroyVideoParser(m_hParser);
     }
 
+    // 追加：ロック破棄
+    if (m_ctxLock) {
+        cuvidCtxLockDestroy(m_ctxLock);
+        m_ctxLock = nullptr;
+    }
+
     cuCtxPopCurrent(NULL);
 }
 
@@ -167,24 +181,38 @@ bool FrameDecoder::Init() {
 void FrameDecoder::Decode(const H264Frame& frame) {
     CUDA_CHECK(cuCtxPushCurrent(m_cuContext));
 
-    { // timestamp -> frameNumber を記録
+    // timestamp -> frameNumber を記録 (from original)
+    {
         std::lock_guard<std::mutex> lk(m_tsMapMutex);
         m_tsToFrameNo[frame.timestamp] = frame.frameNumber;
     }
 
-    CUVIDSOURCEDATAPACKET packet = {};
-    packet.payload = frame.data.data();
-    packet.payload_size = frame.data.size();
-    packet.flags = CUVID_PKT_TIMESTAMP;
-    packet.timestamp = frame.timestamp;
+    { // 複数スレッドからの呼び出しを直列化
+        std::lock_guard<std::mutex> lk(m_parseMutex);
+        CUVIDSOURCEDATAPACKET packet = {};
+        packet.payload = frame.data.data();
+        packet.payload_size = frame.data.size();
+        packet.flags = CUVID_PKT_TIMESTAMP;
+        packet.timestamp = frame.timestamp;
 
-    if (!packet.payload || packet.payload_size == 0) {
-        DebugLog(L"Decoder::Decode: Empty packet received.");
-        return;
+        if (!packet.payload || packet.payload_size == 0) {
+            DebugLog(L"Decoder::Decode: Empty packet received.");
+            // Fall through to pop context and return.
+        } else {
+            // NVDEC API 呼び出し前後をロック（公式の方法）
+            cuvidCtxLock(m_ctxLock, 0);
+            CUresult cr = cuvidParseVideoData(m_hParser, &packet);
+            cuvidCtxUnlock(m_ctxLock, 0);
+
+            if (cr != CUDA_SUCCESS) {
+                const char* es = nullptr; cuGetErrorString(cr, &es);
+                std::wstring msg = L"cuvidParseVideoData failed: ";
+                if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
+                DebugLog(msg);
+                // 継続可能：ここでは throw せず、末尾の PopCurrent に任せる
+            }
+        }
     }
-
-    CUDA_CHECK(cuvidParseVideoData(m_hParser, &packet));
-
     CUDA_CHECK(cuCtxPopCurrent(NULL));
 }
 
@@ -425,9 +453,20 @@ int FrameDecoder::HandlePictureDecode(void* pUserData, CUVIDPICPARAMS* pPicParam
     FrameDecoder* const self = static_cast<FrameDecoder*>(pUserData);
     cuCtxPushCurrent(self->m_cuContext);
 
-    self->m_nDecodePicCnt++;
-    CUDA_CHECK_CALLBACK(cuvidDecodePicture(self->m_hDecoder, pPicParams));
+    self->m_nDecodePicCnt++; // Preserved from original
 
+    cuvidCtxLock(self->m_ctxLock, 0);
+    CUresult cr = cuvidDecodePicture(self->m_hDecoder, pPicParams);
+    cuvidCtxUnlock(self->m_ctxLock, 0);
+
+    if (cr != CUDA_SUCCESS) {
+        const char* es = nullptr; cuGetErrorString(cr, &es);
+        std::wstring msg = L"cuvidDecodePicture failed: ";
+        if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
+        DebugLog(msg);
+        cuCtxPopCurrent(NULL);
+        return 0;
+    }
     cuCtxPopCurrent(NULL);
     return 1;
 }
@@ -436,8 +475,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     FrameDecoder* const self = static_cast<FrameDecoder*>(pUserData);
     cuCtxPushCurrent(self->m_cuContext);
 
-    // Map the decoded video frame
-    CUVIDPROCPARAMS oVPP = { 0 };
+    CUVIDPROCPARAMS oVPP = {};
     oVPP.progressive_frame = pDispInfo->progressive_frame;
     oVPP.second_field = 0;
     oVPP.top_field_first = pDispInfo->top_field_first;
@@ -445,72 +483,123 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
 
     CUdeviceptr pDecodedFrame = 0;
     unsigned int nDecodedPitch = 0;
-    CUDA_CHECK_CALLBACK(cuvidMapVideoFrame(self->m_hDecoder, pDispInfo->picture_index, &pDecodedFrame, &nDecodedPitch, &oVPP));
+    bool mapped = false;
+    bool ok = true;
 
-    // --- Y/UV コピーをドライバAPIで行う ---
-    // 理由:
-    // 1) pDecodedFrame は CUVID が返す CUdeviceptr（ドライバAPI領域）
-    // 2) ランタイムAPIの cudaMemcpy2D と混用すると invalid argument を起こすことがある
-    // 3) cuMemcpy2D{Async} は CUdeviceptr を正式に扱える
+    // NVDEC公式のロックで排他（Map/Unmapは必ずロック下で）
+    cuvidCtxLock(self->m_ctxLock, 0);
 
-    // --- Copy decoded frame to our D3D12 texture that is mapped as a CUDA array ---
+    CUresult cr = cuvidMapVideoFrame(self->m_hDecoder, pDispInfo->picture_index,
+                                     &pDecodedFrame, &nDecodedPitch, &oVPP);
+    if (cr != CUDA_SUCCESS) {
+        const char* es = nullptr; cuGetErrorString(cr, &es);
+        std::wstring msg = L"cuvidMapVideoFrame failed: ";
+        if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
+        DebugLog(msg);
+        ok = false;
+        goto cleanup; // まだ mapped=false なので unmap は呼ばれない
+    }
+    mapped = true;
+
+    // ここからコピー。driver API を使用（既存方針を踏襲）。
     auto& fr = self->m_frameResources[pDispInfo->picture_index];
-
     if (!fr.pCudaArrayY || !fr.pCudaArrayUV) {
         DebugLog(L"HandlePictureDisplay: mapped CUDA arrays are null. Aborting.");
-        CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
-        cuCtxPopCurrent(NULL);
-        return 0;
+        ok = false;
+        goto cleanup; // map 済みなので cleanup で unmap される
     }
 
     const size_t srcWidthBytes_Y  = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulWidth);
     const size_t srcHeightRows_Y  = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulHeight);
-    const size_t srcWidthBytes_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulWidth); // For NV12, UV plane width in bytes is same as Y
+    const size_t srcWidthBytes_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulWidth);
     const size_t srcHeightRows_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulHeight / 2);
 
-    // Setup copy for Y plane
     CUDA_MEMCPY2D cpyY = {};
     cpyY.srcMemoryType = CU_MEMORYTYPE_DEVICE;
-    cpyY.srcDevice = pDecodedFrame;
-    cpyY.srcPitch = nDecodedPitch;
+    cpyY.srcDevice     = pDecodedFrame;
+    cpyY.srcPitch      = nDecodedPitch;
     cpyY.dstMemoryType = CU_MEMORYTYPE_ARRAY;
-    cpyY.dstArray = fr.pCudaArrayY;
-    cpyY.WidthInBytes = srcWidthBytes_Y;
-    cpyY.Height = srcHeightRows_Y;
+    cpyY.dstArray      = fr.pCudaArrayY;
+    cpyY.WidthInBytes  = srcWidthBytes_Y;
+    cpyY.Height        = srcHeightRows_Y;
 
-    CUDA_CHECK_CALLBACK(cuMemcpy2D(&cpyY));
+    cr = cuMemcpy2D(&cpyY);
+    if (cr != CUDA_SUCCESS) {
+        const char* es = nullptr; cuGetErrorString(cr, &es);
+        std::wstring msg = L"cuMemcpy2D(Y) failed: ";
+        if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
+        DebugLog(msg);
+        ok = false;
+        goto cleanup;
+    }
 
-    // Setup copy for UV plane
     const CUdeviceptr pSrcUV = pDecodedFrame + (size_t)srcHeightRows_Y * nDecodedPitch;
     CUDA_MEMCPY2D cpyUV = {};
     cpyUV.srcMemoryType = CU_MEMORYTYPE_DEVICE;
-    cpyUV.srcDevice = pSrcUV;
-    cpyUV.srcPitch = nDecodedPitch;
+    cpyUV.srcDevice     = pSrcUV;
+    cpyUV.srcPitch      = nDecodedPitch;
     cpyUV.dstMemoryType = CU_MEMORYTYPE_ARRAY;
-    cpyUV.dstArray = fr.pCudaArrayUV;
-    cpyUV.WidthInBytes = srcWidthBytes_UV;
-    cpyUV.Height = srcHeightRows_UV;
+    cpyUV.dstArray      = fr.pCudaArrayUV;
+    cpyUV.WidthInBytes  = srcWidthBytes_UV;
+    cpyUV.Height        = srcHeightRows_UV;
 
-    CUDA_CHECK_CALLBACK(cuMemcpy2D(&cpyUV));
+    cr = cuMemcpy2D(&cpyUV);
+    if (cr != CUDA_SUCCESS) {
+        const char* es = nullptr; cuGetErrorString(cr, &es);
+        std::wstring msg = L"cuMemcpy2D(UV) failed: ";
+        if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
+        DebugLog(msg);
+        ok = false;
+        goto cleanup;
+    }
 
-    // Synchronize to ensure copy is complete before unmapping
-    CUDA_CHECK_CALLBACK(cuCtxSynchronize());
+    // 同期（必要最小限。必要なければ削っても良い）
+    cr = cuCtxSynchronize();
+    if (cr != CUDA_SUCCESS) {
+        const char* es = nullptr; cuGetErrorString(cr, &es);
+        std::wstring msg = L"cuCtxSynchronize failed: ";
+        if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
+        DebugLog(msg);
+        ok = false;
+        goto cleanup;
+    }
 
-    // Unmap the video frame
-    CUDA_CHECK_CALLBACK(cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame));
+cleanup:
+    if (mapped) {
+        CUresult ur = cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame);
+        if (ur != CUDA_SUCCESS) {
+            const char* es = nullptr; cuGetErrorString(ur, &es);
+            std::wstring msg = L"cuvidUnmapVideoFrame failed: ";
+            if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
+            DebugLog(msg);
+            // ここでは復帰を続行（ログのみ）
+        } else {
+            // デバッグ用：map/unmap の対応を観測
+            std::wstringstream wss;
+            wss << L"[NVDEC] Unmapped picture_index=" << pDispInfo->picture_index
+                << L" ptr=0x" << std::hex << (unsigned long long)pDecodedFrame;
+            DebugLog(wss.str());
+        }
+    }
 
-    // Enqueue for rendering
+    cuvidCtxUnlock(self->m_ctxLock, 0);
+
+    if (!ok) {
+        cuCtxPopCurrent(NULL);
+        return 0;
+    }
+
+    // ---- ここから下は既存の「描画キュー投入」ロジックを踏襲 ----
     ReadyGpuFrame readyFrame;
-    readyFrame.hw_decoded_texture_Y = self->m_frameResources[pDispInfo->picture_index].pTextureY;
+    readyFrame.hw_decoded_texture_Y  = self->m_frameResources[pDispInfo->picture_index].pTextureY;
     readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
-    readyFrame.timestamp = pDispInfo->timestamp;
-    readyFrame.originalFrameNumber = self->m_nDecodedFrameCount++;
-    readyFrame.id = readyFrame.originalFrameNumber;
-    readyFrame.width = self->m_frameWidth;
-    readyFrame.height = self->m_frameHeight;
+    readyFrame.timestamp             = pDispInfo->timestamp;
+    readyFrame.originalFrameNumber   = self->m_nDecodedFrameCount++;
+    readyFrame.id                    = readyFrame.originalFrameNumber;
+    readyFrame.width                 = self->m_frameWidth;
+    readyFrame.height                = self->m_frameHeight;
 
-    // 追加：timestamp から送信フレーム番号を復元
-    {
+    {   // 送信フレーム番号への合流（既存通り）
         std::lock_guard<std::mutex> lk(self->m_tsMapMutex);
         auto it = self->m_tsToFrameNo.find(readyFrame.timestamp);
         if (it != self->m_tsToFrameNo.end()) {
@@ -518,56 +607,12 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
             self->m_lastStreamFrameNo = readyFrame.streamFrameNumber;
             self->m_tsToFrameNo.erase(it);
         } else {
-            // マップ未ヒット時のフォールバック（ログ付き）
             readyFrame.streamFrameNumber = self->m_lastStreamFrameNo + 1;
             self->m_lastStreamFrameNo = readyFrame.streamFrameNumber;
-            DebugLog(L"[NVDEC] ts->frameNo not found. Fallback to " + std::to_wstring(readyFrame.streamFrameNumber));
         }
     }
 
-    // --- BEGIN BMP SAVE LOGIC (Replaced with async writer) ---
-    uint64_t seq = g_bmpSeq.fetch_add(1, std::memory_order_relaxed);
-    /*if (seq < 10) { // Save first 10 frames
-        const int width = static_cast<int>(self->m_videoDecoderCreateInfo.ulWidth);
-        const int height = static_cast<int>(self->m_videoDecoderCreateInfo.ulHeight);
-        const uint64_t frameNo = readyFrame.originalFrameNumber;
-        const uint64_t ts = readyFrame.timestamp;
-
-        // --- Save Y Plane ---
-        const size_t y_pitch_and_width = static_cast<size_t>(width);
-        std::vector<uint8_t> hostY(y_pitch_and_width * height);
-
-        CUDA_MEMCPY2D cpy = {};
-        cpy.srcMemoryType = CU_MEMORYTYPE_ARRAY;
-        cpy.srcArray      = fr.pCudaArrayY;
-        cpy.dstMemoryType = CU_MEMORYTYPE_HOST;
-        cpy.dstHost       = hostY.data();
-        cpy.dstPitch      = y_pitch_and_width;
-        cpy.WidthInBytes  = y_pitch_and_width; // Correct: Use actual data width, not source pitch
-        cpy.Height        = static_cast<size_t>(height);
-
-        CUresult res = cuMemcpy2D(&cpy);
-        if (res == CUDA_SUCCESS) {
-            BmpTask task;
-            std::ostringstream oss;
-            oss << "frame_" << frameNo << "_" << ts << "_Y.bmp";
-            task.filename = oss.str();
-            task.width = width;
-            task.height = height;
-            task.pitch = y_pitch_and_width;
-            task.data = std::move(hostY);
-            g_bmpWriter.enqueue(std::move(task));
-        } else {
-            const char* errStr = nullptr;
-            cuGetErrorString(res, &errStr);
-            std::wstring msg = L"HandlePictureDisplay: cuMemcpy2D for Y-plane failed: ";
-            if (errStr) { std::string narrow(errStr); msg += std::wstring(narrow.begin(), narrow.end()); }
-            DebugLog(msg);
-        }
-    }*/
-    // --- END BMP SAVE LOGIC ---
-
-    {   // レディキューへ投入（既存のロック/通知を踏襲）
+    {
         std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
         g_readyGpuFrameQueue.push_back(std::move(readyFrame));
     }

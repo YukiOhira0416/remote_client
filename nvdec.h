@@ -38,6 +38,9 @@ public:
     static int CUDAAPI HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDispInfo);
 
 private:
+    CUvideoctxlock m_ctxLock = nullptr;
+    std::mutex m_parseMutex; // Decode() を直列化する場合に使用
+
     std::unordered_map<uint64_t, uint32_t> m_tsToFrameNo;
     std::mutex m_tsMapMutex;
     uint32_t m_lastStreamFrameNo = 0; // フォールバック用カウンタ

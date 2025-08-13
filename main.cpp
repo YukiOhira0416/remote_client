@@ -1012,7 +1012,7 @@ ThreadConfig getOptimalThreadConfig(){
 
     config.receiver = 5;
     config.fec = 4;
-    config.decoder = 2;
+    config.decoder = 1;
     config.render = 1;
     config.RS_K = 8;
     config.RS_M = 2;
