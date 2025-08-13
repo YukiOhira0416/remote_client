@@ -472,59 +472,60 @@ int FrameDecoder::HandlePictureDecode(void* pUserData, CUVIDPICPARAMS* pPicParam
 }
 
 namespace {
-// RAII helper for cuvidCtxLock
-class CudaCtxLocker {
-public:
-    explicit CudaCtxLocker(CUvideoctxlock lock) : m_lock(lock) {
-        if (m_lock) {
-            cuvidCtxLock(m_lock, 0);
-        }
-    }
-    ~CudaCtxLocker() {
-        if (m_lock) {
-            cuvidCtxUnlock(m_lock, 0);
-        }
-    }
-    CudaCtxLocker(const CudaCtxLocker&) = delete;
-    CudaCtxLocker& operator=(const CudaCtxLocker&) = delete;
-private:
-    CUvideoctxlock m_lock;
-};
-
-// RAII helper for a mapped video frame
-class MappedVideoFrame {
-public:
-    MappedVideoFrame(CUvideodecoder decoder, int picture_index, CUVIDPROCPARAMS* proc_params)
-        : m_decoder(decoder) {
-        m_result = cuvidMapVideoFrame(m_decoder, picture_index, &m_pDecodedFrame, &m_nDecodedPitch, proc_params);
-    }
-    ~MappedVideoFrame() {
-        if (IsValid()) {
-            CUresult ur = cuvidUnmapVideoFrame(m_decoder, m_pDecodedFrame);
-            if (ur != CUDA_SUCCESS) {
-                const char* es = nullptr; cuGetErrorString(ur, &es);
-                std::wstring msg = L"cuvidUnmapVideoFrame failed in RAII destructor: ";
-                if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
-                DebugLog(msg);
+    // RAII helper for cuvidCtxLock
+    class CudaCtxLocker {
+    public:
+        explicit CudaCtxLocker(CUvideoctxlock lock) : m_lock(lock) {
+            if (m_lock) {
+                cuvidCtxLock(m_lock, 0);
             }
         }
-    }
-    bool IsValid() const { return m_result == CUDA_SUCCESS; }
-    CUdeviceptr GetPointer() const { return m_pDecodedFrame; }
-    unsigned int GetPitch() const { return m_nDecodedPitch; }
-    CUresult GetMapResult() const { return m_result; }
+        ~CudaCtxLocker() {
+            if (m_lock) {
+                cuvidCtxUnlock(m_lock, 0);
+            }
+        }
+        CudaCtxLocker(const CudaCtxLocker&) = delete;
+        CudaCtxLocker& operator=(const CudaCtxLocker&) = delete;
+    private:
+        CUvideoctxlock m_lock;
+    };
 
-    MappedVideoFrame(const MappedVideoFrame&) = delete;
-    MappedVideoFrame& operator=(const MappedVideoFrame&) = delete;
+    // RAII helper for a mapped video frame
+    class MappedVideoFrame {
+    public:
+        MappedVideoFrame(CUvideodecoder decoder, int picture_index, CUVIDPROCPARAMS* proc_params)
+            : m_decoder(decoder) {
+            m_result = cuvidMapVideoFrame(m_decoder, picture_index, &m_pDecodedFrame, &m_nDecodedPitch, proc_params);
+        }
+        ~MappedVideoFrame() {
+            if (IsValid()) {
+                CUresult ur = cuvidUnmapVideoFrame(m_decoder, m_pDecodedFrame);
+                if (ur != CUDA_SUCCESS) {
+                    const char* es = nullptr; cuGetErrorString(ur, &es);
+                    std::wstring msg = L"cuvidUnmapVideoFrame failed in RAII destructor: ";
+                    if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
+                    DebugLog(msg);
+                }
+            }
+        }
+        bool IsValid() const { return m_result == CUDA_SUCCESS; }
+        CUdeviceptr GetPointer() const { return m_pDecodedFrame; }
+        unsigned int GetPitch() const { return m_nDecodedPitch; }
+        CUresult GetMapResult() const { return m_result; }
 
-private:
-    CUvideodecoder m_decoder = nullptr;
-    CUdeviceptr m_pDecodedFrame = 0;
-    unsigned int m_nDecodedPitch = 0;
-    CUresult m_result = CUDA_ERROR_INVALID_VALUE;
-};
+        MappedVideoFrame(const MappedVideoFrame&) = delete;
+        MappedVideoFrame& operator=(const MappedVideoFrame&) = delete;
+
+    private:
+        CUvideodecoder m_decoder = nullptr;
+        CUdeviceptr m_pDecodedFrame = 0;
+        unsigned int m_nDecodedPitch = 0;
+        CUresult m_result = CUDA_ERROR_INVALID_VALUE;
+    };
 } // anonymous namespace
 
+UINT64 HandlePictureDisplayCount = 0;
 int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDispInfo) {
     FrameDecoder* const self = static_cast<FrameDecoder*>(pUserData);
     cuCtxPushCurrent(self->m_cuContext);
@@ -642,6 +643,9 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     {
         std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
         g_readyGpuFrameQueue.push_back(std::move(readyFrame));
+        if(HandlePictureDisplayCount++ % 200 == 0) {
+            DebugLog(L"HandlePictureDisplay: Pushed Frame Enqueue Size: " + std::to_wstring(g_readyGpuFrameQueue.size()));
+        }
     }
     g_readyGpuFrameQueueCV.notify_one();
 
@@ -661,11 +665,12 @@ void NvdecThread(int threadId) {
     while (g_decode_worker_Running) { // Use the same global running flag
         H264Frame frame;
         if (g_h264FrameQueue.try_dequeue(frame)) {
-            auto nvdec_start = std::chrono::high_resolution_clock::now();
+            auto nvdec_start = std::chrono::system_clock::now();
             g_frameDecoder->Decode(frame);
-            auto nvdec_end = std::chrono::high_resolution_clock::now();
-            auto nvdec_us = std::chrono::duration_cast<std::chrono::microseconds>(nvdec_end - nvdec_start).count();
-            if(DecoderCount++ % 200 == 0)DebugLog(L"NvdecThread [" + std::to_wstring(threadId) + L"]: NVDEC decode Time: " + std::to_wstring(nvdec_us) + L" us");
+            auto nvdec_end = std::chrono::system_clock::now();
+            auto nvdec_us = std::chrono::duration_cast<std::chrono::milliseconds>(nvdec_end - nvdec_start).count();
+            if(DecoderCount++ % 200 == 0)DebugLog(L"NvdecThread [" + std::to_wstring(threadId) + L"]: NVDEC Decode Time: " + std::to_wstring(nvdec_us) + L" ms");
+            if(DecoderCount % 200 == 0)DebugLog(L"NvdecThread: Dequeue Size" + std::to_wstring(g_h264FrameQueue.size_approx()));
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }

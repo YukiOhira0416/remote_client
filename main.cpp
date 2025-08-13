@@ -989,7 +989,7 @@ void FecWorkerThread(int threadId) {
                     auto fec_worker_thread_end = std::chrono::system_clock::now();
                     uint64_t fec_worker_thread_end_ts = std::chrono::duration_cast<std::chrono::milliseconds>(fec_worker_thread_end.time_since_epoch()).count();
                     int64_t elapsed_fec_worker_thread = static_cast<int64_t>(fec_worker_thread_end_ts) - static_cast<int64_t>(fec_worker_thread_start_ts);
-                    if(count % 60 == 0)DebugLog(L"FEC Worker Thread Proccess Time: " + std::to_wstring(elapsed_fec_worker_thread) + L" ms");
+                    if(count % 120 == 0)DebugLog(L"FEC Worker Thread Process Time: " + std::to_wstring(elapsed_fec_worker_thread) + L" ms");
                 } else {
                     DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: FEC Decode failed for frame " + std::to_wstring(frameNumber));
                 }
