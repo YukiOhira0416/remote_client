@@ -1,47 +1,69 @@
-Texture2D    TextureY : register(t0); // Y plane (R8_UNORM)
-Texture2D    TextureUV: register(t1); // UV plane (R8G8_UNORM)
-SamplerState Sampler  : register(s0); // Sampler
+// NV12ToRGBPS.hlsl (完全版: 置き換え)
+// デフォルト: BT.709 + Limited Range
+// 必要に応じてマクロで切替: 例) /D USE_BT601=1 /D FULL_RANGE=1
+Texture2D    TextureY  : register(t0); // R8_UNORM
+Texture2D    TextureUV : register(t1); // R8G8_UNORM
+SamplerState Sampler   : register(s0); // static POINT+CLAMP（root signature側）
 
-float4 main(float4 Position : SV_POSITION, float2 TexCoord : TEXCOORD0) : SV_TARGET
+#ifndef USE_BT601
+  #define USE_BT601 0  // 0: BT.709, 1: BT.601
+#endif
+#ifndef FULL_RANGE
+  #define FULL_RANGE 0 // 0: Limited(16-235/240), 1: Full(0-255)
+#endif
+
+// 係数: ITU-R BT.709/601 (Y'CbCr -> R'G'B')、Limited時は Yoffset=16, Coffset=128, scale=219/224 等を内部で扱う
+float3x3 GetMat()
 {
-    // Sample YUV values (range [0.0, 1.0])
-    float y_sample = TextureY.Sample(Sampler, TexCoord).r;
-    float2 uv_sample = TextureUV.Sample(Sampler, TexCoord).rg; // .r for U, .g for V
-
-    // Convert sampled values [0.0, 1.0] to integer-like range [0, 255]
-    // This mimics the byte range before the SaveSeparateYUVTexturesAsBmp's integer math.
-    float y_byte = y_sample * 255.0f;
-    float u_byte = uv_sample.x * 255.0f;
-    float v_byte = uv_sample.y * 255.0f;
-
-    // Apply offsets similar to SaveSeparateYUVTexturesAsBmp
-    // Y: 16-235, U/V: 16-240 (conceptually, after 0-255 scaling)
-    // c = Y - 16
-    // d = U - 128
-    // e = V - 128
-    float c = y_byte - 16.0f;
-    float d = u_byte - 128.0f;
-    float e = v_byte - 128.0f;
-
-    // RGB conversion using coefficients from SaveSeparateYUVTexturesAsBmp
-    // r = (298 * c + 409 * e + 128) >> 8
-    // g = (298 * c - 100 * d - 208 * e + 128) >> 8
-    // b = (298 * c + 516 * d + 128) >> 8
-    // The '>> 8' is equivalent to dividing by 256.
-    // The '+ 128' before shifting is for rounding in integer arithmetic.
-    // We'll do floating point math and then normalize.
-
-    float r_calc = (298.0f * c + 409.0f * e + 128.0f) / 256.0f;
-    float g_calc = (298.0f * c - 100.0f * d - 208.0f * e + 128.0f) / 256.0f;
-    float b_calc = (298.0f * c + 516.0f * d + 128.0f) / 256.0f;
-
-    // Normalize and clamp to [0.0, 1.0] range for output
-    // The integer calculations in SaveSeparateYUVTexturesAsBmp implicitly clamp to [0, 255].
-    // We then divide by 255.0 to get to [0.0, 1.0] for SV_TARGET.
-    float r = saturate(r_calc / 255.0f);
-    float g = saturate(g_calc / 255.0f);
-    float b = saturate(b_calc / 255.0f);
-
-    return float4(r, g, b, 1.0f);
+#if USE_BT601
+    // BT.601
+    // R = 1.164*(Y-16) + 1.596*(Cr-128)
+    // G = 1.164*(Y-16) - 0.392*(Cb-128) - 0.813*(Cr-128)
+    // B = 1.164*(Y-16) + 2.017*(Cb-128)
+    return float3x3(
+        1.164383f,  0.000000f,  1.596027f,
+        1.164383f, -0.391762f, -0.812968f,
+        1.164383f,  2.017232f,  0.000000f
+    );
+#else
+    // BT.709
+    // R = 1.164*(Y-16) + 1.793*(Cr-128)
+    // G = 1.164*(Y-16) - 0.213*(Cb-128) - 0.534*(Cr-128)
+    // B = 1.164*(Y-16) + 2.115*(Cb-128)
+    return float3x3(
+        1.164383f,  0.000000f,  1.792741f,
+        1.164383f, -0.213249f, -0.532909f,
+        1.164383f,  2.112402f,  0.000000f
+    );
+#endif
 }
 
+float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
+{
+    // NV12: Y はフル解像度、UV は半解像度のインタリーブ (U=rg.x, V=rg.y)
+    float  Y  = TextureY.Sample(Sampler,  uv).r;      // 0..1
+    float2 UV = TextureUV.Sample(Sampler, uv).rg;     // 0..1
+
+    // 0..255 相当にスケール
+    float y = Y  * 255.0f;
+    float u = UV.x * 255.0f;
+    float v = UV.y * 255.0f;
+
+#if FULL_RANGE
+    // Full Range: オフセット無し、スケール1
+    float yc = y;
+    float uc = u - 128.0f;
+    float vc = v - 128.0f;
+    // 行列はそのまま使用
+#else
+    // Limited Range: Y-16, C-128
+    float yc = y - 16.0f;
+    float uc = u - 128.0f;
+    float vc = v - 128.0f;
+#endif
+
+    float3 rgb255 = mul(float3(yc, uc, vc), transpose(GetMat()));
+    float3 rgb = saturate(rgb255 / 255.0f);
+
+    return float4(rgb, 1.0f);
+}

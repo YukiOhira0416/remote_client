@@ -59,6 +59,8 @@
 #pragma comment(lib, "Strmiids.lib")
 #pragma comment(lib, "winmm.lib") // For timeBeginPeriod / timeEndPeriod
 #pragma comment(lib, "secur32.lib")
+#include <ShellScalingApi.h>
+#pragma comment(lib, "Shcore.lib")
 
 #define SERVER_IP_DATA "127.0.0.1"
 #define SERVER_IP_RESEND "127.0.0.1"// 再送信要求用のIPアドレス
@@ -911,6 +913,7 @@ ThreadConfig getOptimalThreadConfig(){
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     InitializeRSMatrix();
 
     // Get executable path and set up logging

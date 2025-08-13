@@ -392,7 +392,7 @@ bool InitD3D() {
     scd1.SampleDesc.Count = 1;
     scd1.SampleDesc.Quality = 0;
     scd1.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    scd1.Scaling = DXGI_SCALING_STRETCH;
+    scd1.Scaling = DXGI_SCALING_NONE;   // 既存は DXGI_SCALING_STRETCH
     scd1.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD; // Recommended for D3D12
     scd1.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
     scd1.Flags = g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
@@ -746,7 +746,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         g_commandList->SetGraphicsRootDescriptorTable(0, g_srvHeap->GetGPUDescriptorHandleForHeapStart());
 
         // Draw full-screen quad (3 vertices for a single triangle covering the screen, or 4 for two triangles)
-        g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP); // Or D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST for 6 vertices
+        g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST); // Or D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST for 6 vertices
         g_commandList->DrawInstanced(3, 1, 0, 0); // For a single full-screen triangle using SV_VertexID
 
         // Release the ComPtrs now that they are submitted for rendering
