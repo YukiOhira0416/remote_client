@@ -98,15 +98,15 @@ static std::atomic<uint64_t> g_bmpSeq{0};
         }                                                                                           \
     } while (0)
 
-// 新規追加：エラー時に cleanup ラベルへ飛ぶ（コールバック専用）
-#define CUDA_CHECK_CLEANUP(call, LOG_PREFIX)                                           \
+// Error check macro for functions that should return 0 on error
+#define CUDA_CHECK_RETURN_0(call, LOG_PREFIX)                                          \
     do {                                                                               \
         CUresult err__ = (call);                                                       \
         if (err__ != CUDA_SUCCESS) {                                                   \
             const char* error_string_ptr__ = nullptr;                                  \
             cuGetErrorString(err__, &error_string_ptr__);                              \
             std::wstringstream wss__;                                                 \
-            wss__ << L LOG_PREFIX << L": ";                                            \
+            wss__ << LOG_PREFIX << L": ";                                              \
             if (error_string_ptr__ == nullptr) {                                       \
                 wss__ << L"Unknown error code " << err__;                              \
             } else {                                                                   \
@@ -118,7 +118,7 @@ static std::atomic<uint64_t> g_bmpSeq{0};
             }                                                                          \
             wss__ << L" in " << __FILEW__ << L" at line " << __LINE__;                 \
             DebugLog(wss__.str());                                                     \
-            goto cleanup;                                                              \
+            return 0; /* Return 0 on error, RAII will handle cleanup */                \
         }                                                                              \
     } while (0)
 
@@ -479,9 +479,11 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
 
     cuCtxPushCurrent(self->m_cuContext);
 
+    // RAII object to ensure cuvidUnmapVideoFrame is called on scope exit.
+    AutoUnmapVideoFrame unmapper(self->m_hDecoder);
+
     CUdeviceptr pDecodedFrame = 0;
     unsigned int nDecodedPitch = 0;
-    bool need_unmap = false; // RAII と二重化しておく
 
     // Proc params
     CUVIDPROCPARAMS oVPP = {};
@@ -491,29 +493,26 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     oVPP.unpaired_field    = (pDispInfo->progressive_frame == 1 || pDispInfo->repeat_first_field <= 1);
 
     // === Map ===
-    {
-        CUresult map_res = cuvidMapVideoFrame(self->m_hDecoder, pDispInfo->picture_index,
-                                              &pDecodedFrame, &nDecodedPitch, &oVPP);
-        if (map_res != CUDA_SUCCESS) {
-            const char* errStr = nullptr;
-            cuGetErrorString(map_res, &errStr);
-            std::wstring msg = L"cuvidMapVideoFrame failed";
-            if (errStr) { std::string narrow(errStr); msg += L": " + std::wstring(narrow.begin(), narrow.end()); }
-            DebugLog(msg);
-            cuCtxPopCurrent(NULL);
-            return 0; // map できなければここで終了（未 map なので cleanup 不要）
-        }
-        need_unmap = true;
+    CUresult map_res = cuvidMapVideoFrame(self->m_hDecoder, pDispInfo->picture_index,
+                                            &pDecodedFrame, &nDecodedPitch, &oVPP);
+    if (map_res != CUDA_SUCCESS) {
+        const char* errStr = nullptr;
+        cuGetErrorString(map_res, &errStr);
+        std::wstring msg = L"cuvidMapVideoFrame failed";
+        if (errStr) { std::string narrow(errStr); msg += L": " + std::wstring(narrow.begin(), narrow.end()); }
+        DebugLog(msg);
+        cuCtxPopCurrent(NULL);
+        return 0; // Not mapped, so no need to unmap.
     }
-    AutoUnmapVideoFrame unmapper(self->m_hDecoder); // RAII
-    unmapper.set(pDecodedFrame);
+    unmapper.set(pDecodedFrame); // From now on, unmapper will handle this.
 
-    // 以後は「早期 return しない」。エラー時は cleanup にジャンプ。
     // フレームリソース
     auto& fr = self->m_frameResources[pDispInfo->picture_index];
     if (!fr.pCudaArrayY || !fr.pCudaArrayUV) {
         DebugLog(L"HandlePictureDisplay: mapped CUDA arrays are null.");
-        goto cleanup; // map 済みなので cleanup（= unmap）へ
+        // unmapper will unmap the frame on return.
+        cuCtxPopCurrent(NULL);
+        return 0;
     }
 
     // コピーサイズ計算
@@ -533,7 +532,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         cpyY.WidthInBytes  = srcWidthBytes_Y;
         cpyY.Height        = srcHeightRows_Y;
 
-        CUDA_CHECK_CLEANUP(cuMemcpy2D(&cpyY), L"cuMemcpy2D(Y)");
+        CUDA_CHECK_RETURN_0(cuMemcpy2D(&cpyY), L"cuMemcpy2D(Y)");
     }
 
     // === Copy UV ===
@@ -548,32 +547,14 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         cpyUV.WidthInBytes  = srcWidthBytes_UV;
         cpyUV.Height        = srcHeightRows_UV;
 
-        CUDA_CHECK_CLEANUP(cuMemcpy2D(&cpyUV), L"cuMemcpy2D(UV)");
+        CUDA_CHECK_RETURN_0(cuMemcpy2D(&cpyUV), L"cuMemcpy2D(UV)");
     }
 
     // 同期（必要な場合のみ）
-    CUDA_CHECK_CLEANUP(cuCtxSynchronize(), L"cuCtxSynchronize");
+    CUDA_CHECK_RETURN_0(cuCtxSynchronize(), L"cuCtxSynchronize");
 
-    // === Unmap ===
-cleanup:
-    if (need_unmap && pDecodedFrame) {
-        CUresult unmap_res = cuvidUnmapVideoFrame(self->m_hDecoder, pDecodedFrame);
-        if (unmap_res != CUDA_SUCCESS) {
-            const char* errStr = nullptr;
-            cuGetErrorString(unmap_res, &errStr);
-            std::wstring msg = L"cuvidUnmapVideoFrame failed";
-            if (errStr) { std::string narrow(errStr); msg += L": " + std::wstring(narrow.begin(), narrow.end()); }
-            DebugLog(msg);
-        }
-        unmapper.mapped = false; // RAII による二重 unmap 回避
-        need_unmap = false;
-    }
-
-    // 失敗時はここで終了
-    if (!fr.pCudaArrayY || !fr.pCudaArrayUV) {
-        cuCtxPopCurrent(NULL);
-        return 0;
-    }
+    // At this point, all CUDA operations were successful.
+    // The frame will be unmapped automatically by the unmapper object when the function exits.
 
     // （以降は従来どおり）キュー投入など
     ReadyGpuFrame readyFrame;
