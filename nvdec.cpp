@@ -167,24 +167,32 @@ bool FrameDecoder::Init() {
 void FrameDecoder::Decode(const H264Frame& frame) {
     CUDA_CHECK(cuCtxPushCurrent(m_cuContext));
 
-    { // timestamp -> frameNumber を記録
-        std::lock_guard<std::mutex> lk(m_tsMapMutex);
-        m_tsToFrameNo[frame.timestamp] = frame.frameNumber;
-    }
-
+    // ---- 送信フレーム番号を NVDEC まで “timestamp” として運ぶ ----
+    // ここでは timestamp を PTS ではなく「一意なフレーム番号」として使う。
+    // Display 側で pDispInfo->timestamp から直接 streamFrameNumber を得るため。
     CUVIDSOURCEDATAPACKET packet = {};
-    packet.payload = frame.data.data();
+    packet.payload      = frame.data.data();
     packet.payload_size = frame.data.size();
-    packet.flags = CUVID_PKT_TIMESTAMP;
-    packet.timestamp = frame.timestamp;
+    packet.timestamp    = static_cast<uint64_t>(frame.frameNumber);
+
+    // ピクチャ境界を明示
+    packet.flags = CUVID_PKT_TIMESTAMP | CUVID_PKT_ENDOFPICTURE;
+
+    // 連番ギャップが観測された場合は不連続を明示（内部状態の安定化）
+    static std::atomic<uint32_t> s_lastFrameNo{0};
+    uint32_t last = s_lastFrameNo.load(std::memory_order_relaxed);
+    if (last != 0 && frame.frameNumber != last + 1) {
+        packet.flags |= CUVID_PKT_DISCONTINUITY;
+    }
+    s_lastFrameNo.store(frame.frameNumber, std::memory_order_relaxed);
 
     if (!packet.payload || packet.payload_size == 0) {
         DebugLog(L"Decoder::Decode: Empty packet received.");
+        cuCtxPopCurrent(NULL);
         return;
     }
 
     CUDA_CHECK(cuvidParseVideoData(m_hParser, &packet));
-
     CUDA_CHECK(cuCtxPopCurrent(NULL));
 }
 
@@ -509,21 +517,9 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     readyFrame.width = self->m_frameWidth;
     readyFrame.height = self->m_frameHeight;
 
-    // 追加：timestamp から送信フレーム番号を復元
-    {
-        std::lock_guard<std::mutex> lk(self->m_tsMapMutex);
-        auto it = self->m_tsToFrameNo.find(readyFrame.timestamp);
-        if (it != self->m_tsToFrameNo.end()) {
-            readyFrame.streamFrameNumber = it->second;
-            self->m_lastStreamFrameNo = readyFrame.streamFrameNumber;
-            self->m_tsToFrameNo.erase(it);
-        } else {
-            // マップ未ヒット時のフォールバック（ログ付き）
-            readyFrame.streamFrameNumber = self->m_lastStreamFrameNo + 1;
-            self->m_lastStreamFrameNo = readyFrame.streamFrameNumber;
-            DebugLog(L"[NVDEC] ts->frameNo not found. Fallback to " + std::to_wstring(readyFrame.streamFrameNumber));
-        }
-    }
+    // 送信側から運んできた “フレーム番号” をそのまま採用
+    // ※ Decode 側で packet.timestamp=frameNumber としているため、ここで一致する
+    readyFrame.streamFrameNumber    = static_cast<uint32_t>(pDispInfo->timestamp);
 
     // --- BEGIN BMP SAVE LOGIC (Replaced with async writer) ---
     uint64_t seq = g_bmpSeq.fetch_add(1, std::memory_order_relaxed);

@@ -38,10 +38,6 @@ public:
     static int CUDAAPI HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDispInfo);
 
 private:
-    std::unordered_map<uint64_t, uint32_t> m_tsToFrameNo;
-    std::mutex m_tsMapMutex;
-    uint32_t m_lastStreamFrameNo = 0; // フォールバック用カウンタ
-
     bool createDecoder(CUVIDEOFORMAT* pVideoFormat);
     bool allocateFrameBuffers();
     void copyDecodedFrameToD3D12(CUVIDPARSERDISPINFO* pDispInfo);
