@@ -745,9 +745,9 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         g_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
         g_commandList->SetGraphicsRootDescriptorTable(0, g_srvHeap->GetGPUDescriptorHandleForHeapStart());
 
-        // Draw full-screen quad (3 vertices for a single triangle covering the screen, or 4 for two triangles)
-        g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST); // Or D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST for 6 vertices
-        g_commandList->DrawInstanced(3, 1, 0, 0); // For a single full-screen triangle using SV_VertexID
+        // フルスクリーンクアッド（TRIANGLESTRIP で 4 頂点）
+        g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        g_commandList->DrawInstanced(4, 1, 0, 0);
 
         // Release the ComPtrs now that they are submitted for rendering
         // The resources themselves are managed by the decoder's pool
