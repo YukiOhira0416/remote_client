@@ -167,6 +167,11 @@ bool FrameDecoder::Init() {
 void FrameDecoder::Decode(const H264Frame& frame) {
     CUDA_CHECK(cuCtxPushCurrent(m_cuContext));
 
+    { // timestamp -> frameNumber を記録
+        std::lock_guard<std::mutex> lk(m_tsMapMutex);
+        m_tsToFrameNo[frame.timestamp] = frame.frameNumber;
+    }
+
     CUVIDSOURCEDATAPACKET packet = {};
     packet.payload = frame.data.data();
     packet.payload_size = frame.data.size();
@@ -504,6 +509,22 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     readyFrame.width = self->m_frameWidth;
     readyFrame.height = self->m_frameHeight;
 
+    // 追加：timestamp から送信フレーム番号を復元
+    {
+        std::lock_guard<std::mutex> lk(self->m_tsMapMutex);
+        auto it = self->m_tsToFrameNo.find(readyFrame.timestamp);
+        if (it != self->m_tsToFrameNo.end()) {
+            readyFrame.streamFrameNumber = it->second;
+            self->m_lastStreamFrameNo = readyFrame.streamFrameNumber;
+            self->m_tsToFrameNo.erase(it);
+        } else {
+            // マップ未ヒット時のフォールバック（ログ付き）
+            readyFrame.streamFrameNumber = self->m_lastStreamFrameNo + 1;
+            self->m_lastStreamFrameNo = readyFrame.streamFrameNumber;
+            DebugLog(L"[NVDEC] ts->frameNo not found. Fallback to " + std::to_wstring(readyFrame.streamFrameNumber));
+        }
+    }
+
     // --- BEGIN BMP SAVE LOGIC (Replaced with async writer) ---
     uint64_t seq = g_bmpSeq.fetch_add(1, std::memory_order_relaxed);
     if (seq < 10) { // Save first 10 frames
@@ -546,7 +567,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     }
     // --- END BMP SAVE LOGIC ---
 
-    {
+    {   // レディキューへ投入（既存のロック/通知を踏襲）
         std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
         g_readyGpuFrameQueue.push_back(std::move(readyFrame));
     }

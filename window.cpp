@@ -26,6 +26,7 @@
 #include <sstream>      // Required for std::wstringstream (for PointerToWString)
 #include <iomanip>      // Required for std::hex (for PointerToWString)
 #include <chrono> // For time measurement
+#include <map>
 #include "Globals.h"
 
 #pragma comment(lib, "User32.lib")
@@ -54,6 +55,18 @@ UINT64 g_renderFenceValues[2]; // Fence values for each frame in flight for rend
 #define CLIENT_IP_FEC "127.0.0.1"// FEC用IPアドレス
 
 bool g_allowTearing = false; // ティアリングを許可するかどうか
+
+// 送信フレーム番号で並べる小さなバッファ
+static std::map<uint32_t, ReadyGpuFrame> g_reorderBuffer;
+static std::mutex g_reorderMutex;
+
+static uint32_t g_expectedStreamFrame = 0;
+static bool     g_expectedInitialized = false;
+
+// 調整パラメータ
+static constexpr size_t REORDER_MAX_BUFFER = 8; // これを超えたら妥協して前進
+static constexpr int    REORDER_WAIT_MS    = 3; // N+1 を待つ最大時間（ms）
+static std::chrono::steady_clock::time_point g_lastReorderDecision = std::chrono::steady_clock::now();
 
 // Rendering specific D3D12 globals
 Microsoft::WRL::ComPtr<ID3D12RootSignature> g_rootSignature;
@@ -632,13 +645,74 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
     // --- Render the decoded frame ---
     bool hasFrameToRender = false;
+
+    // 1) NVDEC からの準備完了キューを全部吸い込み、番号で並べる
     {
-        std::unique_lock<std::mutex> lock(g_readyGpuFrameQueueMutex);
-        if (!g_readyGpuFrameQueue.empty()) {
-            // For simplicity, take the latest. Could implement more sophisticated logic.
-            outFrameToRender = std::move(g_readyGpuFrameQueue.back());
-            g_readyGpuFrameQueue.pop_back(); // Or clear the queue if only latest matters
+        std::unique_lock<std::mutex> qlock(g_readyGpuFrameQueueMutex);
+        while (!g_readyGpuFrameQueue.empty()) {
+            ReadyGpuFrame f = std::move(g_readyGpuFrameQueue.back());
+            g_readyGpuFrameQueue.pop_back();
+
+            std::lock_guard<std::mutex> rlock(g_reorderMutex);
+            auto it = g_reorderBuffer.find(f.streamFrameNumber);
+            if (it == g_reorderBuffer.end()) {
+                g_reorderBuffer.emplace(f.streamFrameNumber, std::move(f));
+            } else {
+                // 同じ番号が2枚来たら後着で上書き
+                it->second = std::move(f);
+                DebugLog(L"[REORDER] duplicate streamFrameNumber, replaced: " + std::to_wstring(it->first));
+            }
+        }
+    }
+
+    // 2) N と N+1 がそろったら N を描画。なければ短い待ち or 圧迫で妥協
+    {
+        std::lock_guard<std::mutex> rlock(g_reorderMutex);
+        auto now = std::chrono::steady_clock::now();
+
+        // 初期化：隣接ペアの最小キーを expected にする
+        if (!g_expectedInitialized) {
+            for (auto it = g_reorderBuffer.begin(); it != g_reorderBuffer.end(); ++it) {
+                uint32_t k = it->first;
+                if (g_reorderBuffer.find(k + 1) != g_reorderBuffer.end()) {
+                    g_expectedStreamFrame = k;
+                    g_expectedInitialized = true;
+                    break;
+                }
+            }
+            if (!g_expectedInitialized && !g_reorderBuffer.empty()) {
+                g_expectedStreamFrame = g_reorderBuffer.begin()->first;
+                g_expectedInitialized = true;
+            }
+        }
+
+        const bool haveExpected = g_reorderBuffer.count(g_expectedStreamFrame) != 0;
+        const bool haveNext     = g_reorderBuffer.count(g_expectedStreamFrame + 1) != 0;
+        const bool bufferTooBig = g_reorderBuffer.size() > REORDER_MAX_BUFFER;
+        const bool waitedLong   = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastReorderDecision).count() > REORDER_WAIT_MS;
+
+        if (haveExpected && haveNext) {
+            // 理想：N と N+1 がそろった
+            outFrameToRender = std::move(g_reorderBuffer[g_expectedStreamFrame]);
+            g_reorderBuffer.erase(g_expectedStreamFrame);
+            g_expectedStreamFrame++;
             hasFrameToRender = true;
+            g_lastReorderDecision = now;
+        } else if (bufferTooBig || waitedLong) {
+            // 妥協：溜まりすぎor待ちすぎ → 最小キーを描画
+            if (!g_reorderBuffer.empty()) {
+                auto it = g_reorderBuffer.begin();
+                outFrameToRender = std::move(it->second);
+                uint32_t drawn = it->first;
+                g_reorderBuffer.erase(it);
+                g_expectedStreamFrame = drawn + 1;
+                hasFrameToRender = true;
+                g_lastReorderDecision = now;
+
+                if (!(haveExpected && haveNext)) {
+                    DebugLog(L"[REORDER] fallback draw, key=" + std::to_wstring(drawn));
+                }
+            }
         }
     }
 
@@ -755,7 +829,8 @@ void RenderFrame() {
     if (frameWasRendered) { // Use the return value from PopulateCommandList
         uint64_t frameEndTimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndTime.time_since_epoch()).count();
         int64_t latencyMs = static_cast<int64_t>(frameEndTimeMs) - static_cast<int64_t>(renderedFrameData.timestamp);
-        DebugLog(L"RenderFrame Latency: Frame #" + std::to_wstring(renderedFrameData.originalFrameNumber) +
+        DebugLog(L"RenderFrame Latency: StreamFrame #" + std::to_wstring(renderedFrameData.streamFrameNumber) +
+                 L", OriginalFrame #" + std::to_wstring(renderedFrameData.originalFrameNumber) +
                  L" (ID: " + std::to_wstring(renderedFrameData.id) + L")" +
                  L" - WGC to RenderEnd: " + std::to_wstring(latencyMs) + L" ms.");
     }
