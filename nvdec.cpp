@@ -527,7 +527,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
 
     // --- BEGIN BMP SAVE LOGIC (Replaced with async writer) ---
     uint64_t seq = g_bmpSeq.fetch_add(1, std::memory_order_relaxed);
-    if (seq < 10) { // Save first 10 frames
+    /*if (seq < 10) { // Save first 10 frames
         const int width = static_cast<int>(self->m_videoDecoderCreateInfo.ulWidth);
         const int height = static_cast<int>(self->m_videoDecoderCreateInfo.ulHeight);
         const uint64_t frameNo = readyFrame.originalFrameNumber;
@@ -564,7 +564,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
             if (errStr) { std::string narrow(errStr); msg += std::wstring(narrow.begin(), narrow.end()); }
             DebugLog(msg);
         }
-    }
+    }*/
     // --- END BMP SAVE LOGIC ---
 
     {   // レディキューへ投入（既存のロック/通知を踏襲）
@@ -585,10 +585,14 @@ void NvdecThread(int threadId) {
         return;
     }
 
-    while (g_fec_worker_Running) { // Use the same global running flag
+    while (g_decode_worker_Running) { // Use the same global running flag
         H264Frame frame;
         if (g_h264FrameQueue.try_dequeue(frame)) {
+            auto nvdec_start = std::chrono::high_resolution_clock::now();
             g_frameDecoder->Decode(frame);
+            auto nvdec_end = std::chrono::high_resolution_clock::now();
+            auto nvdec_us = std::chrono::duration_cast<std::chrono::microseconds>(nvdec_end - nvdec_start).count();
+            DebugLog(L"NvdecThread [" + std::to_wstring(threadId) + L"]: NVDEC decode time: " + std::to_wstring(nvdec_us) + L" us");
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
