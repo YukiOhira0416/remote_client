@@ -811,64 +811,81 @@ void WaitForGpu() {
 
 void RenderFrame() {
     auto frameStartTime = std::chrono::system_clock::now();
+
     // --- D3D12 RenderFrame ---
     if (!g_commandList || !g_d3d12CommandQueue || !g_swapChain || !g_fence) {
         DebugLog(L"RenderFrame (D3D12): Core D3D12 objects not initialized.");
         return;
     }
 
-    HRESULT hr; // Declare hr here for use throughout the function
-    ReadyGpuFrame renderedFrameData; // To store data of the frame that was rendered
-    bool frameWasRendered = PopulateCommandList(renderedFrameData); // Record drawing commands
+    HRESULT hr; // for error checks
+    ReadyGpuFrame renderedFrameData{}; // 描画したフレームのメタ（ログ用）
+    const bool frameWasRendered = PopulateCommandList(renderedFrameData); // 今回のフレームで実描画コマンドを記録したか？
 
-    // Execute the command list.
+    // ★ 追加：新規フレームがなければ描画・Presentを完全スキップし、前フレームを保持する
+    if (!frameWasRendered) {
+        // ここでは GPU 実行も Present もしない。
+        // SwapChain のバックバッファは直前に Present 済みの内容が DWM に保持され続ける。
+        // フェンスやバックバッファインデックスも更新しない（Present していないため）。
+        return;
+    }
+
+    // ここから先は「実際に描画する場合のみ」実行
     ID3D12CommandList* ppCommandLists[] = { g_commandList.Get() };
     g_d3d12CommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
 
-    // Present the frame.
-    hr = g_swapChain->Present(0, g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0); // Vsync off (0), use tearing if allowed
+    // Present（VSync は 0、ティアリングは環境に応じて）
+    hr = g_swapChain->Present(0, g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
     if (FAILED(hr)) {
         if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
             DebugLog(L"RenderFrame (D3D12): Device removed/reset on Present. HR: " + HResultToHexWString(hr));
-            // Handle device lost: reinitialize D3D resources
+            // TODO: デバイスロスト処理（必要に応じて再初期化）
         } else {
             DebugLog(L"RenderFrame (D3D12): Present failed. HR: " + HResultToHexWString(hr));
         }
     }
 
-    // Wait for the current frame's fence before proceeding to the next frame.
-    // This ensures that we don't get too far ahead of the GPU.
-    // Signal and increment the fence value for the current frame.
+    // フェンス：このフレームの完了をトラッキング
     const UINT64 currentFenceVal = g_renderFenceValues[g_currentFrameBufferIndex];
-    g_d3d12CommandQueue->Signal(g_fence.Get(), currentFenceVal);
-
-    // Update the back buffer index.
-    g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex(); // Update for next frame
-
-    // Wait if the next frame is not ready to be rendered yet.
-    if (g_fence->GetCompletedValue() < g_renderFenceValues[g_currentFrameBufferIndex]) {
-        g_fence->SetEventOnCompletion(g_renderFenceValues[g_currentFrameBufferIndex], g_fenceEvent);
-        WaitForSingleObjectEx(g_fenceEvent, INFINITE, FALSE);
+    hr = g_d3d12CommandQueue->Signal(g_fence.Get(), currentFenceVal);
+    if (FAILED(hr)) {
+        DebugLog(L"RenderFrame: Failed to signal fence. HR: " + HResultToHexWString(hr));
+        // それでも続行は可能だが、以降の待ち合わせは無効化される
     }
-    // Set the fence value for the next frame.
+
+    // 次のフレーム用にバックバッファインデックスを更新
+    g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
+
+    // 次フレームのフェンス完了待ち（レンダリングが GPU に追い越されないようにする）
+    if (g_fence->GetCompletedValue() < g_renderFenceValues[g_currentFrameBufferIndex]) {
+        hr = g_fence->SetEventOnCompletion(g_renderFenceValues[g_currentFrameBufferIndex], g_fenceEvent);
+        if (FAILED(hr)) {
+            DebugLog(L"RenderFrame: Failed to set event on completion. HR: " + HResultToHexWString(hr));
+        } else {
+            WaitForSingleObjectEx(g_fenceEvent, INFINITE, FALSE);
+        }
+    }
+
+    // 次回用にフェンス値をインクリメント
     g_renderFenceValues[g_currentFrameBufferIndex] = currentFenceVal + 1;
 
-    // Log the time difference if a frame was rendered
-    auto frameEndTime = std::chrono::system_clock::now(); // Get end time before logging
-    if (frameWasRendered) { // Use the return value from PopulateCommandList
-        uint64_t frameEndTimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndTime.time_since_epoch()).count();
-        int64_t latencyMs = static_cast<int64_t>(frameEndTimeMs) - static_cast<int64_t>(renderedFrameData.timestamp);
-        DebugLog(L"RenderFrame Latency: StreamFrame #" + std::to_wstring(renderedFrameData.streamFrameNumber) +
-                 L", OriginalFrame #" + std::to_wstring(renderedFrameData.originalFrameNumber) +
-                 L" (ID: " + std::to_wstring(renderedFrameData.id) + L")" +
-                 L" - WGC to RenderEnd: " + std::to_wstring(latencyMs) + L" ms.");
+    // ---- ログ（描画があった場合のみ）----
+    auto frameEndTime = std::chrono::system_clock::now();
+    {
+        uint64_t frameEndTimeMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(frameEndTime.time_since_epoch()).count();
+        int64_t latencyMs =
+            static_cast<int64_t>(frameEndTimeMs) - static_cast<int64_t>(renderedFrameData.timestamp);
+        DebugLog(L"RenderFrame Latency: StreamFrame #"
+            + std::to_wstring(renderedFrameData.streamFrameNumber)
+            + L", OriginalFrame #" + std::to_wstring(renderedFrameData.originalFrameNumber)
+            + L" (ID: " + std::to_wstring(renderedFrameData.id) + L")"
+            + L" - WGC to RenderEnd: " + std::to_wstring(latencyMs) + L" ms.");
     }
 
-    // Log RenderFrame execution time
-    auto renderDuration = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndTime - frameStartTime);
+    auto renderDuration =
+        std::chrono::duration_cast<std::chrono::milliseconds>(frameEndTime - frameStartTime);
     DebugLog(L"RenderFrame Execution Time: " + std::to_wstring(renderDuration.count()) + L" ms.");
-
-    count++;
 }
 
 void CleanupD3DRenderResources() {
