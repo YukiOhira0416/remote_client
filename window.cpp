@@ -28,6 +28,7 @@
 #include <chrono> // For time measurement
 #include <map>
 #include "Globals.h"
+#include "AppShutdown.h"
 
 // ==== [Multi-monitor helpers - BEGIN] ====
 #ifndef _USE_MATH_DEFINES
@@ -218,6 +219,11 @@ UINT64 count = 0;
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     try {
         switch (message) {
+        case WM_CLOSE:
+            RequestShutdown(); // Signal all threads to exit and post WM_QUIT
+            DestroyWindow(hWnd);
+            return 0;
+
         case WM_PAINT:
             {
                 PAINTSTRUCT ps;
@@ -228,9 +234,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             }
             return 0; // 処理が完了したことを示す
         case WM_DESTROY:
-            CleanupD3DRenderResources(); // Clean up our specific resources
-            PostQuitMessage(0);
-            break;
+            RequestShutdown(); // Ensure shutdown is requested, even if WM_CLOSE was bypassed
+            return 0;
 
         case WM_DPICHANGED:
         {
@@ -1080,17 +1085,9 @@ void SendWindowSize() {
         fec_success = false; // FEC を適用しない
     }
 
-    // Winsock の初期化
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        DebugLog(L"WSAStartup failed.");
-        return;
-    }
-
     SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (udpSocket == INVALID_SOCKET) {
         DebugLog(L"Failed to create socket.");
-        WSACleanup();
         return;
     }
 
@@ -1167,7 +1164,4 @@ void SendWindowSize() {
     }
     // ソケットのクローズ
     closesocket(udpSocket);
-
-    // WSAStartup の終了処理
-    WSACleanup();
 }

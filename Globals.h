@@ -25,6 +25,7 @@ void NvdecThread(int threadId);
 
 
 extern std::atomic<bool> g_fec_worker_Running;
+extern std::atomic<bool> g_decode_worker_Running;
 extern std::atomic<int> currentResolutionWidth;
 extern std::atomic<int> currentResolutionHeight;
 extern HWND g_hWnd;
@@ -79,6 +80,9 @@ struct H264Frame {
     uint32_t frameNumber;
     std::vector<uint8_t> data;
 };
+
+// Global running flag for wWinMain loop
+extern std::atomic<bool> app_running_atomic;
 
 // Global queues and synchronization for frame management
 extern moodycamel::ConcurrentQueue<H264Frame> g_h264FrameQueue;

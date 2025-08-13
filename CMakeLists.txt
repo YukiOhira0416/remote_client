@@ -53,7 +53,8 @@ set(SOURCES
     DebugLog.cpp
     Globals.cpp
     ReedSolomon.cpp
-    Nvdec.cpp
+    nvdec.cpp
+    AppShutdown.cpp
 )
 
 # ヘッダーファイル
@@ -63,7 +64,8 @@ set(HEADERS
     DebugLog.h
     Globals.h
     ReedSolomon.h
-    Nvdec.h
+    nvdec.h
+    AppShutdown.h
 )
 
 # 実行ファイルを作成

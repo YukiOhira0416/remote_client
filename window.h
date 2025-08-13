@@ -6,3 +6,4 @@ bool InitD3D();
 void RenderFrame();
 void SendWindowSize();
 void CleanupD3DRenderResources();
+void WaitForGpu();

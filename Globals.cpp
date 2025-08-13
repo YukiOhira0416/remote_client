@@ -28,8 +28,10 @@ std::deque<ReadyGpuFrame> g_readyGpuFrameQueue;
 std::mutex g_readyGpuFrameQueueMutex;
 std::condition_variable g_readyGpuFrameQueueCV;
 
-// Global running flag
+// Global running flags
 std::atomic<bool> g_fec_worker_Running(true);
+std::atomic<bool> g_decode_worker_Running(true);
+std::atomic<bool> app_running_atomic(true);
 
 // H264 Frame queue
 moodycamel::ConcurrentQueue<H264Frame> g_h264FrameQueue;

@@ -41,6 +41,7 @@
 #include <enet/enet.h>
 #include "Globals.h"
 #include "nvdec.h"
+#include "AppShutdown.h"
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 #include <d3dx12.h>
@@ -522,16 +523,9 @@ void InitializeRSMatrix() {
 void ListenForResendRequests() {
     DebugLog(L"ListenForResendRequests thread started.");
 
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        DebugLog(L"WSAStartup failed.");
-        return;
-    }
-
     SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (udpSocket == INVALID_SOCKET) {
         DebugLog(L"Failed to create socket.");
-        WSACleanup();
         return;
     }
 
@@ -543,7 +537,6 @@ void ListenForResendRequests() {
     if (bind(udpSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) == SOCKET_ERROR) {
         DebugLog(L"Failed to bind socket.");
         closesocket(udpSocket);
-        WSACleanup();
         return;
     }
 
@@ -590,21 +583,13 @@ void ListenForResendRequests() {
 
     // ソケットのクローズとWSAのクリーンアップ
     closesocket(udpSocket);
-    WSACleanup();
     DebugLog(L"ListenForResendRequests thread stopped.");
 }
 
 void CountBandW() {
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        DebugLog(L"WSAStartup failed in CountBandW.");
-        return;
-    }
-
     SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (udpSocket == INVALID_SOCKET) {
         DebugLog(L"Failed to create socket.");
-        WSACleanup();
         return;
     }
 
@@ -639,7 +624,6 @@ void CountBandW() {
     }
 
     closesocket(udpSocket);
-    WSACleanup();
     DebugLog(L"Stopped bandwidth measurement.");
 }
 
@@ -1169,9 +1153,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         nvdecThreads.emplace_back(NvdecThread, i);
     }
 
-    bool app_running = true;
-    std::thread windowSenderThread([&app_running]() {
-        while (app_running && send_bandw_Running) {
+    // The app_running_atomic is now a global atomic defined in Globals.cpp
+    std::thread windowSenderThread([]() { // No longer needs to capture anything
+        while (app_running_atomic && send_bandw_Running) { // Check the global atomic
             SendWindowSize();
             std::this_thread::sleep_for(std::chrono::milliseconds(1000));
         }
@@ -1183,6 +1167,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     auto lastFrameRenderTime = std::chrono::high_resolution_clock::now();
 
     MSG msg = {};
+    // The loop condition can also check the atomic flag, but WM_QUIT is the primary mechanism.
     while (msg.message != WM_QUIT) {
         if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
             TranslateMessage(&msg);
@@ -1204,46 +1189,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         }
     }
 
-    // Cleanup
-    app_running = false;
-    send_bandw_Running = false;
-    receive_resend_Running = false;
-    receive_raw_packet_Running = false;
-    g_fec_worker_Running = false;
+    // Centralized Cleanup
+    DebugLog(L"Exited message loop. Initiating final resource cleanup...");
+    AppThreads appThreads{};
+    appThreads.bandwidthThread = &bandwidthThread;
+    appThreads.resendThread = &resendThread;
+    appThreads.receiverThreads = &receiverThreads;
+    appThreads.fecWorkerThreads = &fecWorkerThreads;
+    appThreads.nvdecThreads = &nvdecThreads;
+    appThreads.windowSenderThread = &windowSenderThread;
+
+    // This single call handles joining all threads and releasing all resources idempotently.
+    ReleaseAllResources(appThreads);
     
-    if (bandwidthThread.joinable()) bandwidthThread.join();
-    if (resendThread.joinable()) resendThread.join();
-    
-    for (auto& rt : receiverThreads) {
-        if (rt.joinable()) rt.join();
-    }
-
-    for (auto& fwt : fecWorkerThreads) {
-        if (fwt.joinable()) fwt.join();
-    }
-
-    for (auto& nvt : nvdecThreads) {
-        if (nvt.joinable()) nvt.join();
-    }
-
-    if(windowSenderThread.joinable()) windowSenderThread.join();
-
-    g_frameDecoder.reset(); // Release the decoder resources
-    cuDevicePrimaryCtxRelease(0); // Release the primary context
-    
-    WSACleanup();
-    DebugLog(L"WSACleanup complete. Exiting.");
-    enet_deinitialize();
-    timeEndPeriod(1);
-
-    if (g_vandermonde_matrix) {
-        free(g_vandermonde_matrix);
-        g_vandermonde_matrix = nullptr;
-    }
-    if (g_jerasure_matrix) {
-        free(g_jerasure_matrix);
-        g_jerasure_matrix = nullptr;
-    }
-
+    DebugLog(L"Cleanup complete. Exiting wWinMain.");
     return 0;
 }
