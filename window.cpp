@@ -734,6 +734,7 @@ bool InitD3D() {
     return true;
 }
 
+UINT64 count = 0;
 bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass ReadyGpuFrame by reference
     // Reset command allocator and command list
     HRESULT hr = g_commandAllocator->Reset();
@@ -851,7 +852,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
                 g_lastReorderDecision = now;
 
                 if (!(haveExpected && haveNext)) {
-                    DebugLog(L"[REORDER] fallback draw, key=" + std::to_wstring(drawn));
+                    if(count++ % 60 == 0)DebugLog(L"[REORDER] fallback draw, key=" + std::to_wstring(drawn));
                 }
             }
         }
@@ -1000,7 +1001,7 @@ void RenderFrame() {
 
     auto renderDuration =
         std::chrono::duration_cast<std::chrono::milliseconds>(frameEndTime - frameStartTime);
-    DebugLog(L"RenderFrame Execution Time: " + std::to_wstring(renderDuration.count()) + L" ms.");
+    if(RenderCount % 60 == 0)DebugLog(L"RenderFrame Execution Time: " + std::to_wstring(renderDuration.count()) + L" ms.");
 }
 
 void CleanupD3DRenderResources() {

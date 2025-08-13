@@ -577,6 +577,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     return 1;
 }
 
+UINT64 DecoderCount = 0;
 void NvdecThread(int threadId) {
     DebugLog(L"NvdecThread [" + std::to_wstring(threadId) + L"] started.");
 
@@ -592,7 +593,7 @@ void NvdecThread(int threadId) {
             g_frameDecoder->Decode(frame);
             auto nvdec_end = std::chrono::high_resolution_clock::now();
             auto nvdec_us = std::chrono::duration_cast<std::chrono::microseconds>(nvdec_end - nvdec_start).count();
-            DebugLog(L"NvdecThread [" + std::to_wstring(threadId) + L"]: NVDEC decode time: " + std::to_wstring(nvdec_us) + L" us");
+            if(DecoderCount++ % 200 == 0)DebugLog(L"NvdecThread [" + std::to_wstring(threadId) + L"]: NVDEC decode Time: " + std::to_wstring(nvdec_us) + L" us");
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
