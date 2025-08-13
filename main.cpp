@@ -31,6 +31,8 @@
 #include <queue>
 #include <condition_variable>
 #include "DebugLog.h"
+// 追加：非同期ロガー初期化/終了用
+using namespace DebugLogAsync;
 #include "ReedSolomon.h"
 #include <gf_complete.h>
 #include <jerasure.h>
@@ -1092,6 +1094,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         }
     }
 
+    // === 非同期ロガー初期化 ===
+    // 既存と同じファイル名で良い。ODSは有効、キュー容量は適宜調整。
+    DebugLogAsync::Init(L"debuglog_client.log", /*queueCapacity=*/16384, /*alsoOutputDebugString=*/true);
+    DebugLog(L"Async DebugLog initialized.");
+
     // Initialize network and DirectX
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
@@ -1203,5 +1210,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     ReleaseAllResources(appThreads);
     
     DebugLog(L"Cleanup complete. Exiting wWinMain.");
+
+    // === 非同期ロガーを安全に停止（全ログを flush） ===
+    Shutdown();
     return 0;
 }
