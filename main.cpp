@@ -45,6 +45,130 @@
 #include <cuda_runtime_api.h>
 #include <d3dx12.h>
 #include <d3d12.h>
+// ==== [GPU Policy Support - BEGIN] ====
+#include <dxgi1_6.h>
+#pragma comment(lib, "dxgi.lib")
+#include <vector>
+#include <string>
+
+struct DetectedAdapter {
+    DXGI_ADAPTER_DESC1 desc{};
+    bool isSoftware = false;
+    bool isDiscrete = false;   // Heuristic: DedicatedVideoMemory > 0
+    bool isIntegrated = false; // Heuristic: Intel iGPU (Vendor 0x8086) 等
+    bool isNvidia = false;     // Vendor 0x10DE
+};
+
+static std::vector<DetectedAdapter> EnumerateAdaptersDXGI() {
+    std::vector<DetectedAdapter> out;
+    Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
+    UINT flags = 0;
+#if defined(_DEBUG)
+    flags |= DXGI_CREATE_FACTORY_DEBUG;
+#endif
+    HRESULT hr = CreateDXGIFactory2(flags, IID_PPV_ARGS(&factory));
+    if (FAILED(hr) || !factory) {
+        // 取得失敗時は空リスト（上位で扱う）
+        return out;
+    }
+
+    for (UINT i = 0;; ++i) {
+        Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter1;
+        if (factory->EnumAdapters1(i, &adapter1) == DXGI_ERROR_NOT_FOUND) break;
+
+        DXGI_ADAPTER_DESC1 desc{};
+        if (FAILED(adapter1->GetDesc1(&desc))) continue;
+
+        DetectedAdapter a{};
+        a.desc = desc;
+        a.isSoftware = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
+        if (a.isSoftware) continue; // WARP等は除外
+
+        a.isNvidia    = (desc.VendorId == 0x10DE);
+        const bool isIntel = (desc.VendorId == 0x8086);
+        // 離散/統合の簡易判定（DXGIだけでは厳密にeGPU判定不可）
+        a.isDiscrete   = (desc.DedicatedVideoMemory > 0);
+        a.isIntegrated = (!a.isDiscrete) || isIntel;
+
+        out.push_back(a);
+    }
+    return out;
+}
+
+static bool EvaluateGpuPolicy(const std::vector<DetectedAdapter>& adapters,
+                              std::wstring& outUserMessage) {
+    // ルール適用のため、離散GPUのみ抽出
+    int discreteCount = 0;
+    int nvidiaDiscrete = 0;
+    int nonNvidiaDiscrete = 0;
+    bool hasIntegrated = false;
+
+    for (auto& a : adapters) {
+        if (a.isDiscrete) {
+            ++discreteCount;
+            if (a.isNvidia) ++nvidiaDiscrete;
+            else ++nonNvidiaDiscrete;
+        } else {
+            // ヘuristic: Intel等を統合扱い
+            if (a.isIntegrated) hasIntegrated = true;
+        }
+    }
+
+    // 判定
+    if (discreteCount >= 2) {
+        outUserMessage = L"Multiple discrete (external) GPUs were detected. "
+                         L"This app supports exactly one NVIDIA GPU. Click OK to exit.";
+        return false;
+    }
+    if (discreteCount == 1 && nonNvidiaDiscrete == 1 && hasIntegrated) {
+        outUserMessage = L"A non-NVIDIA discrete GPU and an integrated GPU were detected. "
+                         L"This app requires a single NVIDIA GPU. Click OK to exit.";
+        return false;
+    }
+    if (discreteCount == 1 && nvidiaDiscrete == 1 && hasIntegrated) {
+        outUserMessage = L"An NVIDIA discrete GPU and an integrated GPU were detected. "
+                         L"This build requires a single NVIDIA GPU only (no integrated GPU present). Click OK to exit.";
+        return false;
+    }
+    if (discreteCount == 1 && nvidiaDiscrete == 1 && !hasIntegrated) {
+        // 唯一の許可パターン
+        return true;
+    }
+
+    // その他（離散なし、NVIDIA不在 等）
+    outUserMessage = L"No supported GPU configuration was found. "
+                     L"This app requires exactly one discrete NVIDIA GPU. Click OK to exit.";
+    return false;
+}
+
+static bool EnforceGpuPolicyOrExit() {
+    try {
+        auto adapters = EnumerateAdaptersDXGI();
+        if (adapters.empty()) {
+            MessageBoxW(nullptr,
+                L"Could not enumerate GPUs (DXGI factory failed). "
+                L"This app requires exactly one discrete NVIDIA GPU. Click OK to exit.",
+                L"GPU Requirement",
+                MB_OK | MB_ICONINFORMATION);
+            return false;
+        }
+        std::wstring msg;
+        const bool allow = EvaluateGpuPolicy(adapters, msg);
+        if (!allow) {
+            MessageBoxW(nullptr, msg.c_str(), L"GPU Requirement", MB_OK | MB_ICONINFORMATION);
+            return false;
+        }
+        return true;
+    } catch (...) {
+        MessageBoxW(nullptr,
+            L"An unexpected error occurred while checking GPU configuration. "
+            L"This app requires exactly one discrete NVIDIA GPU. Click OK to exit.",
+            L"GPU Requirement",
+            MB_OK | MB_ICONINFORMATION);
+        return false;
+    }
+}
+// ==== [GPU Policy Support - END] ====
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "cuda.lib")
 #pragma comment(lib, "Mswsock.lib")          // For WSARecvMsg, WSASendMsg
@@ -913,6 +1037,11 @@ ThreadConfig getOptimalThreadConfig(){
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
+    // Enforce GPU policy first
+    if (!EnforceGpuPolicyOrExit()) {
+        return 0; // Exit early per policy
+    }
+
     // SetProcessDpiAwarenessContextが使えない場合はSetProcessDPIAwareを使う
     HMODULE hUser32 = LoadLibraryA("user32.dll");
     if (hUser32) {

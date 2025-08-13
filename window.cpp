@@ -29,6 +29,96 @@
 #include <map>
 #include "Globals.h"
 
+// ==== [Multi-monitor helpers - BEGIN] ====
+#ifndef _USE_MATH_DEFINES
+#define _USE_MATH_DEFINES
+#endif
+#include <ShellScalingApi.h> // AdjustWindowRectExForDpi 等
+#pragma comment(lib, "Shcore.lib")
+
+static UINT GetDpiForMonitorOrDefault(HMONITOR hMon) {
+    UINT dpiX = 96, dpiY = 96;
+    HMODULE hShcore = LoadLibraryW(L"Shcore.dll");
+    if (hShcore) {
+        typedef HRESULT (WINAPI *GetDpiForMonitorFunc)(HMONITOR, int, UINT*, UINT*);
+        auto pGetDpiForMonitor = (GetDpiForMonitorFunc)GetProcAddress(hShcore, "GetDpiForMonitor");
+        if (pGetDpiForMonitor) {
+            // MDT_EFFECTIVE_DPI = 0
+            if (SUCCEEDED(pGetDpiForMonitor(hMon, 0, &dpiX, &dpiY))) {
+                FreeLibrary(hShcore);
+                return dpiX;
+            }
+        }
+        FreeLibrary(hShcore);
+    }
+    // Fallback: GetDpiForWindow(User32) or default 96
+    HMODULE hUser32 = LoadLibraryW(L"user32.dll");
+    if (hUser32) {
+        typedef UINT (WINAPI *GetDpiForWindowFunc)(HWND);
+        auto pGetDpiForWindow = (GetDpiForWindowFunc)GetProcAddress(hUser32, "GetDpiForWindow");
+        if (pGetDpiForWindow && g_hWnd) {
+            UINT d = pGetDpiForWindow(g_hWnd);
+            FreeLibrary(hUser32);
+            return d ? d : 96;
+        }
+        FreeLibrary(hUser32);
+    }
+    return 96;
+}
+
+static bool CreateWindowOnBestMonitor(HINSTANCE hInstance, int nCmdShow,
+                                      int desiredClientWidth, int desiredClientHeight) {
+    // カーソル位置のモニタを初期ターゲットにする
+    POINT pt; GetCursorPos(&pt);
+    HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{ sizeof(MONITORINFO) };
+    if (!GetMonitorInfoW(hMon, &mi)) {
+        mi.rcWork = {0, 0, desiredClientWidth, desiredClientHeight};
+    }
+    UINT dpi = GetDpiForMonitorOrDefault(hMon);
+
+    DWORD dwStyle = WS_OVERLAPPEDWINDOW;
+    DWORD dwExStyle = 0;
+
+    RECT rc = {0, 0, desiredClientWidth, desiredClientHeight};
+
+    // AdjustWindowRectExForDpi が使えるなら正しいDPIで枠を計算
+    HMODULE hUser32 = LoadLibraryW(L"user32.dll");
+    if (hUser32) {
+        typedef BOOL (WINAPI *AdjustForDpi)(LPRECT, DWORD, BOOL, DWORD, UINT);
+        auto pAdj = (AdjustForDpi)GetProcAddress(hUser32, "AdjustWindowRectExForDpi");
+        if (pAdj) {
+            pAdj(&rc, dwStyle, FALSE, dwExStyle, dpi);
+        } else {
+            AdjustWindowRectEx(&rc, dwStyle, FALSE, dwExStyle);
+        }
+        FreeLibrary(hUser32);
+    } else {
+        AdjustWindowRectEx(&rc, dwStyle, FALSE, dwExStyle);
+    }
+
+    int winW = rc.right - rc.left;
+    int winH = rc.bottom - rc.top;
+
+    int x = mi.rcWork.left + ((mi.rcWork.right  - mi.rcWork.left) - winW) / 2;
+    int y = mi.rcWork.top  + ((mi.rcWork.bottom - mi.rcWork.top) - winH) / 2;
+
+    g_hWnd = CreateWindowExW(dwExStyle, L"MyWindowClass", L"Remote Desktop Viewer",
+                             dwStyle, x, y, winW, winH,
+                             nullptr, nullptr, hInstance, nullptr);
+    if (!g_hWnd) {
+        DebugLog(L"InitWindow: CreateWindowExW failed. Error: " + std::to_wstring(GetLastError()));
+        return false;
+    }
+
+    ShowWindow(g_hWnd, nCmdShow);
+    UpdateWindow(g_hWnd);
+    currentResolutionWidth  = desiredClientWidth;
+    currentResolutionHeight = desiredClientHeight;
+    return true;
+}
+// ==== [Multi-monitor helpers - END] ====
+
 #pragma comment(lib, "User32.lib")
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "d3d12.lib") // Link D3D12 lib
@@ -141,6 +231,44 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             CleanupD3DRenderResources(); // Clean up our specific resources
             PostQuitMessage(0);
             break;
+
+        case WM_DPICHANGED:
+        {
+            // 新しいウィンドウ矩形がlParamで渡される
+            const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
+            if (suggested) {
+                SetWindowPos(hWnd, nullptr,
+                             suggested->left, suggested->top,
+                             suggested->right - suggested->left,
+                             suggested->bottom - suggested->top,
+                             SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            // DPI変更に伴う実クライアントサイズの再計測 → 既存WM_SIZEでResizeBuffersが走る
+            break;
+        }
+        case WM_DISPLAYCHANGE:
+        {
+            // モニタ解像度/レイアウトが変わった
+            // 現在のクライアント領域からサイズを再計算し、必要に応じてResizeBuffers
+            RECT rc{};
+            if (GetClientRect(hWnd, &rc)) {
+                // 既存のWM_SIZEと同様の処理へ委譲：SendMessageでSIZEイベントを発火させる
+                PostMessageW(hWnd, WM_SIZE, SIZE_RESTORED,
+                             MAKELPARAM(rc.right - rc.left, rc.bottom - rc.top));
+            }
+            break;
+        }
+        case WM_MOVE:
+        {
+            // モニタを跨いだ場合はDPIが変わる可能性
+            // DPIを取得して必要ならWM_SIZE相当の更新を促す
+            RECT rc{};
+            if (GetClientRect(hWnd, &rc)) {
+                PostMessageW(hWnd, WM_SIZE, SIZE_RESTORED,
+                             MAKELPARAM(rc.right - rc.left, rc.bottom - rc.top));
+            }
+            break;
+        }
 
         case WM_SIZE: {
             // クライアント領域のサイズ変更
@@ -279,45 +407,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
 bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
     WNDCLASSW wc = {};
-    wc.lpfnWndProc = WndProc;
-    wc.style = CS_HREDRAW | CS_VREDRAW; // Redraw on size change
-    wc.hInstance = hInstance;
+    wc.lpfnWndProc   = WndProc;
+    wc.style         = CS_HREDRAW | CS_VREDRAW;
+    wc.hInstance     = hInstance;
     wc.lpszClassName = L"MyWindowClass";
-    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
 
     if (!RegisterClassW(&wc)) {
         DebugLog(L"InitWindow: Failed to register window class. Error: " + std::to_wstring(GetLastError()));
         return false;
     }
-    // Desired initial client area size (e.g., Full HD)
-    int desiredClientWidth = 1920;
-    int desiredClientHeight = 1080;
 
-    RECT wr = {0, 0, desiredClientWidth, desiredClientHeight};
-    DWORD dwStyle = WS_OVERLAPPEDWINDOW;
-    DWORD dwExStyle = 0; // No extended styles for now
-    AdjustWindowRectEx(&wr, dwStyle, FALSE, dwExStyle); // FALSE for no menu
-
-    int windowWidth = wr.right - wr.left;
-    int windowHeight = wr.bottom - wr.top;
-
-    g_hWnd = CreateWindowExW(dwExStyle, wc.lpszClassName, L"Remote Desktop Viewer", dwStyle,
-        CW_USEDEFAULT, CW_USEDEFAULT, windowWidth, windowHeight, nullptr, nullptr, hInstance, nullptr);
-    
-    if (!g_hWnd) {
-        DebugLog(L"InitWindow: CreateWindowExW failed. Error: " + std::to_wstring(GetLastError()));
-        return false;
-    }
-
-    ShowWindow(g_hWnd, nCmdShow);
-    UpdateWindow(g_hWnd); // Ensure WM_CREATE and initial WM_SIZE are processed
-
-    // Set initial global resolution based on the desired client size
-    currentResolutionWidth = desiredClientWidth;
-    currentResolutionHeight = desiredClientHeight;
-
-    return true;
+    // ここを「カーソル下モニタに作成」に変更
+    const int desiredClientWidth  = 1920;
+    const int desiredClientHeight = 1080;
+    return CreateWindowOnBestMonitor(hInstance, nCmdShow, desiredClientWidth, desiredClientHeight);
 }
 
 bool InitD3D() {
