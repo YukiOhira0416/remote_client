@@ -1,5 +1,11 @@
 #include "nvdec.h"
 #include "Globals.h"
+#include <unordered_map>
+#include <mutex>
+
+// main.cpp で定義したマップを参照
+extern std::mutex g_frameWgcTsMutex;
+extern std::unordered_map<uint32_t, uint64_t> g_frameWgcTsMsByFrameNumber;
 #include <stdexcept>
 #include <fstream>
 #include <vector>
@@ -522,6 +528,18 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
             readyFrame.streamFrameNumber = self->m_lastStreamFrameNo + 1;
             self->m_lastStreamFrameNo = readyFrame.streamFrameNumber;
             DebugLog(L"[NVDEC] ts->frameNo not found. Fallback to " + std::to_wstring(readyFrame.streamFrameNumber));
+        }
+    }
+
+    // ここで WGC(ms) を合流させる
+    {
+        std::lock_guard<std::mutex> lk(g_frameWgcTsMutex);
+        auto it = g_frameWgcTsMsByFrameNumber.find(readyFrame.streamFrameNumber);
+        if (it != g_frameWgcTsMsByFrameNumber.end()) {
+            readyFrame.wgcCaptureTsMs = it->second;
+            g_frameWgcTsMsByFrameNumber.erase(it); // 使い終わったら掃除
+        } else {
+            readyFrame.wgcCaptureTsMs = 0; // 無効値（比較は自動スキップ）
         }
     }
 

@@ -985,18 +985,25 @@ void RenderFrame() {
     // ---- ログ（描画があった場合のみ）----
     auto frameEndTime = std::chrono::system_clock::now();
     {
-        uint64_t frameEndTimeMs =
+        uint64_t now_ms =
             std::chrono::duration_cast<std::chrono::milliseconds>(frameEndTime.time_since_epoch()).count();
-        int64_t latencyMs =
-            static_cast<int64_t>(frameEndTimeMs) - static_cast<int64_t>(renderedFrameData.timestamp);
-        if(RenderCount++ % 60 == 0){
-            DebugLog(L"RenderFrame Latency: StreamFrame #"
-            + std::to_wstring(renderedFrameData.streamFrameNumber)
-            + L", OriginalFrame #" + std::to_wstring(renderedFrameData.originalFrameNumber)
-            + L" (ID: " + std::to_wstring(renderedFrameData.id) + L")"
-            + L" - WGC to RenderEnd: " + std::to_wstring(latencyMs) + L" ms.");
+        uint64_t wgc_ts = renderedFrameData.wgcCaptureTsMs;
+
+        // WGC TS が有効(>0)で、かつ過去の時刻である場合のみレイテンシを計算・ログ出力
+        if (wgc_ts > 0 && now_ms > wgc_ts) {
+            int64_t latencyMs = static_cast<int64_t>(now_ms) - static_cast<int64_t>(wgc_ts);
+
+            // 極端な値（120秒以上）はログスパムを避けるため抑制
+            if (latencyMs < 120000) {
+                if(RenderCount++ % 60 == 0){
+                    DebugLog(L"RenderFrame Latency: StreamFrame #"
+                    + std::to_wstring(renderedFrameData.streamFrameNumber)
+                    + L", OriginalFrame #" + std::to_wstring(renderedFrameData.originalFrameNumber)
+                    + L" (ID: " + std::to_wstring(renderedFrameData.id) + L")"
+                    + L" - WGC to RenderEnd: " + std::to_wstring(latencyMs) + L" ms.");
+                }
+            }
         }
-        
     }
 
     auto renderDuration =

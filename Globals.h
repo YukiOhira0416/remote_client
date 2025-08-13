@@ -72,6 +72,7 @@ struct ReadyGpuFrame {
     uint64_t id;
     // 新規: 送信（ストリーム）側のフレーム番号
     uint32_t streamFrameNumber = 0;
+    uint64_t wgcCaptureTsMs = 0;
 };
 
 // H264 Frame Data for decoder queue

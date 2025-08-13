@@ -46,6 +46,56 @@
 #include <cuda_runtime_api.h>
 #include <d3dx12.h>
 #include <d3d12.h>
+
+// ===== main.cpp 追記（インクルード群のすぐ下あたり）=====
+#include <unordered_map>
+#include <mutex>
+
+// フレーム番号 → WGC(UNIX ms) の対応テーブル（他TUから参照される）
+std::mutex g_frameWgcTsMutex;
+std::unordered_map<uint32_t, uint64_t> g_frameWgcTsMsByFrameNumber;
+
+// 受け取った 8B の WGC TS を UNIX エポック ms に正規化する。
+// ヒューリスティクスで FILETIME(100ns)/UNIX(ms/us/ns) を推定する。
+// 正規化不能（相対時刻など）の場合は 0 を返す。
+static inline uint64_t ConvertWgcRawToUnixMs(uint64_t raw) noexcept {
+    if (raw == 0) return 0;
+
+    // 妥当性チェック用の範囲（2000-01-01～2100-01-01）
+    constexpr uint64_t MS_2000 = 946684800000ULL;
+    constexpr uint64_t MS_2100 = 4102444800000ULL;
+
+    // FILETIME(1601起点) → UNIX(1970起点) の 100ns 差分
+    constexpr uint64_t FILETIME_EPOCH_100NS = 116444736000000000ULL;
+
+    // 1) 大きい値は 100ns tick と仮定（FILETIME）
+    if (raw >= FILETIME_EPOCH_100NS / 10) {
+        if (raw >= FILETIME_EPOCH_100NS) {
+            uint64_t diff100ns = raw - FILETIME_EPOCH_100NS;
+            return diff100ns / 10000ULL; // 100ns → ms
+        } else {
+            return 0; // 1601起点より小さい→不正
+        }
+    }
+
+    // 2) 既に ms の可能性
+    if (raw >= MS_2000 && raw <= MS_2100) {
+        return raw;
+    }
+
+    // 3) us の可能性
+    if (raw >= MS_2000 * 1000ULL && raw <= MS_2100 * 1000ULL) {
+        return raw / 1000ULL;
+    }
+
+    // 4) ns の可能性
+    if (raw >= MS_2000 * 1000000ULL && raw <= MS_2100 * 1000000ULL) {
+        return raw / 1000000ULL;
+    }
+
+    // 5) 起動相対など絶対化できない形式 → 0 で返す
+    return 0;
+}
 // ==== [GPU Policy Support - BEGIN] ====
 #include <dxgi1_6.h>
 #pragma comment(lib, "dxgi.lib")
@@ -982,6 +1032,24 @@ void FecWorkerThread(int threadId) {
                     frame_to_decode.timestamp = currentFrameMetaForAttempt.firstTimestamp;
                     frame_to_decode.frameNumber = frameNumber;
                     frame_to_decode.data = std::move(decodedFrameData);
+
+                    uint64_t wgc_raw = currentFrameMetaForAttempt.firstTimestamp; // 受信メタに保持済みの最初のWGC ts（8B）
+                    uint64_t wgc_ms  = ConvertWgcRawToUnixMs(wgc_raw);
+
+                    {
+                        std::lock_guard<std::mutex> lk(g_frameWgcTsMutex);
+                        g_frameWgcTsMsByFrameNumber[static_cast<uint32_t>(frameNumber)] = wgc_ms;
+
+                        // リーク防止の軽掃除（上限4096で頭から数十件を削る。厳密LRU不要）
+                        if (g_frameWgcTsMsByFrameNumber.size() > 4096) {
+                            size_t removed = 0;
+                            for (auto it = g_frameWgcTsMsByFrameNumber.begin();
+                                 it != g_frameWgcTsMsByFrameNumber.end() && removed < 128; ) {
+                                it = g_frameWgcTsMsByFrameNumber.erase(it);
+                                ++removed;
+                            }
+                        }
+                    }
 
                     g_h264FrameQueue.enqueue(std::move(frame_to_decode));
                     
