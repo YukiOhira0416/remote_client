@@ -35,6 +35,33 @@
 #pragma comment(lib, "dxgi.lib") // DXGI is still used
 #pragma comment(lib, "d3dcompiler.lib")
 
+static inline void SetViewportScissorToBackbuffer(
+    ID3D12GraphicsCommandList* cmd,
+    ID3D12Resource* backbuffer)
+{
+    if (!cmd || !backbuffer) return;
+
+    const D3D12_RESOURCE_DESC desc = backbuffer->GetDesc();
+    const float w = static_cast<float>(desc.Width);
+    const float h = static_cast<float>(desc.Height);
+
+    D3D12_VIEWPORT vp{};
+    vp.TopLeftX = 0.0f;
+    vp.TopLeftY = 0.0f;
+    vp.Width    = w;
+    vp.Height   = h;
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    cmd->RSSetViewports(1, &vp);
+
+    D3D12_RECT sc{};
+    sc.left   = 0;
+    sc.top    = 0;
+    sc.right  = static_cast<LONG>(desc.Width);
+    sc.bottom = static_cast<LONG>(desc.Height);
+    cmd->RSSetScissorRects(1, &sc);
+}
+
 // D3D12 Global Variables
 Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;
 Microsoft::WRL::ComPtr<ID3D12CommandQueue> g_d3d12CommandQueue;
@@ -621,23 +648,25 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart(), g_currentFrameBufferIndex, g_rtvDescriptorSize);
     g_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
-    D3D12_VIEWPORT viewport = {};
-    viewport.Width = static_cast<FLOAT>(currentResolutionWidth.load());
-    viewport.Height = static_cast<FLOAT>(currentResolutionHeight.load());
-    viewport.TopLeftX = 0;
-    viewport.TopLeftY = 0;
-    viewport.MinDepth = 0.0f;
-    viewport.MaxDepth = 1.0f;
-    g_commandList->RSSetViewports(1, &viewport);
+    // そのフレームのバックバッファを取得（既存の管理に合わせて）
+    ID3D12Resource* backbuffer = g_renderTargets[g_currentFrameBufferIndex].Get();
 
-    //DebugLog(L"PopulateCommandList: Viewport/Render Target Resolution: " + std::to_wstring(currentResolutionWidth.load()) + L"x" + std::to_wstring(currentResolutionHeight.load()));
+    // (任意・推奨) 不一致検出ログ
+    {
+        if (backbuffer) {
+            const auto desc = backbuffer->GetDesc();
+            // もし別スレッドで currentResolution* を持っているなら比較
+            const UINT snapW = currentResolutionWidth.load();   // 使っていないなら省略
+            const UINT snapH = currentResolutionHeight.load();  // 使っていないなら省略
+            if (snapW && snapH && (snapW != desc.Width || snapH != desc.Height)) {
+                // ここでログ出力（デバッグ用）
+                DebugLog(L"[WARN] BackBuffer=" + std::to_wstring(desc.Width) + L"x" + std::to_wstring(desc.Height) + L", currentResolution=" + std::to_wstring(snapW) + L"x" + std::to_wstring(snapH));
+            }
+        }
+    }
 
-    D3D12_RECT scissorRect = {};
-    scissorRect.left = 0;
-    scissorRect.top = 0;
-    scissorRect.right = currentResolutionWidth.load();
-    scissorRect.bottom = currentResolutionHeight.load();
-    g_commandList->RSSetScissorRects(1, &scissorRect);
+    // バックバッファ実寸から毎フレーム確実に設定
+    SetViewportScissorToBackbuffer(g_commandList.Get(), backbuffer);
 
     // Clear the render target
     const float clearColor[] = { 0.1f, 0.1f, 0.3f, 1.0f }; // DirectX::Colors::CornflowerBlue
