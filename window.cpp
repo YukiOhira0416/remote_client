@@ -734,7 +734,7 @@ bool InitD3D() {
     return true;
 }
 
-UINT64 count = 0;
+UINT64 PopulateCommandListCount = 0;
 bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass ReadyGpuFrame by reference
     // Reset command allocator and command list
     HRESULT hr = g_commandAllocator->Reset();
@@ -852,7 +852,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
                 g_lastReorderDecision = now;
 
                 if (!(haveExpected && haveNext)) {
-                    if(count++ % 60 == 0)DebugLog(L"[REORDER] fallback draw, key=" + std::to_wstring(drawn));
+                    if(PopulateCommandListCount++ % 60 == 0)DebugLog(L"[REORDER] fallback draw, key=" + std::to_wstring(drawn));
                 }
             }
         }

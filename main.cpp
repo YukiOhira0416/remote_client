@@ -724,7 +724,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
 
                                     uint64_t enqueue_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
                                     int64_t delay_ms = static_cast<int64_t>(enqueue_time_ms) - static_cast<int64_t>(worker_ts_val);
-                                    if(count % 60 == 0)DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Full Shard - Delay (Server_FECWorker to Receiver_Enqueue time): " + std::to_wstring(delay_ms) + L" ms.");
+                                    if(count % 120 == 0)DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Full Shard - Delay (Server_FECWorker to Receiver_Enqueue time): " + std::to_wstring(delay_ms) + L" ms.");
 
                                 } else {
                                     DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Full shard packet (after WorkerTS) too small for WGCCaptureTS and SIH. Size: " + std::to_wstring(size_after_worker_ts));
@@ -841,7 +841,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
 
                                             uint64_t enqueue_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
                                             int64_t delay_ms = static_cast<int64_t>(enqueue_time_ms) - static_cast<int64_t>(worker_ts_val);
-                                            if(count % 60 == 0)DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Fragment Shard - Delay (Server_FECWorker to Receiver_Enqueue time): " + std::to_wstring(delay_ms) + L" ms.");
+                                            if(count % 120 == 0)DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Fragment Shard - Delay (Server_FECWorker to Receiver_Enqueue time): " + std::to_wstring(delay_ms) + L" ms.");
                                         } else {
                                              DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Reassembled AppFragment ID " + std::to_wstring(original_packet_id) + L" (after WorkerTS) too small for WGCCaptureTS and SIH. Size: " + std::to_wstring(size_after_worker_ts_frag));
                                         }
@@ -920,8 +920,8 @@ void FecWorkerThread(int threadId) {
             auto fec_worker_thread_dequeue = std::chrono::system_clock::now();
             uint64_t fec_worker_thread_dequeue_ts = std::chrono::duration_cast<std::chrono::milliseconds>(fec_worker_thread_dequeue.time_since_epoch()).count();
 
-            if(count % 60 == 0)DebugLog(L"FecWorkerThread: Queue Size " + std::to_wstring(g_parsedShardQueue.size_approx()));
-            if(count % 60 == 0)DebugLog(L"FecWorkerThread: Queue Duration Time " + std::to_wstring(static_cast<int>(fec_worker_thread_dequeue_ts) - static_cast<int>(parsedInfo.rawpacket_to_fec_timestamp)) + L" ms");
+            if(count % 120 == 0)DebugLog(L"FecWorkerThread: Queue Size " + std::to_wstring(g_parsedShardQueue.size_approx()));
+            if(count % 120 == 0)DebugLog(L"FecWorkerThread: RawPackets to FECWorker " + std::to_wstring(static_cast<int>(fec_worker_thread_dequeue_ts) - static_cast<int>(parsedInfo.rawpacket_to_fec_timestamp)) + L" ms");
 
             { // Metadata and FrameBuffer scope
                 // Metadata access first
