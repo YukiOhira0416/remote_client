@@ -913,7 +913,20 @@ ThreadConfig getOptimalThreadConfig(){
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    // SetProcessDpiAwarenessContextが使えない場合はSetProcessDPIAwareを使う
+    HMODULE hUser32 = LoadLibraryA("user32.dll");
+    if (hUser32) {
+        typedef BOOL (WINAPI *SetDpiAwarenessContextFunc)(HANDLE);
+        SetDpiAwarenessContextFunc pSetDpiAwarenessContext = (SetDpiAwarenessContextFunc)GetProcAddress(hUser32, "SetProcessDpiAwarenessContext");
+        if (pSetDpiAwarenessContext) {
+            pSetDpiAwarenessContext((HANDLE)-4/*DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2*/);
+        } else {
+            SetProcessDPIAware();
+        }
+        FreeLibrary(hUser32);
+    } else {
+        SetProcessDPIAware();
+    }
     InitializeRSMatrix();
 
     // Get executable path and set up logging
