@@ -5,12 +5,9 @@
 #include <vector>
 #include <algorithm>
 #include <sstream>
-#include "src/NvCodec/bmp_writer.hpp"
-#include <atomic>
 
-// ---- BMP writer task queue (thread-safe) ----
-static BmpWriter g_bmpWriter;
-static std::atomic<uint64_t> g_bmpSeq{0};
+#include <atomic>
+#include <chrono>
 
 // CUDA API error checking
 #define CUDA_RUNTIME_CHECK(call)                                                                    \

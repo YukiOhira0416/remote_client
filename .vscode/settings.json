@@ -34,6 +34,7 @@
         "atomic": "cpp",
         "stdexcept": "cpp",
         "mutex": "cpp",
-        "string": "cpp"
+        "string": "cpp",
+        "exception": "cpp"
     }
 }
