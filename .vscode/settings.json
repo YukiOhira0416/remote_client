@@ -35,6 +35,10 @@
         "stdexcept": "cpp",
         "mutex": "cpp",
         "string": "cpp",
-        "exception": "cpp"
+        "exception": "cpp",
+        "thread": "cpp",
+        "filesystem": "cpp",
+        "cstdint": "cpp",
+        "queue": "cpp"
     }
 }
