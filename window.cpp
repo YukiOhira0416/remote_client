@@ -37,6 +37,10 @@
 #include <ShellScalingApi.h> // AdjustWindowRectExForDpi 等
 #pragma comment(lib, "Shcore.lib")
 
+// Uncomment the line below to enable snapping to preset resolutions.
+// By default, the application will use the exact client area size.
+//#define SNAP_TO_PRESET 1
+
 UINT64 RenderCount = 0;
 
 static UINT GetDpiForMonitorOrDefault(HMONITOR hMon) {
@@ -278,107 +282,76 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         }
 
         case WM_SIZE: {
-            // クライアント領域のサイズ変更
-            int width = LOWORD(lParam);
+            int width  = LOWORD(lParam);
             int height = HIWORD(lParam);
 
-            // 新しい解像度を設定
-            struct TargetResolution { // Renamed for clarity
-                int width;
-                int height;
+#ifdef SNAP_TO_PRESET
+            struct TargetResolution { int width; int height; };
+            static const TargetResolution presets[] = {
+                {3840,2160},{2560,1440},{1920,1080},{1600,900},{1280,720},{800,600},{640,480}
             };
+            int targetW = width, targetH = height, best = INT_MAX;
+            for (auto& r : presets) {
+                int d = abs(width - r.width) + abs(height - r.height);
+                if (d < best) { best = d; targetW = r.width; targetH = r.height; }
+            }
+#else
+            int targetW = width;
+            int targetH = height;
+#endif
 
-            // These are TARGET CLIENT AREA resolutions
-            const TargetResolution resolutions[] = {
-                {3840, 2160}, // 4K
-                {2560, 1440}, // WQHD
-                {1920, 1080}, // Full HD
-                {1600, 900},  // HD+
-                {1280, 720},  // HD
-                {800, 600},   // XGA
-                {640, 480}    // VGA
-            };
-
-            int closestWidth = width;
-            int closestHeight = height;
-            // width and height from WM_SIZE are client area dimensions
-            int targetClientWidth = width;
-            int targetClientHeight = height;
-            int minDifference = INT_MAX;
-
-            for (const auto& res : resolutions) {
-                int diff = std::abs(targetClientWidth - res.width) + std::abs(targetClientHeight - res.height);
-                if (diff < minDifference) {
-                    minDifference = diff;
-                    targetClientWidth = res.width;
-                    targetClientHeight = res.height;
-                }
+            // Skip further processing if the size is invalid or minimized.
+            if (wParam == SIZE_MINIMIZED || targetW <= 0 || targetH <= 0) {
+                DebugLog(L"WM_SIZE: Window minimized or zero size. Processing skipped.");
+                break;
             }
 
-            currentResolutionWidth = targetClientWidth; // Store the snapped client width
-            currentResolutionHeight = targetClientHeight; // Store the snapped client height
+            // Check if the current resolution is already the target. If so, do nothing.
+            // This prevents an infinite loop from SetWindowPos triggering WM_SIZE again.
+            if (currentResolutionWidth.load() == targetW && currentResolutionHeight.load() == targetH) {
+                 // But still send the size, in case the server needs a periodic update.
+                 SendWindowSize();
+                 break;
+            }
 
-            // Calculate the required window size for the target client area size
-            RECT wr = {0, 0, targetClientWidth, targetClientHeight};
-            DWORD dwStyle = GetWindowLong(hWnd, GWL_STYLE);
-            DWORD dwExStyle = GetWindowLong(hWnd, GWL_EXSTYLE);
-            AdjustWindowRectEx(&wr, dwStyle, GetMenu(hWnd) != NULL, dwExStyle);
+            currentResolutionWidth  = targetW;
+            currentResolutionHeight = targetH;
 
-            int adjustedWindowWidth = wr.right - wr.left;
-            int adjustedWindowHeight = wr.bottom - wr.top;
+            // クライアント領域を targetW x targetH にするためのウィンドウ全体サイズへ補正
+            RECT wr{0,0,targetW,targetH};
+            DWORD s  = GetWindowLong(hWnd, GWL_STYLE);
+            DWORD ex = GetWindowLong(hWnd, GWL_EXSTYLE);
+            AdjustWindowRectEx(&wr, s, GetMenu(hWnd)!=NULL, ex);
+            int winW = wr.right - wr.left;
+            int winH = wr.bottom - wr.top;
 
-            // Enforce the snapped resolution on the window (using adjusted window size)
-            SetWindowPos(hWnd, nullptr, 0, 0, adjustedWindowWidth, adjustedWindowHeight, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            // SetWindowPos can trigger another WM_SIZE, so we must be careful.
+            // The check above helps prevent loops. SWP_NOMOVE | NOZORDER | NOACTIVATE are also important.
+            SetWindowPos(hWnd,nullptr,0,0,winW,winH,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
 
-            if (g_d3d12Device) { // Check if D3D12 is initialized
-                if (wParam == SIZE_MINIMIZED || targetClientWidth == 0 || targetClientHeight == 0) {
-                    DebugLog(L"WM_SIZE: Window minimized or zero size. D3D resize skipped.");
-                    // Optionally, inform SendWindowSize about minimization if the server needs to know
-                } else {
-                    bool needsResize = true;
-                    if (g_swapChain) {
-                        DXGI_SWAP_CHAIN_DESC1 currentDesc; // For IDXGISwapChain1+
-                        g_swapChain->GetDesc1(&currentDesc);
-                        if (currentDesc.Width == static_cast<UINT>(targetClientWidth) &&
-                            currentDesc.Height == static_cast<UINT>(targetClientHeight)) {
-                            needsResize = false;
-                        }
-                    }
+            // SwapChain リサイズ（既に同寸法ならスキップ）
+            if (g_d3d12Device && g_swapChain) {
+                DXGI_SWAP_CHAIN_DESC1 desc;
+                g_swapChain->GetDesc1(&desc);
+                if (desc.Width != (UINT)targetW || desc.Height != (UINT)targetH) {
+                    WaitForGpu();
+                    for (UINT i=0;i<2;++i) g_renderTargets[i].Reset();
 
-                    if (needsResize && g_swapChain && g_d3d12CommandQueue) { // Check D3D12 command queue
-                        DebugLog(L"WM_SIZE: Resizing D3D for client area " + std::to_wstring(targetClientWidth) + L"x" + std::to_wstring(targetClientHeight));
-                        WaitForGpu(); // Ensure GPU is idle before resizing
-
-                        // Release existing render targets
-                        for (UINT i = 0; i < 2; ++i) {
-                            g_renderTargets[i].Reset();
-                        }
-
-                        HRESULT hr = g_swapChain->ResizeBuffers(
-                            2, // Number of buffers (same as initialization)
-                            targetClientWidth,  // Use target client width
-                            targetClientHeight, // Use target client height
-                            DXGI_FORMAT_R8G8B8A8_UNORM, // Format (same as initialization)
-                            0 // Flags (DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH etc.)
-                        );
-
-                        if (SUCCEEDED(hr)) {
-                            g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
-                            CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-                            for (UINT i = 0; i < 2; ++i) {
-                                hr = g_swapChain->GetBuffer(i, IID_PPV_ARGS(&g_renderTargets[i]));
-                                if (FAILED(hr)) {
-                                    DebugLog(L"WM_SIZE: Failed to get back buffer " + std::to_wstring(i) + L" after resize. HR: " + HResultToHexWString(hr));
-                                    break;
-                                }
-                                g_d3d12Device->CreateRenderTargetView(g_renderTargets[i].Get(), nullptr, rtvHandle);
-                                rtvHandle.Offset(1, g_rtvDescriptorSize);
+                    HRESULT hr = g_swapChain->ResizeBuffers(2, targetW, targetH, DXGI_FORMAT_R8G8B8A8_UNORM, 0);
+                    if (SUCCEEDED(hr)) {
+                        g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
+                        CD3DX12_CPU_DESCRIPTOR_HANDLE h(g_rtvHeap->GetCPUDescriptorHandleForHeapStart());
+                        for (UINT i=0;i<2;++i) {
+                            hr = g_swapChain->GetBuffer(i, IID_PPV_ARGS(&g_renderTargets[i]));
+                            if (FAILED(hr)) {
+                                DebugLog(L"ResizeBuffers/GetBuffer failed");
+                                break;
                             }
-
-                            DebugLog(L"WM_SIZE: Re-created Render Target Views.");
-                        } else {
-                            DebugLog(L"WM_SIZE: ResizeBuffers failed. HRESULT: " + std::to_wstring(hr));
+                            g_d3d12Device->CreateRenderTargetView(g_renderTargets[i].Get(), nullptr, h);
+                            h.Offset(1, g_rtvDescriptorSize);
                         }
+                    } else {
+                        DebugLog(L"ResizeBuffers failed");
                     }
                 }
             }
@@ -1170,4 +1143,12 @@ void SendWindowSize() {
     }
     // ソケットのクローズ
     closesocket(udpSocket);
+}
+
+void ClearReorderBufferAndSeq() {
+    std::lock_guard<std::mutex> lk(g_reorderMutex);
+    g_reorderBuffer.clear();
+    g_expectedInitialized = false;
+    g_globalFrameNumber.store(0); // Resetting this might be too aggressive depending on server, but matches request.
+    DebugLog(L"======== Cleared reorder buffer and reset stream sequence ========");
 }

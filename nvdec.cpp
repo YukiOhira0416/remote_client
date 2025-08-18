@@ -155,6 +155,83 @@ FrameDecoder::~FrameDecoder() {
     cuCtxPopCurrent(NULL);
 }
 
+// Forward declaration from window.cpp
+extern void ClearReorderBufferAndSeq();
+
+bool FrameDecoder::ReleaseDecoderAndBuffers_NoThrow() {
+    // This function must not be called while the decoder is actively processing.
+    // The caller is responsible for ensuring thread safety (e.g., by locking m_parseMutex).
+    try {
+        cuCtxPushCurrent(m_cuContext);
+
+        if (m_hDecoder) {
+            cuvidDestroyDecoder(m_hDecoder);
+            m_hDecoder = nullptr;
+        }
+
+        for (auto& r : m_frameResources) {
+            r.pCudaArrayY = nullptr; r.pCudaArrayUV = nullptr;
+            r.pMipmappedArrayY = nullptr; r.pMipmappedArrayUV = nullptr;
+            if (r.cudaExtMemY) { cuDestroyExternalMemory(r.cudaExtMemY); r.cudaExtMemY = nullptr; }
+            if (r.cudaExtMemUV){ cuDestroyExternalMemory(r.cudaExtMemUV); r.cudaExtMemUV = nullptr; }
+            if (r.sharedHandleY) { CloseHandle(r.sharedHandleY); r.sharedHandleY = nullptr; }
+            if (r.sharedHandleUV){ CloseHandle(r.sharedHandleUV); r.sharedHandleUV = nullptr; }
+            r.pTextureY.Reset(); r.pTextureUV.Reset();
+        }
+        m_frameResources.clear();
+
+        cuCtxPopCurrent(NULL);
+        return true;
+    } catch (...) {
+        // Log the error but don't rethrow, as per the function's contract.
+        DebugLog(L"Caught an unexpected exception in ReleaseDecoderAndBuffers_NoThrow. Resources may have leaked.");
+        cuCtxPopCurrent(NULL); // Attempt to pop context even on failure
+        return false;
+    }
+}
+
+void FrameDecoder::OnStreamResolutionChanged(int codedW, int codedH) {
+    // Call the global function to clear rendering-side buffers.
+    ClearReorderBufferAndSeq();
+}
+
+bool FrameDecoder::RecreateDecoderWithFormat(const CUVIDEOFORMAT* fmt) {
+    std::lock_guard<std::mutex> lk(m_parseMutex); // Stop parsing/decoding threads.
+    cuCtxPushCurrent(m_cuContext);
+    try {
+        DebugLog(L"RecreateDecoderWithFormat: Recreating decoder for " + std::to_wstring(fmt->coded_width) + L"x" + std::to_wstring(fmt->coded_height));
+
+        // 1. Release all existing decoder and buffer resources.
+        if (!ReleaseDecoderAndBuffers_NoThrow()) {
+            DebugLog(L"RecreateDecoderWithFormat: ReleaseDecoderAndBuffers_NoThrow failed.");
+            // Continue to attempt recreation, but log the issue.
+        }
+
+        // 2. Create a new decoder with the new video format.
+        // The const_cast is because the NVIDIA API doesn't use const, but we are not modifying it.
+        if (!createDecoder(const_cast<CUVIDEOFORMAT*>(fmt))) {
+            DebugLog(L"RecreateDecoderWithFormat: createDecoder failed.");
+            cuCtxPopCurrent(NULL);
+            return false;
+        }
+
+        // 3. Clear stream state like reorder buffers.
+        OnStreamResolutionChanged(fmt->coded_width, fmt->coded_height);
+
+        DebugLog(L"RecreateDecoderWithFormat: Successfully recreated decoder.");
+        cuCtxPopCurrent(NULL);
+        return true;
+
+    } catch (const std::exception& e) {
+        DebugLog(L"RecreateDecoderWithFormat: Caught exception: " + std::wstring(e.what(), e.what() + strlen(e.what())));
+    } catch (...) {
+        DebugLog(L"RecreateDecoderWithFormat: Caught unknown exception.");
+    }
+
+    cuCtxPopCurrent(NULL);
+    return false;
+}
+
 
 bool FrameDecoder::Init() {
     CUDA_CHECK(cuCtxPushCurrent(m_cuContext));
@@ -224,12 +301,23 @@ int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoForm
 
         if (!self->m_hDecoder) {
             if (!self->createDecoder(pVideoFormat)) {
-                DebugLog(L"HandleVideoSequence: Failed to create decoder.");
-                result = 0; // Stop processing
+                DebugLog(L"HandleVideoSequence: createDecoder failed for initial creation.");
+                result = 0;
             }
-        }
-        else {
-            // Reconfigure decoder if format changes, not handled for simplicity
+        } else {
+            // Check if the coded resolution has changed.
+            const bool resolutionChanged =
+                (self->m_videoDecoderCreateInfo.ulWidth  != pVideoFormat->coded_width) ||
+                (self->m_videoDecoderCreateInfo.ulHeight != pVideoFormat->coded_height);
+
+            if (resolutionChanged) {
+                DebugLog(L"HandleVideoSequence: Stream resolution changed. Recreating decoder.");
+                if (!self->RecreateDecoderWithFormat(pVideoFormat)) {
+                    DebugLog(L"HandleVideoSequence: RecreateDecoderWithFormat failed.");
+                    result = 0; // Critical failure, stop processing.
+                }
+            }
+            // If the resolution is the same, do nothing and continue with the current decoder.
         }
     }
     catch (const std::runtime_error& e) {

@@ -49,6 +49,11 @@ private:
     bool allocateFrameBuffers();
     void copyDecodedFrameToD3D12(CUVIDPARSERDISPINFO* pDispInfo);
 
+    // Dynamic re-initialization helpers
+    bool ReleaseDecoderAndBuffers_NoThrow();
+    bool RecreateDecoderWithFormat(const CUVIDEOFORMAT* pVideoFormat);
+    void OnStreamResolutionChanged(int codedW, int codedH);
+
     CUcontext m_cuContext;
     ID3D12Device* m_pD3D12Device;
     CUvideoparser m_hParser = nullptr;

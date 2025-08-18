@@ -63,6 +63,14 @@ cmake --build build --config Release
 - Multi-threaded networking and decoding
 - Customizable window resolution
 
+### Dynamic Resolution
+The client supports dynamic resolution changes during an active stream. When the user resizes the client window, the application sends a notification to the server to request a new stream resolution.
+
+**Server-Side Requirement:** For this feature to function correctly, the streaming server must be configured to:
+1.  Listen for UDP messages from the client containing the new resolution in the format `"height:width#"`.
+2.  Upon receiving this message, immediately reconfigure its video encoder (e.g., NVENC) to the new dimensions.
+3.  Ensure that the first frame of the newly resized stream is an IDR frame and is preceded by the appropriate SPS/PPS headers to allow the client's decoder to re-initialize seamlessly.
+
 ## Dependencies
 - [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit)
 - [NVIDIA Video Codec SDK](https://developer.nvidia.com/nvidia-video-codec-sdk)
