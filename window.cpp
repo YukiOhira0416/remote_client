@@ -30,6 +30,87 @@
 #include "Globals.h"
 #include "AppShutdown.h"
 
+// ==== [Resolution snap config & helpers] =====================================
+struct PresetRes { int w; int h; };
+
+// 必要に応じて編集可能（一般的な解像度を網羅）
+static const PresetRes kKnownResolutions[] = {
+    {3840,2160}, {2560,1440}, {1920,1080}, {1600,900},
+    {1366,768},  {1280,720},  {1024,768},  {800,600}, {640,480}
+};
+static constexpr size_t kNumKnown = sizeof(kKnownResolutions)/sizeof(kKnownResolutions[0]);
+
+static inline PresetRes FindNearestPresetByClientWH(int cw, int ch) noexcept {
+    int best = INT_MAX;
+    PresetRes out = kKnownResolutions[0];
+    for (size_t i=0;i<kNumKnown;++i) {
+        const auto& p = kKnownResolutions[i];
+        const int d = std::abs(cw - p.w) + std::abs(ch - p.h);
+        if (d < best) { best = d; out = p; }
+    }
+    return out;
+}
+
+// クライアント領域サイズ -> ウインドウ外形（枠込み）RECT への変換
+static inline RECT ClientToWindowRectForDpi(HWND hWnd, int clientW, int clientH) {
+    RECT rc{0,0,clientW,clientH};
+    const DWORD style = (DWORD)GetWindowLongPtr(hWnd, GWL_STYLE);
+    const DWORD ex    = (DWORD)GetWindowLongPtr(hWnd, GWL_EXSTYLE);
+    // AdjustWindowRectExForDpi が使えるなら優先
+    HMODULE hUser32 = LoadLibraryW(L"user32.dll");
+    if (hUser32) {
+        typedef BOOL (WINAPI *AdjustForDpi)(LPRECT, DWORD, BOOL, DWORD, UINT);
+        auto pAdj = (AdjustForDpi)GetProcAddress(hUser32, "AdjustWindowRectExForDpi");
+        if (pAdj) {
+            // 既存ヘルパでDPI取得
+            HMONITOR hMon = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+            UINT dpi = GetDpiForMonitorOrDefault(hMon); // 既存関数を利用
+            pAdj(&rc, style, GetMenu(hWnd)!=NULL, ex, dpi);
+        } else {
+            AdjustWindowRectEx(&rc, style, GetMenu(hWnd)!=NULL, ex);
+        }
+        FreeLibrary(hUser32);
+    } else {
+        AdjustWindowRectEx(&rc, style, GetMenu(hWnd)!=NULL, ex);
+    }
+    return rc;
+}
+
+// WM_SIZING でどの辺/角をドラッグしているかに応じて、反対側をアンカーしたまま矩形を書き換える
+static inline void ApplyAnchoredResize(RECT* ioWinRect, const RECT& targetWinRect, WPARAM sizingEdge) {
+    if (!ioWinRect) return;
+    const int tgtW = targetWinRect.right - targetWinRect.left;
+    const int tgtH = targetWinRect.bottom - targetWinRect.top;
+
+    switch (sizingEdge) {
+        case WMSZ_LEFT:      ioWinRect->left   = ioWinRect->right - tgtW; break;
+        case WMSZ_RIGHT:     ioWinRect->right  = ioWinRect->left  + tgtW; break;
+        case WMSZ_TOP:       ioWinRect->top    = ioWinRect->bottom - tgtH; break;
+        case WMSZ_BOTTOM:    ioWinRect->bottom = ioWinRect->top    + tgtH; break;
+        case WMSZ_TOPLEFT:
+            ioWinRect->left   = ioWinRect->right  - tgtW;
+            ioWinRect->top    = ioWinRect->bottom - tgtH;
+            break;
+        case WMSZ_TOPRIGHT:
+            ioWinRect->right  = ioWinRect->left   + tgtW;
+            ioWinRect->top    = ioWinRect->bottom - tgtH;
+            break;
+        case WMSZ_BOTTOMLEFT:
+            ioWinRect->left   = ioWinRect->right  - tgtW;
+            ioWinRect->bottom = ioWinRect->top    + tgtH;
+            break;
+        case WMSZ_BOTTOMRIGHT:
+        default:
+            ioWinRect->right  = ioWinRect->left   + tgtW;
+            ioWinRect->bottom = ioWinRect->top    + tgtH;
+            break;
+    }
+}
+
+// リサイズ操作中かのフラグ
+static std::atomic<bool> g_inSizeMove{false};
+
+
 // ==== [Multi-monitor helpers - BEGIN] ====
 #ifndef _USE_MATH_DEFINES
 #define _USE_MATH_DEFINES
@@ -277,76 +358,95 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             break;
         }
 
+        case WM_GETMINMAXINFO:
+        {
+            MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+            if (mmi) {
+                // 最小：最小既知解像度、最大：最大既知解像度（必要に応じて調整）
+                PresetRes minP = kKnownResolutions[kNumKnown - 1]; // 末尾を最小扱いにしているなら適宜入替
+                PresetRes maxP = kKnownResolutions[0];
+
+                // ウインドウ外形へ変換
+                RECT minWR = ClientToWindowRectForDpi(hWnd, minP.w, minP.h);
+                RECT maxWR = ClientToWindowRectForDpi(hWnd, maxP.w, maxP.h);
+
+                mmi->ptMinTrackSize.x = std::max<LONG>(minWR.right - minWR.left,  200); // 安全マージン
+                mmi->ptMinTrackSize.y = std::max<LONG>(minWR.bottom - minWR.top, 200);
+                mmi->ptMaxTrackSize.x = (maxWR.right - maxWR.left);
+                mmi->ptMaxTrackSize.y = (maxWR.bottom - maxWR.top);
+            }
+            return 0;
+        }
+
+        case WM_ENTERSIZEMOVE:
+            g_inSizeMove = true;
+            return 0;
+
+        case WM_SIZING:
+        {
+            RECT* prc = reinterpret_cast<RECT*>(lParam);
+            if (!prc) return TRUE;
+
+            // 現在の提案ウインドウ矩形サイズ（枠込み）
+            const int propWinW = prc->right  - prc->left;
+            const int propWinH = prc->bottom - prc->top;
+
+            // 提案ウインドウ矩形から推定クライアントサイズを厳密に逆算するのは困難なため、
+            // 各既知クライアント解像度を「枠込みウインドウ矩形」に変換し、
+            // それと提案ウインドウ矩形の幅高の距離（|dW|+|dH|）が最小となる候補を選ぶ。
+            PresetRes best = kKnownResolutions[0];
+            int bestDist = INT_MAX;
+            for (size_t i=0;i<kNumKnown;++i) {
+                const auto& p = kKnownResolutions[i];
+                RECT winRectForPreset = ClientToWindowRectForDpi(hWnd, p.w, p.h);
+                const int w = (winRectForPreset.right - winRectForPreset.left);
+                const int h = (winRectForPreset.bottom - winRectForPreset.top);
+                const int dist = std::abs(propWinW - w) + std::abs(propWinH - h);
+                if (dist < bestDist) { bestDist = dist; best = p; }
+            }
+
+            // 選んだ既知解像度に対応するウインドウ外形へ、ドラッグエッジを保ったままスナップ
+            RECT targetWin = ClientToWindowRectForDpi(hWnd, best.w, best.h);
+            ApplyAnchoredResize(prc, targetWin, wParam);
+
+            // TRUE返却で「自前でRECTを調整した」ことを伝える
+            return TRUE;
+        }
+
+        case WM_EXITSIZEMOVE:
+            g_inSizeMove = false;
+            // リサイズ確定タイミングでのみサーバに通知
+            SendWindowSize(); // 既存関数を利用
+            return 0;
+
         case WM_SIZE: {
             // クライアント領域のサイズ変更
             int width = LOWORD(lParam);
             int height = HIWORD(lParam);
 
-            // 新しい解像度を設定
-            struct TargetResolution { // Renamed for clarity
-                int width;
-                int height;
-            };
+            // With WM_SIZING handling the snapping, this handler's role is simplified.
+            // It just needs to update the state and resize the D3D buffers.
+            // The old snapping logic and SetWindowPos call are removed.
 
-            // These are TARGET CLIENT AREA resolutions
-            const TargetResolution resolutions[] = {
-                {3840, 2160}, // 4K
-                {2560, 1440}, // WQHD
-                {1920, 1080}, // Full HD
-                {1600, 900},  // HD+
-                {1280, 720},  // HD
-                {800, 600},   // XGA
-                {640, 480}    // VGA
-            };
-
-            int closestWidth = width;
-            int closestHeight = height;
-            // width and height from WM_SIZE are client area dimensions
-            int targetClientWidth = width;
-            int targetClientHeight = height;
-            int minDifference = INT_MAX;
-
-            for (const auto& res : resolutions) {
-                int diff = std::abs(targetClientWidth - res.width) + std::abs(targetClientHeight - res.height);
-                if (diff < minDifference) {
-                    minDifference = diff;
-                    targetClientWidth = res.width;
-                    targetClientHeight = res.height;
-                }
-            }
-
-            currentResolutionWidth = targetClientWidth; // Store the snapped client width
-            currentResolutionHeight = targetClientHeight; // Store the snapped client height
-
-            // Calculate the required window size for the target client area size
-            RECT wr = {0, 0, targetClientWidth, targetClientHeight};
-            DWORD dwStyle = GetWindowLong(hWnd, GWL_STYLE);
-            DWORD dwExStyle = GetWindowLong(hWnd, GWL_EXSTYLE);
-            AdjustWindowRectEx(&wr, dwStyle, GetMenu(hWnd) != NULL, dwExStyle);
-
-            int adjustedWindowWidth = wr.right - wr.left;
-            int adjustedWindowHeight = wr.bottom - wr.top;
-
-            // Enforce the snapped resolution on the window (using adjusted window size)
-            SetWindowPos(hWnd, nullptr, 0, 0, adjustedWindowWidth, adjustedWindowHeight, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            currentResolutionWidth = width;
+            currentResolutionHeight = height;
 
             if (g_d3d12Device) { // Check if D3D12 is initialized
-                if (wParam == SIZE_MINIMIZED || targetClientWidth == 0 || targetClientHeight == 0) {
+                if (wParam == SIZE_MINIMIZED || width == 0 || height == 0) {
                     DebugLog(L"WM_SIZE: Window minimized or zero size. D3D resize skipped.");
-                    // Optionally, inform SendWindowSize about minimization if the server needs to know
                 } else {
                     bool needsResize = true;
                     if (g_swapChain) {
-                        DXGI_SWAP_CHAIN_DESC1 currentDesc; // For IDXGISwapChain1+
+                        DXGI_SWAP_CHAIN_DESC1 currentDesc;
                         g_swapChain->GetDesc1(&currentDesc);
-                        if (currentDesc.Width == static_cast<UINT>(targetClientWidth) &&
-                            currentDesc.Height == static_cast<UINT>(targetClientHeight)) {
+                        if (currentDesc.Width == static_cast<UINT>(width) &&
+                            currentDesc.Height == static_cast<UINT>(height)) {
                             needsResize = false;
                         }
                     }
 
-                    if (needsResize && g_swapChain && g_d3d12CommandQueue) { // Check D3D12 command queue
-                        DebugLog(L"WM_SIZE: Resizing D3D for client area " + std::to_wstring(targetClientWidth) + L"x" + std::to_wstring(targetClientHeight));
+                    if (needsResize && g_swapChain && g_d3d12CommandQueue) {
+                        DebugLog(L"WM_SIZE: Resizing D3D for client area " + std::to_wstring(width) + L"x" + std::to_wstring(height));
                         WaitForGpu(); // Ensure GPU is idle before resizing
 
                         // Release existing render targets
@@ -355,11 +455,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                         }
 
                         HRESULT hr = g_swapChain->ResizeBuffers(
-                            2, // Number of buffers (same as initialization)
-                            targetClientWidth,  // Use target client width
-                            targetClientHeight, // Use target client height
-                            DXGI_FORMAT_R8G8B8A8_UNORM, // Format (same as initialization)
-                            0 // Flags (DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH etc.)
+                            2, // Number of buffers
+                            width,
+                            height,
+                            DXGI_FORMAT_R8G8B8A8_UNORM,
+                            0
                         );
 
                         if (SUCCEEDED(hr)) {
@@ -374,7 +474,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                                 g_d3d12Device->CreateRenderTargetView(g_renderTargets[i].Get(), nullptr, rtvHandle);
                                 rtvHandle.Offset(1, g_rtvDescriptorSize);
                             }
-
                             DebugLog(L"WM_SIZE: Re-created Render Target Views.");
                         } else {
                             DebugLog(L"WM_SIZE: ResizeBuffers failed. HRESULT: " + std::to_wstring(hr));
@@ -383,8 +482,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 }
             }
 
-            // クライアント領域のサイズ変更に伴うSendWindowSizeの呼び出し
-            SendWindowSize();
+            // SendWindowSize() is now called only in WM_EXITSIZEMOVE.
             break;
         }
 
