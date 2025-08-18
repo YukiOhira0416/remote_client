@@ -39,6 +39,8 @@
         "thread": "cpp",
         "filesystem": "cpp",
         "cstdint": "cpp",
-        "queue": "cpp"
+        "queue": "cpp",
+        "map": "cpp",
+        "deque": "cpp"
     }
 }

@@ -30,6 +30,8 @@
 #include "Globals.h"
 #include "AppShutdown.h"
 
+UINT GetDpiForMonitorOrDefault(HMONITOR hMon);
+
 // ==== [Resolution snap config & helpers] =====================================
 struct PresetRes { int w; int h; };
 
