@@ -379,6 +379,9 @@ struct VertexPosTex { float x, y, z; float u, v; };
 
 void CleanupD3DRenderResources(); // Forward declaration
 
+// Forward declaration for the resize helper, to be used by ResumeAfterUserInteraction
+static void FinalizeResize(HWND hWnd, bool forceAnnounce);
+
 // Add this helper near FinalizeResize or other statics
 static void ResumeAfterUserInteraction(HWND hWnd) {
     g_isSizing = false;
