@@ -1118,7 +1118,7 @@ void RenderFrame() {
 }
 
 // Minimal blocking wait, only for shutdown.
-static void WaitForGpu() {
+void WaitForGpu() {
     if (!g_d3d12CommandQueue || !g_fence || !g_fenceEvent) return;
     // Signal the command queue.
     UINT64 fenceValueToSignal = g_fenceValue;
