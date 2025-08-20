@@ -374,6 +374,49 @@ struct VertexPosTex { float x, y, z; float u, v; };
 
 void CleanupD3DRenderResources(); // Forward declaration
 
+// Helper to handle the logic for snapping, padding, and notifying after a resize event.
+static void FinalizeResize(HWND hWnd)
+{
+    RECT rc{}; GetClientRect(hWnd, &rc);
+    int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
+
+    int tw = 0, th = 0;
+    SnapToKnownResolution(cw, ch, tw, th); // tw,th = snapped *video* size (16:9)
+
+    // Update globals: these represent the *video* resolution (server-side encode)
+    currentResolutionWidth  = tw;
+    currentResolutionHeight = th;
+
+    // --- pad the client area for margins around the video ---
+    const int paddedClientW = tw + kClientPaddingX * 2;
+    const int paddedClientH = th + kClientPaddingY * 2;
+
+    // Adjust *outer* window so that client becomes padded size
+    RECT wr{0, 0, paddedClientW, paddedClientH};
+    DWORD style = GetWindowLong(hWnd, GWL_STYLE);
+    DWORD ex    = GetWindowLong(hWnd, GWL_EXSTYLE);
+    AdjustWindowRectEx(&wr, style, GetMenu(hWnd)!=NULL, ex);
+    const int ww = wr.right - wr.left, wh = wr.bottom - wr.top;
+
+    RECT wrNow{}; GetWindowRect(hWnd, &wrNow);
+    if ((wrNow.right - wrNow.left) != ww || (wrNow.bottom - wrNow.top) != wh) {
+        SetWindowPos(hWnd, nullptr, 0, 0, ww, wh,
+                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    // Enqueue swap-chain resize to *padded client size*.
+    // This might be redundant if SetWindowPos triggers a WM_SIZE that is handled,
+    // but it's important to ensure the resize is correctly queued.
+    g_pendingResize.w.store(paddedClientW, std::memory_order_relaxed);
+    g_pendingResize.h.store(paddedClientH, std::memory_order_relaxed);
+    g_pendingResize.has.store(true, std::memory_order_release);
+
+    // Notify server (single gate) with the *video* resolution ONLY
+    OnResolutionChanged_GatedSend(tw, th, /*force=*/false);
+
+    InvalidateRect(hWnd, nullptr, FALSE);
+}
+
 UINT64 count = 0;
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     try {
@@ -401,43 +444,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         case WM_EXITSIZEMOVE:
         {
             g_isSizing = false;
-
-            RECT rc{}; GetClientRect(hWnd, &rc);
-            int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
-
-            int tw = 0, th = 0;
-            SnapToKnownResolution(cw, ch, tw, th); // tw,th = snapped *video* size (16:9)
-
-            // Update globals: these represent the *video* resolution (server-side encode)
-            currentResolutionWidth  = tw;
-            currentResolutionHeight = th;
-
-            // --- pad the client area for margins around the video ---
-            const int paddedClientW = tw + kClientPaddingX * 2;
-            const int paddedClientH = th + kClientPaddingY * 2;
-
-            // Adjust *outer* window so that client becomes padded size
-            RECT wr{0, 0, paddedClientW, paddedClientH};
-            DWORD style = GetWindowLong(hWnd, GWL_STYLE);
-            DWORD ex    = GetWindowLong(hWnd, GWL_EXSTYLE);
-            AdjustWindowRectEx(&wr, style, GetMenu(hWnd)!=NULL, ex);
-            const int ww = wr.right - wr.left, wh = wr.bottom - wr.top;
-
-            RECT wrNow{}; GetWindowRect(hWnd, &wrNow);
-            if ((wrNow.right - wrNow.left) != ww || (wrNow.bottom - wrNow.top) != wh) {
-                SetWindowPos(hWnd, nullptr, 0, 0, ww, wh,
-                             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-            }
-
-            // Enqueue swap-chain resize to *padded client size*
-            g_pendingResize.w.store(paddedClientW, std::memory_order_relaxed);
-            g_pendingResize.h.store(paddedClientH, std::memory_order_relaxed);
-            g_pendingResize.has.store(true, std::memory_order_release);
-
-            // Notify server (single gate) with the *video* resolution ONLY
-            OnResolutionChanged_GatedSend(tw, th, /*force=*/false);
-
-            InvalidateRect(hWnd, nullptr, FALSE);
+            FinalizeResize(hWnd);
             return 0;
         }
 
@@ -451,6 +458,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                              suggested->bottom - suggested->top,
                              SWP_NOZORDER | SWP_NOACTIVATE);
             }
+            // After a DPI change, the size and position have changed, so we must
+            // trigger the same logic as a completed resize to restart the stream.
+            FinalizeResize(hWnd);
             break;
         }
         case WM_DISPLAYCHANGE:
