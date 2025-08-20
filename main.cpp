@@ -1240,6 +1240,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         return -1;
     }
 
+    // After InitWindow(...) and InitD3D() == true
+    RECT rc{}; GetClientRect(g_hWnd, &rc);
+    int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
+    int tw, th; SnapToKnownResolution(cw, ch, tw, th);
+    currentResolutionWidth  = tw;
+    currentResolutionHeight = th;
+
+    // Enqueue an initial resize for the render thread (to align swap-chain)
+    g_pendingResize.w.store(tw, std::memory_order_relaxed);
+    g_pendingResize.h.store(th, std::memory_order_relaxed);
+    g_pendingResize.has.store(true, std::memory_order_release);
+
+    // Force-send to server now (single gate):
+    OnResolutionChanged_GatedSend(tw, th, /*force=*/true);
+
     // Initialize CUDA and NVDEC
     // Per Yuki's recommendation, use the primary context to ensure Runtime and Driver APIs work together.
     cudaSetDevice(0); // Ensure runtime API is targeting the correct device.

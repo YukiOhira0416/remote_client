@@ -19,6 +19,15 @@
 
 #define SIZE_PACKET_SIZE 258
 
+// New struct for pending resize requests
+struct PendingResize {
+    std::atomic<bool> has{false};
+    std::atomic<int>  w{0};
+    std::atomic<int>  h{0};
+};
+
+extern PendingResize g_pendingResize;
+
 // Forward declarations for NVDEC
 class FrameDecoder;
 void NvdecThread(int threadId);

@@ -23,6 +23,9 @@ std::atomic<int> currentResolutionWidth(1920);
 std::atomic<int> currentResolutionHeight(1080);
 HWND g_hWnd = nullptr;
 
+// Pending resize request state
+PendingResize g_pendingResize;
+
 // D3D12 Frame queue management
 std::deque<ReadyGpuFrame> g_readyGpuFrameQueue;
 std::mutex g_readyGpuFrameQueueMutex;

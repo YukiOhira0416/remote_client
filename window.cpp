@@ -242,7 +242,7 @@ static const TargetResolution kKnownResolutions[] = {
 };
 
 // 既知解像度にスナップするユーティリティ
-static void SnapToKnownResolution(int srcW, int srcH, int& outW, int& outH) {
+void SnapToKnownResolution(int srcW, int srcH, int& outW, int& outH) {
     int bestW = srcW, bestH = srcH, best = INT_MAX;
     for (auto& r : kKnownResolutions) {
         int d = abs(srcW - r.width) + abs(srcH - r.height);
@@ -255,55 +255,6 @@ static void SnapToKnownResolution(int srcW, int srcH, int& outW, int& outH) {
 void SendFinalResolution(int width, int height); // Forward declaration (removed static for external linkage)
 void WaitForGpu(); // D3D12: Helper function to wait for GPU to finish commands
 
-// D3D12のResizeBuffersを安全に行う（EXITSIZEMOVEからのみ呼ぶ）
-static void ResizeSwapChainIfNeeded(int targetClientWidth, int targetClientHeight) {
-    if (!g_swapChain || !g_d3d12Device || !g_d3d12CommandQueue) return;
-
-    DXGI_SWAP_CHAIN_DESC1 desc{};
-    g_swapChain->GetDesc1(&desc);
-    if (desc.Width == (UINT)targetClientWidth && desc.Height == (UINT)targetClientHeight) {
-        return; // 既に一致
-    }
-
-    DebugLog(L"EXITSIZEMOVE: Resizing D3D for client area "
-             + std::to_wstring(targetClientWidth) + L"x" + std::to_wstring(targetClientHeight));
-
-    WaitForGpu(); // GPUアイドル化
-
-    // BackBuffer解放
-    for (UINT i=0;i<2;++i) g_renderTargets[i].Reset();
-
-    // ResizeBuffers。本来は作成時と同じフラグを維持すべき（ALLOW_TEARING等）
-    // ここでは0を維持。必要ならInitD3D側の作成フラグに合わせてください。
-    HRESULT hr = g_swapChain->ResizeBuffers(
-        2, targetClientWidth, targetClientHeight, DXGI_FORMAT_R8G8B8A8_UNORM, g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
-
-    if (FAILED(hr)) {
-        DebugLog(L"EXITSIZEMOVE: ResizeBuffers failed. HR: " + HResultToHexWString(hr));
-        // フォールバック: 一旦自動サイズ決定を試す
-        hr = g_swapChain->ResizeBuffers(2, 0, 0, DXGI_FORMAT_R8G8B8A8_UNORM, g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
-        if (FAILED(hr)) {
-            DebugLog(L"EXITSIZEMOVE: ResizeBuffers(0,0) also failed. HR: " + HResultToHexWString(hr));
-            return;
-        }
-    }
-
-    g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
-
-    // RTV再作成
-    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-    for (UINT i=0;i<2;++i) {
-        hr = g_swapChain->GetBuffer(i, IID_PPV_ARGS(&g_renderTargets[i]));
-        if (FAILED(hr)) {
-            DebugLog(L"EXITSIZEMOVE: GetBuffer(" + std::to_wstring(i) + L") failed. HR: "
-                     + HResultToHexWString(hr));
-            return;
-        }
-        g_d3d12Device->CreateRenderTargetView(g_renderTargets[i].Get(), nullptr, rtvHandle);
-        rtvHandle.Offset(1, g_rtvDescriptorSize);
-    }
-    DebugLog(L"EXITSIZEMOVE: Re-created Render Target Views.");
-}
 // ==== [Resize helpers - END] ====
 
 // from main.cpp
@@ -386,38 +337,24 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         {
             g_isSizing = false;
 
-            // 1) Read actual client size and snap to the known 16:9 grid
             RECT rc{}; GetClientRect(hWnd, &rc);
             int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
             int tw = 0, th = 0;
-            SnapToKnownResolution(cw, ch, tw, th);  // keeps 16:9 and picks the closest known res
+            SnapToKnownResolution(cw, ch, tw, th);
 
-            // 2) Update globals seen by NVDEC and renderer
+            // Update globals for everyone (NVDEC, layout, etc.)
             currentResolutionWidth  = tw;
             currentResolutionHeight = th;
 
-            // 3) If snap changed size, adjust once at the window frame level to match client area
-            RECT wr{0,0,tw,th};
-            DWORD style = GetWindowLong(hWnd, GWL_STYLE);
-            DWORD ex    = GetWindowLong(hWnd, GWL_EXSTYLE);
-            AdjustWindowRectEx(&wr, style, GetMenu(hWnd)!=NULL, ex);
-            const int ww = wr.right - wr.left, wh = wr.bottom - wr.top;
+            // Enqueue resize for the render thread
+            g_pendingResize.w.store(tw, std::memory_order_relaxed);
+            g_pendingResize.h.store(th, std::memory_order_relaxed);
+            g_pendingResize.has.store(true, std::memory_order_release);
 
-            RECT wrNow{}; GetWindowRect(hWnd, &wrNow);
-            if ((wrNow.right - wrNow.left) != ww || (wrNow.bottom - wrNow.top) != wh) {
-                // Expect exactly one WM_SIZE from this SetWindowPos
-                SetWindowPos(hWnd, nullptr, 0, 0, ww, wh,
-                             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-            }
+            // Notify server (single gate: sends final resolution, clears reorder, requests IDR)
+            OnResolutionChanged_GatedSend(tw, th, /*force=*/false);
 
-            // 4) Resize swap chain to final target exactly once
-            ResizeSwapChainIfNeeded(tw, th);
-
-            // 5) ***Single gate*** to notify server + reset local state + request IDR
-            //    Do NOT call SendFinalResolution directly here.
-            OnResolutionChanged_GatedSend(tw, th, /*force=*/false); // This must: SendFinalResolution → ClearReorderState → RequestIDRNow
-
-            // 6) Nudge rendering once if desired
+            // Nudge a frame so the render thread picks it up immediately
             InvalidateRect(hWnd, nullptr, FALSE);
             return 0;
         }
@@ -1017,22 +954,88 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     return hasFrameToRender; // Return whether a frame was actually prepared for rendering
 }
 
-void WaitForGpu() {
-    // Signal the command queue.
-    UINT64 fenceValueToSignal = g_fenceValue; // Use the main fence value for this
-    HRESULT hr = g_d3d12CommandQueue->Signal(g_fence.Get(), fenceValueToSignal);
-    if (FAILED(hr)) { DebugLog(L"WaitForGpu: Failed to signal fence. HR: " + HResultToHexWString(hr)); return; }
+static void ResizeSwapChainOnRenderThread(int newW, int newH) {
+    if (!g_swapChain || !g_d3d12Device || !g_d3d12CommandQueue) return;
 
-    // Wait until the fence has been processed.
-    if (g_fence->GetCompletedValue() < fenceValueToSignal) {
-        hr = g_fence->SetEventOnCompletion(fenceValueToSignal, g_fenceEvent);
-        if (FAILED(hr)) { DebugLog(L"WaitForGpu: Failed to set event on completion. HR: " + HResultToHexWString(hr)); return; }
-        WaitForSingleObject(g_fenceEvent, INFINITE);
+    // Get existing desc; skip if already correct
+    DXGI_SWAP_CHAIN_DESC1 desc{};
+    g_swapChain->GetDesc1(&desc);
+    if (desc.Width == (UINT)newW && desc.Height == (UINT)newH) return;
+
+    // Bounded wait so we never hard-freeze the pipeline
+    auto WaitForGpuWithTimeout = [](DWORD totalTimeoutMs)->bool {
+        // Signal
+        UINT64 fenceValueToSignal = g_fenceValue;
+        HRESULT hr = g_d3d12CommandQueue->Signal(g_fence.Get(), fenceValueToSignal);
+        if (FAILED(hr)) { DebugLog(L"WaitForGpuWithTimeout: Signal failed. HR: " + HResultToHexWString(hr)); return false; }
+
+        const DWORD step = 50; // ms
+        DWORD waited = 0;
+        while (g_fence->GetCompletedValue() < fenceValueToSignal) {
+            hr = g_fence->SetEventOnCompletion(fenceValueToSignal, g_fenceEvent);
+            if (FAILED(hr)) { DebugLog(L"WaitForGpuWithTimeout: SetEventOnCompletion failed. HR: " + HResultToHexWString(hr)); return false; }
+            DWORD r = MsgWaitForMultipleObjects(1, &g_fenceEvent, FALSE, step, QS_ALLINPUT);
+            if (r == WAIT_OBJECT_0) break; // fence signaled
+            // pump messages to keep app responsive
+            MSG msg;
+            while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+            }
+            waited += step;
+            if (waited >= totalTimeoutMs) {
+                DebugLog(L"WaitForGpuWithTimeout: timed out; proceeding cautiously.");
+                break;
+            }
+        }
+        g_fenceValue++;
+        return true;
+    };
+
+    DebugLog(L"RenderThread: resizing swap-chain to " + std::to_wstring(newW) + L"x" + std::to_wstring(newH));
+
+    WaitForGpuWithTimeout(500); // keep pumping; don’t freeze
+
+    for (UINT i = 0; i < 2; ++i) g_renderTargets[i].Reset();
+
+    HRESULT hr = g_swapChain->ResizeBuffers(
+        2, newW, newH, DXGI_FORMAT_R8G8B8A8_UNORM,
+        g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
+    if (FAILED(hr)) {
+        DebugLog(L"RenderThread: ResizeBuffers failed. HR: " + HResultToHexWString(hr));
+        // As a fallback, try automatic size:
+        hr = g_swapChain->ResizeBuffers(2, 0, 0, DXGI_FORMAT_R8G8B8A8_UNORM,
+                                        g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
+        if (FAILED(hr)) {
+            DebugLog(L"RenderThread: ResizeBuffers(0,0) also failed. HR: " + HResultToHexWString(hr));
+            return;
+        }
     }
-    g_fenceValue++;
+
+    g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart());
+    for (UINT i = 0; i < 2; ++i) {
+        hr = g_swapChain->GetBuffer(i, IID_PPV_ARGS(&g_renderTargets[i]));
+        if (FAILED(hr)) {
+            DebugLog(L"RenderThread: GetBuffer(" + std::to_wstring(i) + L") failed. HR: " + HResultToHexWString(hr));
+            return;
+        }
+        g_d3d12Device->CreateRenderTargetView(g_renderTargets[i].Get(), nullptr, rtvHandle);
+        rtvHandle.Offset(1, g_rtvDescriptorSize);
+    }
+    DebugLog(L"RenderThread: RTVs recreated after resize.");
 }
 
 void RenderFrame() {
+    // Pick up pending resize, if any
+    if (g_pendingResize.has.load(std::memory_order_acquire)) {
+        int newW = g_pendingResize.w.load(std::memory_order_relaxed);
+        int newH = g_pendingResize.h.load(std::memory_order_relaxed);
+        g_pendingResize.has.store(false, std::memory_order_release);
+        ResizeSwapChainOnRenderThread(newW, newH);
+    }
+
     auto frameStartTime = std::chrono::system_clock::now();
 
     // --- D3D12 RenderFrame ---
@@ -1113,6 +1116,24 @@ void RenderFrame() {
         std::chrono::duration_cast<std::chrono::milliseconds>(frameEndTime - frameStartTime);
     if(RenderCount % 60 == 0)DebugLog(L"RenderFrame Execution Time: " + std::to_wstring(renderDuration.count()) + L" ms.");
 }
+
+// Minimal blocking wait, only for shutdown.
+static void WaitForGpu() {
+    if (!g_d3d12CommandQueue || !g_fence || !g_fenceEvent) return;
+    // Signal the command queue.
+    UINT64 fenceValueToSignal = g_fenceValue;
+    HRESULT hr = g_d3d12CommandQueue->Signal(g_fence.Get(), fenceValueToSignal);
+    if (FAILED(hr)) { return; }
+
+    // Wait until the fence has been processed.
+    if (g_fence->GetCompletedValue() < fenceValueToSignal) {
+        hr = g_fence->SetEventOnCompletion(fenceValueToSignal, g_fenceEvent);
+        if (FAILED(hr)) { return; }
+        WaitForSingleObject(g_fenceEvent, INFINITE);
+    }
+    g_fenceValue++;
+}
+
 
 void CleanupD3DRenderResources() {
     WaitForGpu(); // Ensure GPU is idle before releasing resources
