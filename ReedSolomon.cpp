@@ -85,21 +85,24 @@ bool DecodeFEC_Jerasure(
     // --- 受信シャードを一時バッファにコピーし、消失を記録 ---
     for (int i = 0; i < n; ++i) {
         auto it = receivedShards.find(i);
-        if (it != receivedShards.end()) {
-            // 受信したシャードを一時バッファにコピー
+        bool is_shard_valid = (it != receivedShards.end() && it->second.size() == shard_len);
+
+        if (is_shard_valid) {
+            // Valid shard received
             temp_shards[i] = it->second;
         } else {
-            // 消失したシャード
+            // Shard is missing or invalid, treat as an erasure.
             if (num_erasures < m) {
                 erasures[num_erasures++] = i;
-                temp_shards[i].resize(shard_len, 0); // 消失分はゼロで埋める (jerasure_matrix_decode が上書きする)
+                temp_shards[i].resize(shard_len, 0); // Allocate a buffer for the recovery
             } else {
-                // m を超える消失は復元不可
+                // Too many erasures to recover.
                 DebugLog(L"DecodeFEC_Jerasure Error: Too many erasures (" + std::to_wstring(num_erasures + 1) + L" > " + std::to_wstring(m) + L")");
                 return false;
             }
         }
-        // ポインタ配列設定
+
+        // Set up the pointers for Jerasure
         if (i < k) {
             data_ptrs[i] = reinterpret_cast<char*>(temp_shards[i].data());
         } else {
