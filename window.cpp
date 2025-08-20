@@ -129,6 +129,55 @@ static bool CreateWindowOnBestMonitor(HINSTANCE hInstance, int nCmdShow,
 #pragma comment(lib, "dxgi.lib") // DXGI is still used
 #pragma comment(lib, "d3dcompiler.lib")
 
+// Renders the video with its aspect ratio preserved, adding black bars (letterboxing/pillarboxing) as needed.
+static void SetLetterboxViewport(ID3D12GraphicsCommandList* cmd, D3D12_RESOURCE_DESC backbufferDesc, D3D12_RESOURCE_DESC videoDesc)
+{
+    if (!cmd) return;
+
+    const float bbWidth = static_cast<float>(backbufferDesc.Width);
+    const float bbHeight = static_cast<float>(backbufferDesc.Height);
+    const float videoWidth = static_cast<float>(videoDesc.Width);
+    const float videoHeight = static_cast<float>(videoDesc.Height);
+
+    if (bbWidth == 0 || bbHeight == 0 || videoWidth == 0 || videoHeight == 0) {
+        return; // Avoid division by zero
+    }
+
+    float vpWidth, vpHeight, vpX, vpY;
+    const float bbAspect = bbWidth / bbHeight;
+    const float videoAspect = videoWidth / videoHeight;
+
+    if (bbAspect > videoAspect) {
+        // Pillarbox (window is wider than video)
+        vpHeight = bbHeight;
+        vpWidth = vpHeight * videoAspect;
+        vpX = (bbWidth - vpWidth) / 2.0f;
+        vpY = 0.0f;
+    } else {
+        // Letterbox (window is taller than video)
+        vpWidth = bbWidth;
+        vpHeight = vpWidth / videoAspect;
+        vpX = 0.0f;
+        vpY = (bbHeight - vpHeight) / 2.0f;
+    }
+
+    D3D12_VIEWPORT vp{};
+    vp.TopLeftX = vpX;
+    vp.TopLeftY = vpY;
+    vp.Width    = vpWidth;
+    vp.Height   = vpHeight;
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    cmd->RSSetViewports(1, &vp);
+
+    D3D12_RECT sc{};
+    sc.left   = static_cast<LONG>(vpX);
+    sc.top    = static_cast<LONG>(vpY);
+    sc.right  = static_cast<LONG>(vpX + vpWidth);
+    sc.bottom = static_cast<LONG>(vpY + vpHeight);
+    cmd->RSSetScissorRects(1, &sc);
+}
+
 static inline void SetViewportScissorToBackbuffer(
     ID3D12GraphicsCommandList* cmd,
     ID3D12Resource* backbuffer)
@@ -818,31 +867,11 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     g_commandList->SetPipelineState(g_pipelineState.Get());
     g_commandList->SetGraphicsRootSignature(g_rootSignature.Get());
 
-    // Set RTV and Viewport/Scissor
+    // Set RTV
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart(), g_currentFrameBufferIndex, g_rtvDescriptorSize);
     g_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
-    // そのフレームのバックバッファを取得（既存の管理に合わせて）
-    ID3D12Resource* backbuffer = g_renderTargets[g_currentFrameBufferIndex].Get();
-
-    // (任意・推奨) 不一致検出ログ
-    {
-        if (backbuffer) {
-            const auto desc = backbuffer->GetDesc();
-            // もし別スレッドで currentResolution* を持っているなら比較
-            const UINT snapW = currentResolutionWidth.load();   // 使っていないなら省略
-            const UINT snapH = currentResolutionHeight.load();  // 使っていないなら省略
-            if (snapW && snapH && (snapW != desc.Width || snapH != desc.Height)) {
-                // ここでログ出力（デバッグ用）
-                DebugLog(L"[WARN] BackBuffer=" + std::to_wstring(desc.Width) + L"x" + std::to_wstring(desc.Height) + L", currentResolution=" + std::to_wstring(snapW) + L"x" + std::to_wstring(snapH));
-            }
-        }
-    }
-
-    // バックバッファ実寸から毎フレーム確実に設定
-    SetViewportScissorToBackbuffer(g_commandList.Get(), backbuffer);
-
-    // Clear the render target
+    // Clear the entire render target first. The viewport will then constrain the drawing area.
     const float clearColor[] = { 0.1f, 0.1f, 0.3f, 1.0f }; // DirectX::Colors::CornflowerBlue
     g_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 
@@ -920,7 +949,11 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     }
 
     if (hasFrameToRender && outFrameToRender.hw_decoded_texture_Y && outFrameToRender.hw_decoded_texture_UV) {
-
+        // Set the viewport to preserve aspect ratio (letterboxing)
+        ID3D12Resource* backbuffer = g_renderTargets[g_currentFrameBufferIndex].Get();
+        if (backbuffer) {
+            SetLetterboxViewport(g_commandList.Get(), backbuffer->GetDesc(), outFrameToRender.hw_decoded_texture_Y->GetDesc());
+        }
 
         // Create SRVs for Y and UV textures
         CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleCpu(g_srvHeap->GetCPUDescriptorHandleForHeapStart());
