@@ -48,6 +48,117 @@ using namespace DebugLogAsync;
 #include <cuda_runtime_api.h>
 #include <d3dx12.h>
 #include <d3d12.h>
+
+// === 新規：ネットワーク準備・解像度ペンディング管理 ===
+std::atomic<bool> g_networkReady{false};
+std::atomic<bool> g_pendingResolutionValid{false};
+std::atomic<int>  g_pendingW{0}, g_pendingH{0};
+
+// window.cpp 側で実装されている既存API（エクスポート）
+void SendFinalResolution(int width, int height); // Existing function from window.h
+void ClearReorderState();                        // New function to be implemented in window.cpp
+extern std::atomic<int> currentResolutionWidth;  // Assumed to be in window.cpp per instructions
+extern std::atomic<int> currentResolutionHeight; // Assumed to be in window.cpp per instructions
+
+
+// 既存定義を流用（main.cpp 冒頭にある定数と同じもの）
+#ifndef SERVER_IP_RESEND
+#define SERVER_IP_RESEND "127.0.0.1"
+#endif
+#ifndef SERVER_PORT_RESEND
+#define SERVER_PORT_RESEND 8120
+#endif
+
+// 失敗しても致命傷にしない（ベストエフォート）
+static void RequestIDRNow()
+{
+    SOCKET sock = INVALID_SOCKET;
+    addrinfoA hints{};
+    addrinfoA* result = nullptr;
+
+    try {
+        hints.ai_family   = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+        hints.ai_protocol = IPPROTO_UDP;
+
+        if (getaddrinfo(SERVER_IP_RESEND, std::to_string(SERVER_PORT_RESEND).c_str(), &hints, &result) != 0 || !result) {
+            DebugLog(L"RequestIDRNow: getaddrinfo failed.");
+            return;
+        }
+
+        sock = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+        if (sock == INVALID_SOCKET) {
+            DebugLog(L"RequestIDRNow: socket() failed.");
+            freeaddrinfo(result);
+            return;
+        }
+
+        const char* msg = "REQUEST_IDR#";
+        int sent = sendto(sock, msg, (int)strlen(msg), 0, result->ai_addr, (int)result->ai_addrlen);
+        if (sent <= 0) {
+            DebugLog(L"RequestIDRNow: sendto failed.");
+        } else {
+            DebugLog(L"RequestIDRNow: sent REQUEST_IDR#");
+        }
+        freeaddrinfo(result);
+    } catch (...) {
+        DebugLog(L"RequestIDRNow: unexpected exception.");
+    }
+
+    if (sock != INVALID_SOCKET) closesocket(sock);
+}
+
+// どこからでも呼べるように：解像度が確定/変更されたときの通知
+void OnResolutionChanged_GatedSend(int w, int h, bool forceResendNow = false)
+{
+    currentResolutionWidth  = w;
+    currentResolutionHeight = h;
+
+    // 常にペンディング更新（最後の値を保持）
+    g_pendingW = w; g_pendingH = h; g_pendingResolutionValid = true;
+
+    if (forceResendNow || g_networkReady.load()) {
+        // 送出してリオーダをクリア、IDR要求を発行
+        DebugLog(L"OnResolutionChanged_GatedSend: sending now.");
+        SendFinalResolution(w, h);
+        ClearReorderState();
+        RequestIDRNow();
+
+        g_pendingResolutionValid = false;
+    } else {
+        DebugLog(L"OnResolutionChanged_GatedSend: network not ready, pending.");
+    }
+}
+
+// ネットワーク（ENet受信側）が「接続完了」になったときに必ず呼ぶ
+void OnNetworkReady()
+{
+    g_networkReady = true;
+    DebugLog(L"OnNetworkReady: network is ready.");
+
+    if (g_pendingResolutionValid.load()) {
+        int w = g_pendingW.load(), h = g_pendingH.load();
+        DebugLog(L"OnNetworkReady: flushing pending resolution.");
+        SendFinalResolution(w, h);
+        ClearReorderState();
+        RequestIDRNow();
+        g_pendingResolutionValid = false;
+    }
+
+    // 念のためワンショット再送（取りこぼし対策）
+    std::thread([]{
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        if (g_networkReady.load()) {
+            DebugLog(L"OnNetworkReady: one-shot re-announce.");
+            int w = currentResolutionWidth.load(), h = currentResolutionHeight.load();
+            if (w > 0 && h > 0) {
+                SendFinalResolution(w, h);
+                RequestIDRNow();
+            }
+        }
+    }).detach();
+}
+
 // ==== [GPU Policy Support - BEGIN] ====
 #include <dxgi1_6.h>
 #pragma comment(lib, "dxgi.lib")
@@ -671,6 +782,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                 case ENET_EVENT_TYPE_CONNECT:
                     DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Client connected from " +
                              std::to_wstring(event.peer->address.host) + L":" + std::to_wstring(event.peer->address.port));
+                    OnNetworkReady(); // ★ 追加：接続成立トリガ
                     // You can store peer-specific data if needed:
                     // event.peer->data = (void*)("Some client info");
                     break;

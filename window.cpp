@@ -250,12 +250,25 @@ static void ResizeSwapChainIfNeeded(int targetClientWidth, int targetClientHeigh
 }
 // ==== [Resize helpers - END] ====
 
+// from main.cpp
+extern void OnResolutionChanged_GatedSend(int w, int h, bool forceResendNow);
+
 // 送信フレーム番号で並べる小さなバッファ
 static std::map<uint32_t, ReadyGpuFrame> g_reorderBuffer;
 static std::mutex g_reorderMutex;
 
 static uint32_t g_expectedStreamFrame = 0;
 static bool     g_expectedInitialized = false;
+
+// 描画側の「期待フレーム番号」やバッファをクリアして“待ち”を防ぐ
+void ClearReorderState()
+{
+    std::lock_guard<std::mutex> lk(g_reorderMutex);
+    g_reorderBuffer.clear();
+    g_expectedInitialized = false;
+    g_expectedStreamFrame = 0;
+    DebugLog(L"ClearReorderState: reorder state cleared.");
+}
 
 // 調整パラメータ
 static constexpr size_t REORDER_MAX_BUFFER = 8; // これを超えたら妥協して前進
@@ -346,8 +359,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             // スワップチェーンを最終寸法に1回だけリサイズ
             ResizeSwapChainIfNeeded(tw, th);
 
-            // サーバーに1回だけ最終解像度を送信
-            SendFinalResolution(tw, th);
+            // ★ 直接 SendFinalResolution を呼ばず、ゲート付き関数へ
+            OnResolutionChanged_GatedSend(tw, th, false);
 
             return 0;
         }
@@ -477,7 +490,8 @@ bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
         SetWindowPos(g_hWnd, nullptr, 0, 0, ww, wh, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
-    SendFinalResolution(tw, th);
+    // ここで直接 SendFinalResolution(tw, th) しない
+    OnResolutionChanged_GatedSend(tw, th, false);
     return true;
 }
 

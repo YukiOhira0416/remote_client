@@ -9,6 +9,9 @@
 #include <atomic>
 #include <chrono>
 
+// Forward declaration from window.cpp
+extern void ClearReorderState();
+
 // CUDA API error checking
 #define CUDA_RUNTIME_CHECK(call)                                                                    \
     do {                                                                                            \
@@ -233,7 +236,11 @@ bool FrameDecoder::reconfigureDecoder(CUVIDEOFORMAT* pVideoFormat) {
     releaseDecoderResources();
 
     // Create a new decoder with the new format
-    return createDecoder(pVideoFormat);
+    bool ok = createDecoder(pVideoFormat);
+    if (ok) {
+        ClearReorderState(); // ★ 追加
+    }
+    return ok;
 }
 
 int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoFormat) {
