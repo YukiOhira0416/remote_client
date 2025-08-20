@@ -30,6 +30,7 @@
 #include <queue>
 #include "Globals.h"
 #include "AppShutdown.h"
+#include "main.h" // For RequestIDRNow
 
 // ==== [Multi-monitor helpers - BEGIN] ====
 #ifndef _USE_MATH_DEFINES
@@ -313,6 +314,9 @@ void WaitForGpu(); // D3D12: Helper function to wait for GPU to finish commands
 
 // from main.cpp
 extern void OnResolutionChanged_GatedSend(int w, int h, bool forceResendNow);
+extern std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
+extern std::chrono::steady_clock::time_point g_lastPresentEnd;
+extern bool g_watchdogArmed;
 
 // 送信フレーム番号で並べる小さなバッファ
 static std::map<uint32_t, ReadyGpuFrame> g_reorderBuffer;
@@ -449,8 +453,23 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
         case WM_EXITSIZEMOVE:
         {
-            g_isSizing = false;
-            FinalizeResize(hWnd);
+            g_isSizing = false; // we are leaving the modal move/size loop
+
+            // 1) Perform normal finalize/resize (may or may not change swap-chain/video size)
+            FinalizeResize(hWnd); // this enqueues g_pendingResize.has, consumed by RenderFrame()
+
+            // 2) ALWAYS resume the streaming pipeline, even if the snapped video size didn't change.
+            //    (Decouple 'resume' from 'size changed'.)
+            ClearReorderState();          // reset expected stream frame, etc.
+            RequestIDRNow();              // ask sender for a fresh clean point
+
+            // 3) Kick the render loop exactly once: advance lastFrameRenderTime so the next loop iteration renders immediately.
+            {
+                extern std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
+                g_lastFrameRenderTimeForKick = std::chrono::high_resolution_clock::now() - TARGET_FRAME_DURATION;
+                DebugLog(L"RenderKick: forced immediate frame after WM_EXITSIZEMOVE.");
+            }
+
             return 0;
         }
 
@@ -1207,6 +1226,9 @@ void RenderFrame() {
     // ---- Logging (only if a new frame was actually rendered) ----
     auto frameEndTime = std::chrono::system_clock::now();
     if (frameWasRendered) {
+        g_lastPresentEnd = std::chrono::steady_clock::now();
+        g_watchdogArmed = true; // re-arm after a good present
+
         uint64_t frameEndTimeMs =
             std::chrono::duration_cast<std::chrono::milliseconds>(frameEndTime.time_since_epoch()).count();
         int64_t latencyMs =

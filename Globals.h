@@ -19,6 +19,9 @@
 
 #define SIZE_PACKET_SIZE 258
 
+const double TARGET_FPS = 60.0;
+const std::chrono::nanoseconds TARGET_FRAME_DURATION(static_cast<long long>(1'000'000'000.0 / TARGET_FPS));
+
 // New struct for pending resize requests
 struct PendingResize {
     std::atomic<bool> has{false};
