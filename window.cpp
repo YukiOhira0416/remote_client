@@ -264,6 +264,17 @@ extern void OnResolutionChanged_GatedSend(int w, int h, bool forceResendNow);
 static std::map<uint32_t, ReadyGpuFrame> g_reorderBuffer;
 static std::mutex g_reorderMutex;
 
+// ==== [In-flight Frame Management - BEGIN] ====
+// GPUがまだ使用中の可能性のあるフレームのリソースを管理するための構造体
+struct InFlightFrame {
+    ReadyGpuFrame frameData;
+    UINT64 fenceValue;
+};
+// GPUへ投入済みのフレームを保持するキュー
+static std::queue<InFlightFrame> g_inFlightFrames;
+static std::mutex g_inFlightFramesMutex;
+// ==== [In-flight Frame Management - END] ====
+
 static uint32_t g_expectedStreamFrame = 0;
 static bool     g_expectedInitialized = false;
 
@@ -1030,6 +1041,18 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 }
 
 void RenderFrame() {
+    // ---- [Release completed frame resources - BEGIN] ----
+    // GPUがどこまで処理を終えたかを確認
+    const UINT64 completedFenceValue = g_fence->GetCompletedValue();
+    {
+        std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
+        // キューの先頭から、完了済みのフレームを解放
+        while (!g_inFlightFrames.empty() && g_inFlightFrames.front().fenceValue <= completedFenceValue) {
+            g_inFlightFrames.pop(); // Dequeue and destroy the frame object, releasing its resources.
+        }
+    }
+    // ---- [Release completed frame resources - END] ----
+
     // Pick up pending resize, if any
     if (g_pendingResize.has.load(std::memory_order_acquire)) {
         int newW = g_pendingResize.w.load(std::memory_order_relaxed);
@@ -1073,6 +1096,12 @@ void RenderFrame() {
         hr = g_d3d12CommandQueue->Signal(g_fence.Get(), currentFenceVal);
         if (FAILED(hr)) {
             DebugLog(L"RenderFrame: Failed to signal fence. HR: " + HResultToHexWString(hr));
+        }
+
+        // GPUに投入したフレームのリソースを、完了まで破棄しないようにキューへ移動
+        {
+            std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
+            g_inFlightFrames.push({std::move(renderedFrameData), currentFenceVal});
         }
 
         // Update back buffer index for the next frame
