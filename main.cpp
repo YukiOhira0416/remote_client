@@ -1297,24 +1297,34 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     auto lastFrameRenderTime = std::chrono::high_resolution_clock::now();
 
     MSG msg = {};
-    // The loop condition can also check the atomic flag, but WM_QUIT is the primary mechanism.
     while (msg.message != WM_QUIT) {
-        if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        // Process all pending messages in the queue first.
+        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) {
+                break;
+            }
             TranslateMessage(&msg);
             DispatchMessage(&msg);
-        } else {
-            auto currentTime = std::chrono::high_resolution_clock::now();
-            auto timeSinceLastRender = currentTime - lastFrameRenderTime;
+        }
 
-            if (timeSinceLastRender >= TARGET_FRAME_DURATION) {
-                RenderFrame();
-                lastFrameRenderTime = std::chrono::high_resolution_clock::now();
-            } else {
-                auto timeToWait = TARGET_FRAME_DURATION - timeSinceLastRender;
-                long long msToWait = std::chrono::duration_cast<std::chrono::milliseconds>(timeToWait).count();
-                if (msToWait > 0) {
-                    Sleep(static_cast<DWORD>(msToWait));
-                }
+        if (msg.message == WM_QUIT) {
+            break;
+        }
+
+        // After processing messages, render a frame, respecting the frame rate.
+        // This ensures rendering continues even during a message-heavy event like resizing.
+        auto currentTime = std::chrono::high_resolution_clock::now();
+        auto timeSinceLastRender = currentTime - lastFrameRenderTime;
+
+        if (timeSinceLastRender >= TARGET_FRAME_DURATION) {
+            RenderFrame();
+            lastFrameRenderTime = currentTime;
+        } else {
+            // Yield CPU time if we are ahead of schedule to avoid spinning.
+            auto timeToWait = TARGET_FRAME_DURATION - timeSinceLastRender;
+            long long msToWait = std::chrono::duration_cast<std::chrono::milliseconds>(timeToWait).count();
+            if (msToWait > 1) {
+                Sleep(static_cast<DWORD>(msToWait - 1));
             }
         }
     }
