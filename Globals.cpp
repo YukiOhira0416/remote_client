@@ -35,6 +35,7 @@ std::condition_variable g_readyGpuFrameQueueCV;
 std::atomic<bool> g_fec_worker_Running(true);
 std::atomic<bool> g_decode_worker_Running(true);
 std::atomic<bool> app_running_atomic(true);
+std::atomic<bool> g_isSizing{false};
 
 // H264 Frame queue
 moodycamel::ConcurrentQueue<H264Frame> g_h264FrameQueue;

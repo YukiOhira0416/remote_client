@@ -228,7 +228,6 @@ UINT64 g_renderFenceValues[2]; // Fence values for each frame in flight for rend
 bool g_allowTearing = false; // ティアリングを許可するかどうか
 
 // ==== [Resize helpers - BEGIN] ====
-std::atomic<bool> g_isSizing{false};         // WM_ENTERSIZEMOVE～EXITSIZEMOVE間
 
 // --- Window client padding around the video (in pixels) ---
 static constexpr int kClientPaddingX = 16;
@@ -315,8 +314,6 @@ void WaitForGpu(); // D3D12: Helper function to wait for GPU to finish commands
 // from main.cpp
 extern void OnResolutionChanged_GatedSend(int w, int h, bool forceResendNow);
 extern std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
-extern std::chrono::steady_clock::time_point g_lastPresentEnd;
-extern bool g_watchdogArmed;
 
 // 送信フレーム番号で並べる小さなバッファ
 static std::map<uint32_t, ReadyGpuFrame> g_reorderBuffer;
@@ -465,7 +462,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
             // 3) Kick the render loop exactly once: advance lastFrameRenderTime so the next loop iteration renders immediately.
             {
-                extern std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
                 g_lastFrameRenderTimeForKick = std::chrono::high_resolution_clock::now() - TARGET_FRAME_DURATION;
                 DebugLog(L"RenderKick: forced immediate frame after WM_EXITSIZEMOVE.");
             }
@@ -1226,9 +1222,6 @@ void RenderFrame() {
     // ---- Logging (only if a new frame was actually rendered) ----
     auto frameEndTime = std::chrono::system_clock::now();
     if (frameWasRendered) {
-        g_lastPresentEnd = std::chrono::steady_clock::now();
-        g_watchdogArmed = true; // re-arm after a good present
-
         uint64_t frameEndTimeMs =
             std::chrono::duration_cast<std::chrono::milliseconds>(frameEndTime.time_since_epoch()).count();
         int64_t latencyMs =

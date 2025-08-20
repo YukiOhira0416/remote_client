@@ -57,9 +57,6 @@ std::atomic<int>  g_pendingW{0}, g_pendingH{0};
 // Render kick global
 std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
 
-// Watchdog globals
-std::chrono::steady_clock::time_point g_lastPresentEnd;
-bool g_watchdogArmed = true;
 
 // window.cpp 側で実装されている既存API（エクスポート）
 void SendFinalResolution(int width, int height); // Existing function from window.h
@@ -1301,8 +1298,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     // Main render loop
     auto lastFrameRenderTime = std::chrono::high_resolution_clock::now();
 
-    g_lastPresentEnd = std::chrono::steady_clock::now();
-
     MSG msg = {};
     while (msg.message != WM_QUIT) {
         // Process all pending messages in the queue first.
@@ -1316,27 +1311,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
         if (msg.message == WM_QUIT) {
             break;
-        }
-
-        // Watchdog: if frames are piling up but we haven't presented for > 500ms, kick once.
-        {
-            using namespace std::chrono;
-            const auto now = steady_clock::now();
-            const auto noPresentForMs = duration_cast<milliseconds>(now - g_lastPresentEnd).count();
-
-            size_t queueSizeApprox = 0;
-            {
-                // cheap, guarded approximation; adjust if your container differs
-                std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
-                queueSizeApprox = g_readyGpuFrameQueue.size();
-            }
-
-            if (g_watchdogArmed && noPresentForMs > 500 && queueSizeApprox >= 8 /*RS_K*/) {
-                DebugLog(L"RenderWatchdog: no present >500ms while queue >= 8. Forcing IDR+reorder reset once.");
-                ClearReorderState();
-                RequestIDRNow();
-                g_watchdogArmed = false; // single-shot until next successful present
-            }
         }
 
         // BEFORE computing timeSinceLastRender:
