@@ -1048,41 +1048,32 @@ void RenderFrame() {
     ReadyGpuFrame renderedFrameData{}; // 描画したフレームのメタ（ログ用）
     const bool frameWasRendered = PopulateCommandList(renderedFrameData); // 今回のフレームで実描画コマンドを記録したか？
 
-    // ★ 追加：新規フレームがなければ描画・Presentを完全スキップし、前フレームを保持する
-    if (!frameWasRendered) {
-        // ここでは GPU 実行も Present もしない。
-        // SwapChain のバックバッファは直前に Present 済みの内容が DWM に保持され続ける。
-        // フェンスやバックバッファインデックスも更新しない（Present していないため）。
-        return;
-    }
-
-    // ここから先は「実際に描画する場合のみ」実行
+    // Command list is populated (at least with a clear). Now execute and present.
     ID3D12CommandList* ppCommandLists[] = { g_commandList.Get() };
     g_d3d12CommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
 
-    // Present（VSync は 0、ティアリングは環境に応じて）
+    // Present (VSync=0, tearing depends on support)
     hr = g_swapChain->Present(0, g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
     if (FAILED(hr)) {
         if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
             DebugLog(L"RenderFrame (D3D12): Device removed/reset on Present. HR: " + HResultToHexWString(hr));
-            // TODO: デバイスロスト処理（必要に応じて再初期化）
+            // TODO: Handle device loss (e.g., re-initialize)
         } else {
             DebugLog(L"RenderFrame (D3D12): Present failed. HR: " + HResultToHexWString(hr));
         }
     }
 
-    // フェンス：このフレームの完了をトラッキング
+    // Fence: Track this frame's completion
     const UINT64 currentFenceVal = g_renderFenceValues[g_currentFrameBufferIndex];
     hr = g_d3d12CommandQueue->Signal(g_fence.Get(), currentFenceVal);
     if (FAILED(hr)) {
         DebugLog(L"RenderFrame: Failed to signal fence. HR: " + HResultToHexWString(hr));
-        // それでも続行は可能だが、以降の待ち合わせは無効化される
     }
 
-    // 次のフレーム用にバックバッファインデックスを更新
+    // Update back buffer index for the next frame
     g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
 
-    // 次フレームのフェンス完了待ち（レンダリングが GPU に追い越されないようにする）
+    // Wait for the next frame's fence to complete, so we don't get too far ahead of the GPU
     if (g_fence->GetCompletedValue() < g_renderFenceValues[g_currentFrameBufferIndex]) {
         hr = g_fence->SetEventOnCompletion(g_renderFenceValues[g_currentFrameBufferIndex], g_fenceEvent);
         if (FAILED(hr)) {
@@ -1092,12 +1083,12 @@ void RenderFrame() {
         }
     }
 
-    // 次回用にフェンス値をインクリメント
+    // Increment fence value for the next use of this RTV
     g_renderFenceValues[g_currentFrameBufferIndex] = currentFenceVal + 1;
 
-    // ---- ログ（描画があった場合のみ）----
+    // ---- Logging (only if a new frame was actually rendered) ----
     auto frameEndTime = std::chrono::system_clock::now();
-    {
+    if (frameWasRendered) {
         uint64_t frameEndTimeMs =
             std::chrono::duration_cast<std::chrono::milliseconds>(frameEndTime.time_since_epoch()).count();
         int64_t latencyMs =
@@ -1109,7 +1100,6 @@ void RenderFrame() {
             + L" (ID: " + std::to_wstring(renderedFrameData.id) + L")"
             + L" - WGC to RenderEnd: " + std::to_wstring(latencyMs) + L" ms.");
         }
-        
     }
 
     auto renderDuration =
