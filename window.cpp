@@ -480,11 +480,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         }
         case WM_MOVE:
         {
-            RECT rc{};
-            if (GetClientRect(hWnd, &rc)) {
-                PostMessageW(hWnd, WM_SIZE, SIZE_RESTORED,
-                             MAKELPARAM(rc.right - rc.left, rc.bottom - rc.top));
-            }
+            // Posting WM_SIZE on every move is unnecessary and can cause issues with
+            // the resize/move logic. A move does not imply a size change.
             break;
         }
 
