@@ -379,6 +379,22 @@ struct VertexPosTex { float x, y, z; float u, v; };
 
 void CleanupD3DRenderResources(); // Forward declaration
 
+// Add this helper near FinalizeResize or other statics
+static void ResumeAfterUserInteraction(HWND hWnd) {
+    g_isSizing = false;
+
+    // Finalize & announce (snaps to known 16:9, resizes swap-chain, notifies server)
+    FinalizeResize(hWnd, /*forceAnnounce=*/true);
+
+    // Make decoder/renderer state sane for fresh frames
+    ClearReorderState();
+    RequestIDRNow();
+
+    // Kick the render loop for an immediate frame
+    g_lastFrameRenderTimeForKick = std::chrono::high_resolution_clock::now() - TARGET_FRAME_DURATION;
+    DebugLog(L"RenderKick: resume after user interaction");
+}
+
 // Helper to handle the logic for snapping, padding, and notifying after a resize event.
 static void FinalizeResize(HWND hWnd, bool forceAnnounce = false)
 {
@@ -453,46 +469,33 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             return 0;
 
         case WM_EXITSIZEMOVE:
-        {
-            g_isSizing = false;
-
-            // Apply any deferred DPI rect then finalize once.
-            if (g_deferFinalize.exchange(false, std::memory_order_acq_rel)) {
-                const RECT& r = g_deferredDpiRect;
-                SetWindowPos(hWnd, nullptr,
-                             r.left, r.top, r.right - r.left, r.bottom - r.top,
-                             SWP_NOZORDER | SWP_NOACTIVATE);
-            }
-
-            // 1) Finalize and FORCE the resolution announce at drag end.
-            FinalizeResize(hWnd, /*forceAnnounce=*/true);
-
-            // 2) Resume the streaming pipeline even if the snapped size didn’t change.
-            ClearReorderState();
-            RequestIDRNow();
-
-            // 3) Kick the render loop once so we draw immediately.
-            g_lastFrameRenderTimeForKick = std::chrono::high_resolution_clock::now() - TARGET_FRAME_DURATION;
-            DebugLog(L"RenderKick: forced immediate frame after WM_EXITSIZEMOVE.");
+            ResumeAfterUserInteraction(hWnd);
             return 0;
-        }
+
+        case WM_CAPTURECHANGED:
+            if (g_isSizing) {
+                ResumeAfterUserInteraction(hWnd);
+                return 0;
+            }
+            break;
+
+        case WM_CANCELMODE:
+            if (g_isSizing) {
+                ResumeAfterUserInteraction(hWnd);
+                return 0;
+            }
+            break;
 
         case WM_DPICHANGED:
         {
             const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
             if (suggested) {
-                if (g_isSizing) {
-                    g_deferredDpiRect = *suggested;
-                    g_deferFinalize.store(true, std::memory_order_release);
-                } else {
-                    SetWindowPos(hWnd, nullptr,
-                                 suggested->left, suggested->top,
-                                 suggested->right - suggested->left,
-                                 suggested->bottom - suggested->top,
-                                 SWP_NOZORDER | SWP_NOACTIVATE);
-                    FinalizeResize(hWnd); // current behavior
-                }
+                SetWindowPos(hWnd, nullptr, suggested->left, suggested->top,
+                             suggested->right - suggested->left, suggested->bottom - suggested->top,
+                             SWP_NOZORDER | SWP_NOACTIVATE);
             }
+            // Treat as an interaction boundary: resume + finalize
+            ResumeAfterUserInteraction(hWnd);
             return 0;
         }
         case WM_DISPLAYCHANGE:
