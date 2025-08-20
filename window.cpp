@@ -397,10 +397,6 @@ static void FinalizeResize(HWND hWnd)
     currentResolutionWidth  = tw;
     currentResolutionHeight = th;
 
-    // --- pad the client area for margins around the video ---
-    const int paddedClientW = tw + kClientPaddingX * 2;
-    const int paddedClientH = th + kClientPaddingY * 2;
-
     // Adjust *outer* window so that client becomes padded size
     RECT wr{0, 0, paddedClientW, paddedClientH};
     DWORD style = GetWindowLong(hWnd, GWL_STYLE);
