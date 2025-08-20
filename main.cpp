@@ -1316,10 +1316,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         auto currentTime = std::chrono::high_resolution_clock::now();
         auto timeSinceLastRender = currentTime - lastFrameRenderTime;
 
-        if (timeSinceLastRender >= TARGET_FRAME_DURATION) {
-            if (!g_isSizing) {
-                RenderFrame();
-            }
+        if (g_isSizing) {
+            // We are resizing, so just yield the CPU. When we resume, the large
+            // timeSinceLastRender will trigger an immediate frame.
+            Sleep(16); // Sleep for roughly one frame to avoid busy-waiting.
+        }
+        else if (timeSinceLastRender >= TARGET_FRAME_DURATION) {
+            RenderFrame();
             lastFrameRenderTime = currentTime;
         } else {
             // Yield CPU time if we are ahead of schedule to avoid spinning.
