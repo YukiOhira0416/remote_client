@@ -48,6 +48,8 @@ private:
     bool createDecoder(CUVIDEOFORMAT* pVideoFormat);
     bool allocateFrameBuffers();
     void copyDecodedFrameToD3D12(CUVIDPARSERDISPINFO* pDispInfo);
+    void releaseDecoderResources();
+    bool reconfigureDecoder(CUVIDEOFORMAT* pVideoFormat);
 
     CUcontext m_cuContext;
     ID3D12Device* m_pD3D12Device;

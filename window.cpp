@@ -197,6 +197,7 @@ static void SnapToKnownResolution(int srcW, int srcH, int& outW, int& outH) {
 
 // サーバーへ最終解像度を送る（旧 SendWindowSize 代替）
 static void SendFinalResolution(int width, int height); // Forward declaration
+void WaitForGpu(); // D3D12: Helper function to wait for GPU to finish commands
 
 // D3D12のResizeBuffersを安全に行う（EXITSIZEMOVEからのみ呼ぶ）
 static void ResizeSwapChainIfNeeded(int targetClientWidth, int targetClientHeight) {
@@ -270,7 +271,6 @@ Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_srvHeap; // For Y and UV textures
 UINT g_srvDescriptorSize;
 
 std::atomic<uint32_t> g_globalFrameNumber(0);// FEC用フレーム番号
-void WaitForGpu(); // D3D12: Helper function to wait for GPU to finish commands
 
 // 各シャードパケットに付与するヘッダー
 struct ShardInfoHeader {
