@@ -573,7 +573,8 @@ void ListenForResendRequests() {
 
             // 該当のメッセージを受信した場合の処理
             if (receivedData == L"RESEND_DATA") {
-                SendWindowSize(); // ウィンドウサイズを送信
+                // SendWindowSize(); // This is obsolete. The client now proactively sends its final resolution.
+                DebugLog(L"Received obsolete RESEND_DATA command. Ignoring.");
             }
         } catch (const std::exception& ex) {
             std::string narrowExceptionMsg(ex.what());
@@ -1161,12 +1162,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     }
 
     // The app_running_atomic is now a global atomic defined in Globals.cpp
-    std::thread windowSenderThread([]() { // No longer needs to capture anything
-        while (app_running_atomic && send_bandw_Running) { // Check the global atomic
-            SendWindowSize();
-            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-        }
-    });
+    // The windowSenderThread is removed as it's part of the old logic.
 
     // Main render loop
     const double TARGET_FPS = 60.0;
@@ -1204,7 +1200,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     appThreads.receiverThreads = &receiverThreads;
     appThreads.fecWorkerThreads = &fecWorkerThreads;
     appThreads.nvdecThreads = &nvdecThreads;
-    appThreads.windowSenderThread = &windowSenderThread;
+    // appThreads.windowSenderThread is removed
 
     // This single call handles joining all threads and releasing all resources idempotently.
     ReleaseAllResources(appThreads);
