@@ -382,42 +382,43 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             g_isSizing = true;
             return 0;
 
-        case WM_EXITSIZEMOVE: {
+        case WM_EXITSIZEMOVE:
+        {
             g_isSizing = false;
 
-            // 直近のクライアントサイズを取得
+            // 1) Read actual client size and snap to the known 16:9 grid
             RECT rc{}; GetClientRect(hWnd, &rc);
             int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
-            if (cw <= 0 || ch <= 0) return 0;
+            int tw = 0, th = 0;
+            SnapToKnownResolution(cw, ch, tw, th);  // keeps 16:9 and picks the closest known res
 
-            // 既知解像度へスナップ（このタイミングで1回だけ）
-            int tw, th; SnapToKnownResolution(cw, ch, tw, th);
-
-            // もしスナップ後のクライアント寸法が現状と異なる場合、ウィンドウ枠込みのサイズへ変換して一度だけSetWindowPos
-            RECT wr{0, 0, tw, th};
-            DWORD style = GetWindowLong(hWnd, GWL_STYLE);
-            DWORD ex = GetWindowLong(hWnd, GWL_EXSTYLE);
-            AdjustWindowRectEx(&wr, style, GetMenu(hWnd) != NULL, ex);
-            int ww = wr.right - wr.left, wh = wr.bottom - wr.top;
-
-            // 現在のウィンドウ外形サイズと違う場合のみ反映
-            RECT wrNow{}; GetWindowRect(hWnd, &wrNow);
-            if ((wrNow.right - wrNow.left) != ww || (wrNow.bottom - wrNow.top) != wh) {
-                SetWindowPos(hWnd, nullptr, 0, 0, ww, wh,
-                             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-                // 注: ここで WM_SIZE が1回だけ発火する想定
-            }
-
-            // グローバル現在解像度を確定
-            currentResolutionWidth = tw;
+            // 2) Update globals seen by NVDEC and renderer
+            currentResolutionWidth  = tw;
             currentResolutionHeight = th;
 
-            // スワップチェーンを最終寸法に1回だけリサイズ
+            // 3) If snap changed size, adjust once at the window frame level to match client area
+            RECT wr{0,0,tw,th};
+            DWORD style = GetWindowLong(hWnd, GWL_STYLE);
+            DWORD ex    = GetWindowLong(hWnd, GWL_EXSTYLE);
+            AdjustWindowRectEx(&wr, style, GetMenu(hWnd)!=NULL, ex);
+            const int ww = wr.right - wr.left, wh = wr.bottom - wr.top;
+
+            RECT wrNow{}; GetWindowRect(hWnd, &wrNow);
+            if ((wrNow.right - wrNow.left) != ww || (wrNow.bottom - wrNow.top) != wh) {
+                // Expect exactly one WM_SIZE from this SetWindowPos
+                SetWindowPos(hWnd, nullptr, 0, 0, ww, wh,
+                             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+
+            // 4) Resize swap chain to final target exactly once
             ResizeSwapChainIfNeeded(tw, th);
 
-            // ★ 直接 SendFinalResolution を呼ばず、ゲート付き関数へ
-            OnResolutionChanged_GatedSend(tw, th, false);
+            // 5) ***Single gate*** to notify server + reset local state + request IDR
+            //    Do NOT call SendFinalResolution directly here.
+            OnResolutionChanged_GatedSend(tw, th, /*force=*/false); // This must: SendFinalResolution → ClearReorderState → RequestIDRNow
 
+            // 6) Nudge rendering once if desired
+            InvalidateRect(hWnd, nullptr, FALSE);
             return 0;
         }
 
@@ -452,33 +453,23 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             break;
         }
 
-        case WM_SIZE: {
-            int width  = LOWORD(lParam);
-            int height = HIWORD(lParam);
+        case WM_SIZE:
+        {
+            const int width  = LOWORD(lParam);
+            const int height = HIWORD(lParam);
 
             if (g_isSizing) {
-                // ドラッグ中は描画を更新しないので何もしない
+                // Drag in progress: do nothing (render may appear paused; by design)
                 return 0;
             }
-
             if (wParam == SIZE_MINIMIZED || width == 0 || height == 0) {
                 DebugLog(L"WM_SIZE: minimized or zero. skip.");
                 return 0;
             }
 
-            // This WM_SIZE can come from DPI change, display change, or the final SetWindowPos in EXITSIZEMOVE.
-            // In the case of EXITSIZEMOVE, the resize logic is handled there.
-            // For other cases like DPI change, we might need to resize, but the EXITSIZEMOVE logic should be sufficient.
-            // For now, we only update the globals and let the main resize logic exist in one place.
-            currentResolutionWidth = width;
+            // Only update globals here; avoid swap-chain churn. EXITSIZEMOVE is the source of truth.
+            currentResolutionWidth  = width;
             currentResolutionHeight = height;
-
-            // The call to ResizeSwapChainIfNeeded is removed from here to avoid redundant calls,
-            // as WM_EXITSIZEMOVE is now the single source of truth for resizing actions.
-            // If a resize is needed for other WM_SIZE reasons (like DPI change),
-            // it will be triggered by the subsequent EXITSIZEMOVE or a more explicit handler.
-            // The current implementation ensures that dragging the window is smooth and resizing happens once at the end.
-
             return 0;
         }
 
