@@ -312,10 +312,11 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
         targetHeight = pVideoFormat->coded_height;
     }
 
-    // Set the class members to the target display size.
-    // This will be used for texture allocation and the copy size.
-    m_frameWidth = targetWidth;
-    m_frameHeight = targetHeight;
+    // Set the class members to the actual coded size of the video stream.
+    // This is the intrinsic resolution of the video, which is needed for correct
+    // aspect ratio calculations in the renderer.
+    m_frameWidth = pVideoFormat->coded_width;
+    m_frameHeight = pVideoFormat->coded_height;
 
     // The rest of the function initializes the decoder with the *actual* stream
     // dimensions, but allocates buffers for the *target* dimensions.

@@ -130,14 +130,14 @@ static bool CreateWindowOnBestMonitor(HINSTANCE hInstance, int nCmdShow,
 #pragma comment(lib, "d3dcompiler.lib")
 
 // Renders the video with its aspect ratio preserved, adding black bars (letterboxing/pillarboxing) as needed.
-static void SetLetterboxViewport(ID3D12GraphicsCommandList* cmd, D3D12_RESOURCE_DESC backbufferDesc, D3D12_RESOURCE_DESC videoDesc)
+static void SetLetterboxViewport(ID3D12GraphicsCommandList* cmd, D3D12_RESOURCE_DESC backbufferDesc, int videoWidthInt, int videoHeightInt)
 {
     if (!cmd) return;
 
     const float bbWidth = static_cast<float>(backbufferDesc.Width);
     const float bbHeight = static_cast<float>(backbufferDesc.Height);
-    const float videoWidth = static_cast<float>(videoDesc.Width);
-    const float videoHeight = static_cast<float>(videoDesc.Height);
+    const float videoWidth = static_cast<float>(videoWidthInt);
+    const float videoHeight = static_cast<float>(videoHeightInt);
 
     if (bbWidth == 0 || bbHeight == 0 || videoWidth == 0 || videoHeight == 0) {
         return; // Avoid division by zero
@@ -952,7 +952,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         // Set the viewport to preserve aspect ratio (letterboxing)
         ID3D12Resource* backbuffer = g_renderTargets[g_currentFrameBufferIndex].Get();
         if (backbuffer) {
-            SetLetterboxViewport(g_commandList.Get(), backbuffer->GetDesc(), outFrameToRender.hw_decoded_texture_Y->GetDesc());
+            SetLetterboxViewport(g_commandList.Get(), backbuffer->GetDesc(), outFrameToRender.width, outFrameToRender.height);
         }
 
         // Create SRVs for Y and UV textures
