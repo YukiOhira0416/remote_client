@@ -77,7 +77,7 @@ extern std::atomic<int> currentResolutionHeight; // Assumed to be in window.cpp 
 #endif
 
 // 失敗しても致命傷にしない（ベストエフォート）
-static void RequestIDRNow()
+void RequestIDRNow()
 {
     SOCKET sock = INVALID_SOCKET;
     ADDRINFOA hints{};
