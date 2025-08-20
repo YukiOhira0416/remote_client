@@ -196,7 +196,7 @@ static void SnapToKnownResolution(int srcW, int srcH, int& outW, int& outH) {
 }
 
 // サーバーへ最終解像度を送る（旧 SendWindowSize 代替）
-static void SendFinalResolution(int width, int height); // Forward declaration
+void SendFinalResolution(int width, int height); // Forward declaration (removed static for external linkage)
 void WaitForGpu(); // D3D12: Helper function to wait for GPU to finish commands
 
 // D3D12のResizeBuffersを安全に行う（EXITSIZEMOVEからのみ呼ぶ）
