@@ -1317,7 +1317,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         auto timeSinceLastRender = currentTime - lastFrameRenderTime;
 
         if (timeSinceLastRender >= TARGET_FRAME_DURATION) {
-            RenderFrame();
+            if (!g_isSizing) {
+                RenderFrame();
+            }
             lastFrameRenderTime = currentTime;
         } else {
             // Yield CPU time if we are ahead of schedule to avoid spinning.

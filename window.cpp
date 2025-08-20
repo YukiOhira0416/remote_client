@@ -227,7 +227,7 @@ UINT64 g_renderFenceValues[2]; // Fence values for each frame in flight for rend
 bool g_allowTearing = false; // ティアリングを許可するかどうか
 
 // ==== [Resize helpers - BEGIN] ====
-static std::atomic<bool> g_isSizing{false};         // WM_ENTERSIZEMOVE～EXITSIZEMOVE間
+std::atomic<bool> g_isSizing{false};         // WM_ENTERSIZEMOVE～EXITSIZEMOVE間
 
 // --- Window client padding around the video (in pixels) ---
 static constexpr int kClientPaddingX = 16;

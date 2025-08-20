@@ -1,5 +1,8 @@
 #include <windows.h>
 #include <wrl/client.h>
+#include <atomic>
+
+extern std::atomic<bool> g_isSizing;
 
 bool InitWindow(HINSTANCE hInstance, int nCmdShow);
 bool InitD3D();
