@@ -73,8 +73,8 @@ extern std::atomic<int> currentResolutionHeight; // Assumed to be in window.cpp 
 static void RequestIDRNow()
 {
     SOCKET sock = INVALID_SOCKET;
-    addrinfoA hints{};
-    addrinfoA* result = nullptr;
+    ADDRINFOA hints{};
+    ADDRINFOA* result = nullptr;
 
     try {
         hints.ai_family   = AF_INET;
