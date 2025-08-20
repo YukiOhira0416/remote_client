@@ -262,19 +262,18 @@ int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoForm
         } else {
             // Check if a reconfiguration is needed
             bool needsReconfig = false;
-            if (pVideoFormat->coded_width != self->m_videoDecoderCreateInfo.ulWidth ||
-                pVideoFormat->coded_height != self->m_videoDecoderCreateInfo.ulHeight) {
-                DebugLog(L"HandleVideoSequence: Stream resolution changed. Reconfiguring.");
+
+            // Reconfigure ONLY if the actual coded stream parameters change.
+            if (pVideoFormat->coded_width  != self->m_videoDecoderCreateInfo.ulWidth  ||
+                pVideoFormat->coded_height != self->m_videoDecoderCreateInfo.ulHeight ||
+                pVideoFormat->codec        != self->m_videoDecoderCreateInfo.CodecType ||
+                pVideoFormat->chroma_format!= self->m_videoDecoderCreateInfo.ChromaFormat) {
+                DebugLog(L"HandleVideoSequence: Stream format changed. Reconfiguring.");
                 needsReconfig = true;
             }
 
-            int targetWidth = currentResolutionWidth.load();
-            int targetHeight = currentResolutionHeight.load();
-            if (targetWidth > 0 && targetHeight > 0 &&
-                (targetWidth != self->m_frameWidth || targetHeight != self->m_frameHeight)) {
-                DebugLog(L"HandleVideoSequence: Target display resolution changed. Reconfiguring.");
-                needsReconfig = true;
-            }
+            // DO NOT reconfigure just because currentResolutionWidth/Height changed.
+            // Target display size is a renderer concern; decoder operates at coded size.
 
             if (needsReconfig) {
                 if (!self->reconfigureDecoder(pVideoFormat)) {
@@ -332,7 +331,7 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
     // We will perform a crop manually during the cuMemcpy2D.
     m_videoDecoderCreateInfo.ulTargetWidth = pVideoFormat->coded_width;
     m_videoDecoderCreateInfo.ulTargetHeight = pVideoFormat->coded_height;
-    m_videoDecoderCreateInfo.ulNumOutputSurfaces = 2;
+    m_videoDecoderCreateInfo.ulNumOutputSurfaces = 8; // more headroom during resize/IDR
     m_videoDecoderCreateInfo.OutputFormat = cudaVideoSurfaceFormat_NV12;
 
     CUDA_CHECK(cuvidCreateDecoder(&m_hDecoder, &m_videoDecoderCreateInfo));

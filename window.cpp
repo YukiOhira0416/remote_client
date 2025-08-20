@@ -376,7 +376,7 @@ struct VertexPosTex { float x, y, z; float u, v; };
 void CleanupD3DRenderResources(); // Forward declaration
 
 // Helper to handle the logic for snapping, padding, and notifying after a resize event.
-static void FinalizeResize(HWND hWnd)
+static void FinalizeResize(HWND hWnd, bool forceAnnounce = false)
 {
     RECT rc{}; GetClientRect(hWnd, &rc);
     int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
@@ -419,7 +419,7 @@ static void FinalizeResize(HWND hWnd)
     g_pendingResize.has.store(true, std::memory_order_release);
 
     // Notify server (single gate) with the *video* resolution ONLY
-    OnResolutionChanged_GatedSend(tw, th, /*force=*/false);
+    OnResolutionChanged_GatedSend(tw, th, /*force=*/forceAnnounce);
 
     InvalidateRect(hWnd, nullptr, FALSE);
 }
@@ -450,22 +450,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
         case WM_EXITSIZEMOVE:
         {
-            g_isSizing = false; // we are leaving the modal move/size loop
+            g_isSizing = false;
 
-            // 1) Perform normal finalize/resize (may or may not change swap-chain/video size)
-            FinalizeResize(hWnd); // this enqueues g_pendingResize.has, consumed by RenderFrame()
+            // 1) Finalize and FORCE the resolution announce at drag end.
+            FinalizeResize(hWnd, /*forceAnnounce=*/true);
 
-            // 2) ALWAYS resume the streaming pipeline, even if the snapped video size didn't change.
-            //    (Decouple 'resume' from 'size changed'.)
-            ClearReorderState();          // reset expected stream frame, etc.
-            RequestIDRNow();              // ask sender for a fresh clean point
+            // 2) Resume the streaming pipeline even if the snapped size didn’t change.
+            ClearReorderState();
+            RequestIDRNow();
 
-            // 3) Kick the render loop exactly once: advance lastFrameRenderTime so the next loop iteration renders immediately.
-            {
-                g_lastFrameRenderTimeForKick = std::chrono::high_resolution_clock::now() - TARGET_FRAME_DURATION;
-                DebugLog(L"RenderKick: forced immediate frame after WM_EXITSIZEMOVE.");
-            }
-
+            // 3) Kick the render loop once so we draw immediately.
+            g_lastFrameRenderTimeForKick = std::chrono::high_resolution_clock::now() - TARGET_FRAME_DURATION;
+            DebugLog(L"RenderKick: forced immediate frame after WM_EXITSIZEMOVE.");
             return 0;
         }
 
