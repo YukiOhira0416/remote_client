@@ -387,10 +387,15 @@ static void FinalizeResize(HWND hWnd, bool forceAnnounce = false)
     const int paddedClientW = tw + kClientPaddingX * 2;
     const int paddedClientH = th + kClientPaddingY * 2;
 
-    // If the snapped resolution and padded size are already correct, do nothing.
-    // This prevents redundant work when the window is just moved without resizing.
+    // If the snapped resolution and padded size are already correct, do nothing,
+    // UNLESS a force announce is requested (e.g., after a monitor move).
     if (currentResolutionWidth.load() == tw && currentResolutionHeight.load() == th &&
         cw == paddedClientW && ch == paddedClientH) {
+        if (forceAnnounce) {
+            // This nudge ensures the server gets a resolution update even if the
+            // window size itself didn't change, which can happen on monitor moves.
+            OnResolutionChanged_GatedSend(tw, th, /*force=*/true);
+        }
         return;
     }
 
@@ -461,6 +466,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
             // 3) Kick the render loop once so we draw immediately.
             g_lastFrameRenderTimeForKick = std::chrono::high_resolution_clock::now() - TARGET_FRAME_DURATION;
+            g_forcePresentOnce.store(true, std::memory_order_release); // Present at least once even if no new decoded frame
             DebugLog(L"RenderKick: forced immediate frame after WM_EXITSIZEMOVE.");
             return 0;
         }
@@ -478,6 +484,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             // After a DPI change, the size and position have changed, so we must
             // trigger the same logic as a completed resize to restart the stream.
             FinalizeResize(hWnd);
+            g_forcePresentOnce.store(true, std::memory_order_release);
             break;
         }
         case WM_DISPLAYCHANGE:
@@ -1132,6 +1139,18 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
         rtvHandle.Offset(1, g_rtvDescriptorSize);
     }
     DebugLog(L"RenderThread: RTVs recreated after resize.");
+
+    // After ResizeBuffers, any old fence targets are invalid for the new back buffers.
+    // This reset prevents waiting on never-signaled values.
+    const UINT64 completed = g_fence->GetCompletedValue();
+    for (UINT i = 0; i < 2; ++i) {
+        g_renderFenceValues[i] = completed + 1;
+    }
+    // Refresh the current index, as it might have changed.
+    g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
+
+    // Ensure at least one post-resize Present to advance swap-chain even if no new frame is ready.
+    g_forcePresentOnce.store(true, std::memory_order_release);
 }
 
 void RenderFrame() {
@@ -1171,9 +1190,10 @@ void RenderFrame() {
     ID3D12CommandList* ppCommandLists[] = { g_commandList.Get() };
     g_d3d12CommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
 
-    // Only present and update fence logic if a new frame was actually rendered.
-    // This prevents flickering with a clear color when no new video frame is available.
-    if (frameWasRendered) {
+    const bool forcePresent = g_forcePresentOnce.exchange(false, std::memory_order_acq_rel);
+    const bool shouldPresent = frameWasRendered || forcePresent;
+
+    if (shouldPresent) {
         // Present (VSync=0, tearing depends on support)
         hr = g_swapChain->Present(0, g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
         if (FAILED(hr)) {
@@ -1185,34 +1205,47 @@ void RenderFrame() {
             }
         }
 
-        // Fence: Track this frame's completion
-        const UINT64 currentFenceVal = g_renderFenceValues[g_currentFrameBufferIndex];
-        hr = g_d3d12CommandQueue->Signal(g_fence.Get(), currentFenceVal);
-        if (FAILED(hr)) {
-            DebugLog(L"RenderFrame: Failed to signal fence. HR: " + HResultToHexWString(hr));
-        }
-
-        // GPUに投入したフレームのリソースを、完了まで破棄しないようにキューへ移動
-        {
-            std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
-            g_inFlightFrames.push({std::move(renderedFrameData), currentFenceVal});
-        }
-
-        // Update back buffer index for the next frame
-        g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
-
-        // Wait for the next frame's fence to complete, so we don't get too far ahead of the GPU
-        if (g_fence->GetCompletedValue() < g_renderFenceValues[g_currentFrameBufferIndex]) {
-            hr = g_fence->SetEventOnCompletion(g_renderFenceValues[g_currentFrameBufferIndex], g_fenceEvent);
+        if (frameWasRendered) {
+            // ---- Standard path for a rendered frame ----
+            // Fence: Track this frame's completion
+            const UINT64 currentFenceVal = g_renderFenceValues[g_currentFrameBufferIndex];
+            hr = g_d3d12CommandQueue->Signal(g_fence.Get(), currentFenceVal);
             if (FAILED(hr)) {
-                DebugLog(L"RenderFrame: Failed to set event on completion. HR: " + HResultToHexWString(hr));
-            } else {
-                WaitForSingleObjectEx(g_fenceEvent, INFINITE, FALSE);
+                DebugLog(L"RenderFrame: Failed to signal fence. HR: " + HResultToHexWString(hr));
             }
-        }
 
-        // Increment fence value for the next use of this RTV
-        g_renderFenceValues[g_currentFrameBufferIndex] = currentFenceVal + 1;
+            // GPUに投入したフレームのリソースを、完了まで破棄しないようにキューへ移動
+            {
+                std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
+                g_inFlightFrames.push({std::move(renderedFrameData), currentFenceVal});
+            }
+
+            // Update back buffer index for the next frame
+            g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
+
+            // Wait for the next frame's fence to complete, so we don't get too far ahead of the GPU
+            if (g_fence->GetCompletedValue() < g_renderFenceValues[g_currentFrameBufferIndex]) {
+                hr = g_fence->SetEventOnCompletion(g_renderFenceValues[g_currentFrameBufferIndex], g_fenceEvent);
+                if (FAILED(hr)) {
+                    DebugLog(L"RenderFrame: Failed to set event on completion. HR: " + HResultToHexWString(hr));
+                } else {
+                    WaitForSingleObjectEx(g_fenceEvent, INFINITE, FALSE);
+                }
+            }
+
+            // Increment fence value for the next use of this RTV
+            g_renderFenceValues[g_currentFrameBufferIndex] = currentFenceVal + 1;
+        } else {
+            // ---- Forced present path (no new frame rendered) ----
+            // Don't perform fence waits or signals that assume a rendered frame.
+            // Just refresh the back buffer index so the next real frame uses the correct RTV.
+            g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
+
+            // To be extra safe, align the fence value for this buffer index to what's known to be completed.
+            // This prevents a future wait on a stale, never-to-be-signaled value.
+            const UINT64 completed = g_fence->GetCompletedValue();
+            g_renderFenceValues[g_currentFrameBufferIndex] = completed + 1;
+        }
     }
 
     // ---- Logging (only if a new frame was actually rendered) ----
