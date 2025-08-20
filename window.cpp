@@ -383,6 +383,16 @@ static void FinalizeResize(HWND hWnd)
     int tw = 0, th = 0;
     SnapToKnownResolution(cw, ch, tw, th); // tw,th = snapped *video* size (16:9)
 
+    const int paddedClientW = tw + kClientPaddingX * 2;
+    const int paddedClientH = th + kClientPaddingY * 2;
+
+    // If the snapped resolution and padded size are already correct, do nothing.
+    // This prevents redundant work when the window is just moved without resizing.
+    if (currentResolutionWidth.load() == tw && currentResolutionHeight.load() == th &&
+        cw == paddedClientW && ch == paddedClientH) {
+        return;
+    }
+
     // Update globals: these represent the *video* resolution (server-side encode)
     currentResolutionWidth  = tw;
     currentResolutionHeight = th;
