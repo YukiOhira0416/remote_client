@@ -395,18 +395,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             const int width  = LOWORD(lParam);
             const int height = HIWORD(lParam);
 
-            if (g_isSizing) {
-                // Drag in progress: do nothing (render may appear paused; by design)
-                return 0;
-            }
             if (wParam == SIZE_MINIMIZED || width == 0 || height == 0) {
                 DebugLog(L"WM_SIZE: minimized or zero. skip.");
                 return 0;
             }
 
-            // Only update globals here; avoid swap-chain churn. EXITSIZEMOVE is the source of truth.
-            currentResolutionWidth  = width;
-            currentResolutionHeight = height;
+            // Regardless of whether we are in a sizing loop (g_isSizing),
+            // we should queue a resize for the render thread to keep the swap chain
+            // in sync with the window's client area.
+            g_pendingResize.w.store(width, std::memory_order_relaxed);
+            g_pendingResize.h.store(height, std::memory_order_relaxed);
+            g_pendingResize.has.store(true, std::memory_order_release);
+
+            // The final resolution snap and server notification will still be handled
+            // by WM_EXITSIZEMOVE after a drag-resize operation.
             return 0;
         }
 
@@ -1052,39 +1054,43 @@ void RenderFrame() {
     ID3D12CommandList* ppCommandLists[] = { g_commandList.Get() };
     g_d3d12CommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
 
-    // Present (VSync=0, tearing depends on support)
-    hr = g_swapChain->Present(0, g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
-    if (FAILED(hr)) {
-        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
-            DebugLog(L"RenderFrame (D3D12): Device removed/reset on Present. HR: " + HResultToHexWString(hr));
-            // TODO: Handle device loss (e.g., re-initialize)
-        } else {
-            DebugLog(L"RenderFrame (D3D12): Present failed. HR: " + HResultToHexWString(hr));
-        }
-    }
-
-    // Fence: Track this frame's completion
-    const UINT64 currentFenceVal = g_renderFenceValues[g_currentFrameBufferIndex];
-    hr = g_d3d12CommandQueue->Signal(g_fence.Get(), currentFenceVal);
-    if (FAILED(hr)) {
-        DebugLog(L"RenderFrame: Failed to signal fence. HR: " + HResultToHexWString(hr));
-    }
-
-    // Update back buffer index for the next frame
-    g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
-
-    // Wait for the next frame's fence to complete, so we don't get too far ahead of the GPU
-    if (g_fence->GetCompletedValue() < g_renderFenceValues[g_currentFrameBufferIndex]) {
-        hr = g_fence->SetEventOnCompletion(g_renderFenceValues[g_currentFrameBufferIndex], g_fenceEvent);
+    // Only present and update fence logic if a new frame was actually rendered.
+    // This prevents flickering with a clear color when no new video frame is available.
+    if (frameWasRendered) {
+        // Present (VSync=0, tearing depends on support)
+        hr = g_swapChain->Present(0, g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
         if (FAILED(hr)) {
-            DebugLog(L"RenderFrame: Failed to set event on completion. HR: " + HResultToHexWString(hr));
-        } else {
-            WaitForSingleObjectEx(g_fenceEvent, INFINITE, FALSE);
+            if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+                DebugLog(L"RenderFrame (D3D12): Device removed/reset on Present. HR: " + HResultToHexWString(hr));
+                // TODO: Handle device loss (e.g., re-initialize)
+            } else {
+                DebugLog(L"RenderFrame (D3D12): Present failed. HR: " + HResultToHexWString(hr));
+            }
         }
-    }
 
-    // Increment fence value for the next use of this RTV
-    g_renderFenceValues[g_currentFrameBufferIndex] = currentFenceVal + 1;
+        // Fence: Track this frame's completion
+        const UINT64 currentFenceVal = g_renderFenceValues[g_currentFrameBufferIndex];
+        hr = g_d3d12CommandQueue->Signal(g_fence.Get(), currentFenceVal);
+        if (FAILED(hr)) {
+            DebugLog(L"RenderFrame: Failed to signal fence. HR: " + HResultToHexWString(hr));
+        }
+
+        // Update back buffer index for the next frame
+        g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
+
+        // Wait for the next frame's fence to complete, so we don't get too far ahead of the GPU
+        if (g_fence->GetCompletedValue() < g_renderFenceValues[g_currentFrameBufferIndex]) {
+            hr = g_fence->SetEventOnCompletion(g_renderFenceValues[g_currentFrameBufferIndex], g_fenceEvent);
+            if (FAILED(hr)) {
+                DebugLog(L"RenderFrame: Failed to set event on completion. HR: " + HResultToHexWString(hr));
+            } else {
+                WaitForSingleObjectEx(g_fenceEvent, INFINITE, FALSE);
+            }
+        }
+
+        // Increment fence value for the next use of this RTV
+        g_renderFenceValues[g_currentFrameBufferIndex] = currentFenceVal + 1;
+    }
 
     // ---- Logging (only if a new frame was actually rendered) ----
     auto frameEndTime = std::chrono::system_clock::now();
