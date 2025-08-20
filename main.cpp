@@ -1324,7 +1324,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
         if (g_isSizing) {
             // Do NOT render during drag/resize/monitor move; keep UI responsive.
-            Sleep(16);              // ~1 frame, prevents busy-wait
+            Sleep(1);              // ~1 frame, prevents busy-wait
             continue;               // ← important: skip RenderFrame entirely while sizing
         }
 
