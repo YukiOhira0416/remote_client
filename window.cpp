@@ -27,6 +27,7 @@
 #include <iomanip>      // Required for std::hex (for PointerToWString)
 #include <chrono> // For time measurement
 #include <map>
+#include <queue>
 #include "Globals.h"
 #include "AppShutdown.h"
 
