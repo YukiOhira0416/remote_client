@@ -237,13 +237,6 @@ static constexpr int kClientPaddingY = 16;
 struct TargetResolution { int width; int height; };
 // Dense 16:9 ladder from 8K to 360p + practical intermediate widths.
 static const TargetResolution kKnownResolutions[] = {
-    // Ultra-high
-    {7680, 4320}, // 8K
-    {5120, 2880}, // 5K (16:9 variant)
-    {5120, 2160}, // 5K-UW variant sometimes used
-
-    // 4K family and near-4K steps
-    {4096, 2304}, // DCI-ish 16:9 variant
     {3840, 2160}, // 4K UHD
     {3456, 1944}, // 1.8x 1080p
     {3200, 1800}, // "3.2K"
