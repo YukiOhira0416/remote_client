@@ -1244,19 +1244,28 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         return -1;
     }
 
-    // After InitWindow(...) and InitD3D() == true
-    RECT rc{}; GetClientRect(g_hWnd, &rc);
-    int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
-    int tw, th; SnapToKnownResolution(cw, ch, tw, th);
+    // After InitWindow(.) and InitD3D() == true
+    RECT rc{};
+    GetClientRect(g_hWnd, &rc);
+    int cw = rc.right - rc.left;
+    int ch = rc.bottom - rc.top;
+
+    // Snap the *video* resolution from the current client size (which may already be padded)
+    int tw, th;
+    SnapToKnownResolution(cw, ch, tw, th);
+
+    // Set globals for *video* resolution (what the server encodes)
     currentResolutionWidth  = tw;
     currentResolutionHeight = th;
 
-    // Enqueue an initial resize for the render thread (to align swap-chain)
-    g_pendingResize.w.store(tw, std::memory_order_relaxed);
-    g_pendingResize.h.store(th, std::memory_order_relaxed);
+    // IMPORTANT: Enqueue initial swap-chain resize to the *actual current client size*.
+    // The client size here already includes padding; aligning the swap chain immediately
+    // prevents the initial “right edge slightly missing” symptom.
+    g_pendingResize.w.store(cw, std::memory_order_relaxed);
+    g_pendingResize.h.store(ch, std::memory_order_relaxed);
     g_pendingResize.has.store(true, std::memory_order_release);
 
-    // Force-send to server now (single gate):
+    // Notify server with the *video* resolution; force once so the sender can IDR and sync.
     OnResolutionChanged_GatedSend(tw, th, /*force=*/true);
 
     // Initialize CUDA and NVDEC
