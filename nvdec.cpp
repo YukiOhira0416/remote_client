@@ -114,18 +114,13 @@ FrameDecoder::FrameDecoder(CUcontext cuContext, ID3D12Device* pD3D12Device)
     CUDA_CHECK(cuCtxPopCurrent(NULL));
 }
 
-FrameDecoder::~FrameDecoder() {
-    cuCtxPushCurrent(m_cuContext);
-
+void FrameDecoder::releaseDecoderResources() {
     if (m_hDecoder) {
         cuvidDestroyDecoder(m_hDecoder);
+        m_hDecoder = nullptr;
     }
 
-    // Free CUDA external memory and mapped pointers
     for (auto& resource : m_frameResources) {
-        // The CUarray and CUmipmappedArray are derived from the external memory and
-        // are invalidated when the external memory is destroyed. We don't need to
-        // free them separately, but we null them out for correctness.
         resource.pCudaArrayY = nullptr;
         resource.pCudaArrayUV = nullptr;
         resource.pMipmappedArrayY = nullptr;
@@ -133,20 +128,38 @@ FrameDecoder::~FrameDecoder() {
 
         if (resource.cudaExtMemY) {
             cuDestroyExternalMemory(resource.cudaExtMemY);
+            resource.cudaExtMemY = nullptr;
         }
         if (resource.cudaExtMemUV) {
             cuDestroyExternalMemory(resource.cudaExtMemUV);
+            resource.cudaExtMemUV = nullptr;
         }
-        if(resource.sharedHandleY) CloseHandle(resource.sharedHandleY);
-        if(resource.sharedHandleUV) CloseHandle(resource.sharedHandleUV);
-        // Heaps and textures are released by ComPtr automatically
+        if(resource.sharedHandleY) {
+            CloseHandle(resource.sharedHandleY);
+            resource.sharedHandleY = nullptr;
+        }
+        if(resource.sharedHandleUV) {
+            CloseHandle(resource.sharedHandleUV);
+            resource.sharedHandleUV = nullptr;
+        }
+        resource.pTextureY.Reset();
+        resource.pTextureUV.Reset();
     }
+    m_frameResources.clear();
+    DebugLog(L"Released decoder resources and frame buffers.");
+}
+
+
+FrameDecoder::~FrameDecoder() {
+    cuCtxPushCurrent(m_cuContext);
+
+    releaseDecoderResources();
 
     if (m_hParser) {
         cuvidDestroyVideoParser(m_hParser);
+        m_hParser = nullptr;
     }
 
-    // 追加：ロック破棄
     if (m_ctxLock) {
         cuvidCtxLockDestroy(m_ctxLock);
         m_ctxLock = nullptr;
@@ -213,6 +226,16 @@ void FrameDecoder::Decode(const H264Frame& frame) {
     CUDA_CHECK(cuCtxPopCurrent(NULL));
 }
 
+bool FrameDecoder::reconfigureDecoder(CUVIDEOFORMAT* pVideoFormat) {
+    DebugLog(L"Reconfiguring decoder for new video format or resolution.");
+
+    // Clean up existing decoder and resources
+    releaseDecoderResources();
+
+    // Create a new decoder with the new format
+    return createDecoder(pVideoFormat);
+}
+
 int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoFormat) {
     FrameDecoder* const self = static_cast<FrameDecoder*>(pUserData);
     cuCtxPushCurrent(self->m_cuContext);
@@ -220,16 +243,38 @@ int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoForm
 
     try {
         DebugLog(L"HandleVideoSequence: Codec: " + std::to_wstring(pVideoFormat->codec) +
-            L", Resolution: " + std::to_wstring(pVideoFormat->coded_width) + L"x" + std::to_wstring(pVideoFormat->coded_height));
+            L", Coded Resolution: " + std::to_wstring(pVideoFormat->coded_width) + L"x" + std::to_wstring(pVideoFormat->coded_height) +
+            L", Target Resolution: " + std::to_wstring(currentResolutionWidth.load()) + L"x" + std::to_wstring(currentResolutionHeight.load()));
 
         if (!self->m_hDecoder) {
+            // First time initialization
             if (!self->createDecoder(pVideoFormat)) {
-                DebugLog(L"HandleVideoSequence: Failed to create decoder.");
+                DebugLog(L"HandleVideoSequence: Failed to create decoder for the first time.");
                 result = 0; // Stop processing
             }
-        }
-        else {
-            // Reconfigure decoder if format changes, not handled for simplicity
+        } else {
+            // Check if a reconfiguration is needed
+            bool needsReconfig = false;
+            if (pVideoFormat->coded_width != self->m_videoDecoderCreateInfo.ulWidth ||
+                pVideoFormat->coded_height != self->m_videoDecoderCreateInfo.ulHeight) {
+                DebugLog(L"HandleVideoSequence: Stream resolution changed. Reconfiguring.");
+                needsReconfig = true;
+            }
+
+            int targetWidth = currentResolutionWidth.load();
+            int targetHeight = currentResolutionHeight.load();
+            if (targetWidth > 0 && targetHeight > 0 &&
+                (targetWidth != self->m_frameWidth || targetHeight != self->m_frameHeight)) {
+                DebugLog(L"HandleVideoSequence: Target display resolution changed. Reconfiguring.");
+                needsReconfig = true;
+            }
+
+            if (needsReconfig) {
+                if (!self->reconfigureDecoder(pVideoFormat)) {
+                    DebugLog(L"HandleVideoSequence: Failed to reconfigure decoder.");
+                    result = 0; // Stop processing
+                }
+            }
         }
     }
     catch (const std::runtime_error& e) {

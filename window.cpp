@@ -176,6 +176,79 @@ UINT64 g_renderFenceValues[2]; // Fence values for each frame in flight for rend
 
 bool g_allowTearing = false; // ティアリングを許可するかどうか
 
+// ==== [Resize helpers - BEGIN] ====
+static std::atomic<bool> g_isSizing{false};         // WM_ENTERSIZEMOVE～EXITSIZEMOVE間
+
+// 「既知解像度」テーブルを共通化
+struct TargetResolution { int width; int height; };
+static const TargetResolution kKnownResolutions[] = {
+    {3840, 2160}, {2560, 1440}, {1920, 1080}, {1600, 900}, {1280, 720}, {800, 600}, {640, 480}
+};
+
+// 既知解像度にスナップするユーティリティ
+static void SnapToKnownResolution(int srcW, int srcH, int& outW, int& outH) {
+    int bestW = srcW, bestH = srcH, best = INT_MAX;
+    for (auto& r : kKnownResolutions) {
+        int d = abs(srcW - r.width) + abs(srcH - r.height);
+        if (d < best) { best = d; bestW = r.width; bestH = r.height; }
+    }
+    outW = bestW; outH = bestH;
+}
+
+// サーバーへ最終解像度を送る（旧 SendWindowSize 代替）
+static void SendFinalResolution(int width, int height); // Forward declaration
+
+// D3D12のResizeBuffersを安全に行う（EXITSIZEMOVEからのみ呼ぶ）
+static void ResizeSwapChainIfNeeded(int targetClientWidth, int targetClientHeight) {
+    if (!g_swapChain || !g_d3d12Device || !g_d3d12CommandQueue) return;
+
+    DXGI_SWAP_CHAIN_DESC1 desc{};
+    g_swapChain->GetDesc1(&desc);
+    if (desc.Width == (UINT)targetClientWidth && desc.Height == (UINT)targetClientHeight) {
+        return; // 既に一致
+    }
+
+    DebugLog(L"EXITSIZEMOVE: Resizing D3D for client area "
+             + std::to_wstring(targetClientWidth) + L"x" + std::to_wstring(targetClientHeight));
+
+    WaitForGpu(); // GPUアイドル化
+
+    // BackBuffer解放
+    for (UINT i=0;i<2;++i) g_renderTargets[i].Reset();
+
+    // ResizeBuffers。本来は作成時と同じフラグを維持すべき（ALLOW_TEARING等）
+    // ここでは0を維持。必要ならInitD3D側の作成フラグに合わせてください。
+    HRESULT hr = g_swapChain->ResizeBuffers(
+        2, targetClientWidth, targetClientHeight, DXGI_FORMAT_R8G8B8A8_UNORM, g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
+
+    if (FAILED(hr)) {
+        DebugLog(L"EXITSIZEMOVE: ResizeBuffers failed. HR: " + HResultToHexWString(hr));
+        // フォールバック: 一旦自動サイズ決定を試す
+        hr = g_swapChain->ResizeBuffers(2, 0, 0, DXGI_FORMAT_R8G8B8A8_UNORM, g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
+        if (FAILED(hr)) {
+            DebugLog(L"EXITSIZEMOVE: ResizeBuffers(0,0) also failed. HR: " + HResultToHexWString(hr));
+            return;
+        }
+    }
+
+    g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
+
+    // RTV再作成
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart());
+    for (UINT i=0;i<2;++i) {
+        hr = g_swapChain->GetBuffer(i, IID_PPV_ARGS(&g_renderTargets[i]));
+        if (FAILED(hr)) {
+            DebugLog(L"EXITSIZEMOVE: GetBuffer(" + std::to_wstring(i) + L") failed. HR: "
+                     + HResultToHexWString(hr));
+            return;
+        }
+        g_d3d12Device->CreateRenderTargetView(g_renderTargets[i].Get(), nullptr, rtvHandle);
+        rtvHandle.Offset(1, g_rtvDescriptorSize);
+    }
+    DebugLog(L"EXITSIZEMOVE: Re-created Render Target Views.");
+}
+// ==== [Resize helpers - END] ====
+
 // 送信フレーム番号で並べる小さなバッファ
 static std::map<uint32_t, ReadyGpuFrame> g_reorderBuffer;
 static std::mutex g_reorderMutex;
@@ -198,7 +271,6 @@ UINT g_srvDescriptorSize;
 
 std::atomic<uint32_t> g_globalFrameNumber(0);// FEC用フレーム番号
 void WaitForGpu(); // D3D12: Helper function to wait for GPU to finish commands
-void SendWindowSize(); // プロトタイプ宣言を追加
 
 // 各シャードパケットに付与するヘッダー
 struct ShardInfoHeader {
@@ -230,18 +302,58 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             {
                 PAINTSTRUCT ps;
                 HDC hdc = BeginPaint(hWnd, &ps);
-                // WM_PAINT メッセージに対する処理を行う
-                // BeginPaint/EndPaint での描画は WM_PAINT メッセージの間に行う必要がある
                 EndPaint(hWnd, &ps);
             }
-            return 0; // 処理が完了したことを示す
+            return 0;
         case WM_DESTROY:
             RequestShutdown(); // Ensure shutdown is requested, even if WM_CLOSE was bypassed
             return 0;
 
+        case WM_ENTERSIZEMOVE:
+            g_isSizing = true;
+            return 0;
+
+        case WM_EXITSIZEMOVE: {
+            g_isSizing = false;
+
+            // 直近のクライアントサイズを取得
+            RECT rc{}; GetClientRect(hWnd, &rc);
+            int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
+            if (cw <= 0 || ch <= 0) return 0;
+
+            // 既知解像度へスナップ（このタイミングで1回だけ）
+            int tw, th; SnapToKnownResolution(cw, ch, tw, th);
+
+            // もしスナップ後のクライアント寸法が現状と異なる場合、ウィンドウ枠込みのサイズへ変換して一度だけSetWindowPos
+            RECT wr{0, 0, tw, th};
+            DWORD style = GetWindowLong(hWnd, GWL_STYLE);
+            DWORD ex = GetWindowLong(hWnd, GWL_EXSTYLE);
+            AdjustWindowRectEx(&wr, style, GetMenu(hWnd) != NULL, ex);
+            int ww = wr.right - wr.left, wh = wr.bottom - wr.top;
+
+            // 現在のウィンドウ外形サイズと違う場合のみ反映
+            RECT wrNow{}; GetWindowRect(hWnd, &wrNow);
+            if ((wrNow.right - wrNow.left) != ww || (wrNow.bottom - wrNow.top) != wh) {
+                SetWindowPos(hWnd, nullptr, 0, 0, ww, wh,
+                             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+                // 注: ここで WM_SIZE が1回だけ発火する想定
+            }
+
+            // グローバル現在解像度を確定
+            currentResolutionWidth = tw;
+            currentResolutionHeight = th;
+
+            // スワップチェーンを最終寸法に1回だけリサイズ
+            ResizeSwapChainIfNeeded(tw, th);
+
+            // サーバーに1回だけ最終解像度を送信
+            SendFinalResolution(tw, th);
+
+            return 0;
+        }
+
         case WM_DPICHANGED:
         {
-            // 新しいウィンドウ矩形がlParamで渡される
             const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
             if (suggested) {
                 SetWindowPos(hWnd, nullptr,
@@ -250,16 +362,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                              suggested->bottom - suggested->top,
                              SWP_NOZORDER | SWP_NOACTIVATE);
             }
-            // DPI変更に伴う実クライアントサイズの再計測 → 既存WM_SIZEでResizeBuffersが走る
             break;
         }
         case WM_DISPLAYCHANGE:
         {
-            // モニタ解像度/レイアウトが変わった
-            // 現在のクライアント領域からサイズを再計算し、必要に応じてResizeBuffers
             RECT rc{};
             if (GetClientRect(hWnd, &rc)) {
-                // 既存のWM_SIZEと同様の処理へ委譲：SendMessageでSIZEイベントを発火させる
                 PostMessageW(hWnd, WM_SIZE, SIZE_RESTORED,
                              MAKELPARAM(rc.right - rc.left, rc.bottom - rc.top));
             }
@@ -267,8 +375,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         }
         case WM_MOVE:
         {
-            // モニタを跨いだ場合はDPIが変わる可能性
-            // DPIを取得して必要ならWM_SIZE相当の更新を促す
             RECT rc{};
             if (GetClientRect(hWnd, &rc)) {
                 PostMessageW(hWnd, WM_SIZE, SIZE_RESTORED,
@@ -278,114 +384,33 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         }
 
         case WM_SIZE: {
-            // クライアント領域のサイズ変更
-            int width = LOWORD(lParam);
+            int width  = LOWORD(lParam);
             int height = HIWORD(lParam);
 
-            // 新しい解像度を設定
-            struct TargetResolution { // Renamed for clarity
-                int width;
-                int height;
-            };
-
-            // These are TARGET CLIENT AREA resolutions
-            const TargetResolution resolutions[] = {
-                {3840, 2160}, // 4K
-                {2560, 1440}, // WQHD
-                {1920, 1080}, // Full HD
-                {1600, 900},  // HD+
-                {1280, 720},  // HD
-                {800, 600},   // XGA
-                {640, 480}    // VGA
-            };
-
-            int closestWidth = width;
-            int closestHeight = height;
-            // width and height from WM_SIZE are client area dimensions
-            int targetClientWidth = width;
-            int targetClientHeight = height;
-            int minDifference = INT_MAX;
-
-            for (const auto& res : resolutions) {
-                int diff = std::abs(targetClientWidth - res.width) + std::abs(targetClientHeight - res.height);
-                if (diff < minDifference) {
-                    minDifference = diff;
-                    targetClientWidth = res.width;
-                    targetClientHeight = res.height;
-                }
+            if (g_isSizing) {
+                // ドラッグ中は描画を更新しないので何もしない
+                return 0;
             }
 
-            currentResolutionWidth = targetClientWidth; // Store the snapped client width
-            currentResolutionHeight = targetClientHeight; // Store the snapped client height
-
-            // Calculate the required window size for the target client area size
-            RECT wr = {0, 0, targetClientWidth, targetClientHeight};
-            DWORD dwStyle = GetWindowLong(hWnd, GWL_STYLE);
-            DWORD dwExStyle = GetWindowLong(hWnd, GWL_EXSTYLE);
-            AdjustWindowRectEx(&wr, dwStyle, GetMenu(hWnd) != NULL, dwExStyle);
-
-            int adjustedWindowWidth = wr.right - wr.left;
-            int adjustedWindowHeight = wr.bottom - wr.top;
-
-            // Enforce the snapped resolution on the window (using adjusted window size)
-            SetWindowPos(hWnd, nullptr, 0, 0, adjustedWindowWidth, adjustedWindowHeight, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-
-            if (g_d3d12Device) { // Check if D3D12 is initialized
-                if (wParam == SIZE_MINIMIZED || targetClientWidth == 0 || targetClientHeight == 0) {
-                    DebugLog(L"WM_SIZE: Window minimized or zero size. D3D resize skipped.");
-                    // Optionally, inform SendWindowSize about minimization if the server needs to know
-                } else {
-                    bool needsResize = true;
-                    if (g_swapChain) {
-                        DXGI_SWAP_CHAIN_DESC1 currentDesc; // For IDXGISwapChain1+
-                        g_swapChain->GetDesc1(&currentDesc);
-                        if (currentDesc.Width == static_cast<UINT>(targetClientWidth) &&
-                            currentDesc.Height == static_cast<UINT>(targetClientHeight)) {
-                            needsResize = false;
-                        }
-                    }
-
-                    if (needsResize && g_swapChain && g_d3d12CommandQueue) { // Check D3D12 command queue
-                        DebugLog(L"WM_SIZE: Resizing D3D for client area " + std::to_wstring(targetClientWidth) + L"x" + std::to_wstring(targetClientHeight));
-                        WaitForGpu(); // Ensure GPU is idle before resizing
-
-                        // Release existing render targets
-                        for (UINT i = 0; i < 2; ++i) {
-                            g_renderTargets[i].Reset();
-                        }
-
-                        HRESULT hr = g_swapChain->ResizeBuffers(
-                            2, // Number of buffers (same as initialization)
-                            targetClientWidth,  // Use target client width
-                            targetClientHeight, // Use target client height
-                            DXGI_FORMAT_R8G8B8A8_UNORM, // Format (same as initialization)
-                            0 // Flags (DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH etc.)
-                        );
-
-                        if (SUCCEEDED(hr)) {
-                            g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
-                            CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-                            for (UINT i = 0; i < 2; ++i) {
-                                hr = g_swapChain->GetBuffer(i, IID_PPV_ARGS(&g_renderTargets[i]));
-                                if (FAILED(hr)) {
-                                    DebugLog(L"WM_SIZE: Failed to get back buffer " + std::to_wstring(i) + L" after resize. HR: " + HResultToHexWString(hr));
-                                    break;
-                                }
-                                g_d3d12Device->CreateRenderTargetView(g_renderTargets[i].Get(), nullptr, rtvHandle);
-                                rtvHandle.Offset(1, g_rtvDescriptorSize);
-                            }
-
-                            DebugLog(L"WM_SIZE: Re-created Render Target Views.");
-                        } else {
-                            DebugLog(L"WM_SIZE: ResizeBuffers failed. HRESULT: " + std::to_wstring(hr));
-                        }
-                    }
-                }
+            if (wParam == SIZE_MINIMIZED || width == 0 || height == 0) {
+                DebugLog(L"WM_SIZE: minimized or zero. skip.");
+                return 0;
             }
 
-            // クライアント領域のサイズ変更に伴うSendWindowSizeの呼び出し
-            SendWindowSize();
-            break;
+            // This WM_SIZE can come from DPI change, display change, or the final SetWindowPos in EXITSIZEMOVE.
+            // In the case of EXITSIZEMOVE, the resize logic is handled there.
+            // For other cases like DPI change, we might need to resize, but the EXITSIZEMOVE logic should be sufficient.
+            // For now, we only update the globals and let the main resize logic exist in one place.
+            currentResolutionWidth = width;
+            currentResolutionHeight = height;
+
+            // The call to ResizeSwapChainIfNeeded is removed from here to avoid redundant calls,
+            // as WM_EXITSIZEMOVE is now the single source of truth for resizing actions.
+            // If a resize is needed for other WM_SIZE reasons (like DPI change),
+            // it will be triggered by the subsequent EXITSIZEMOVE or a more explicit handler.
+            // The current implementation ensures that dragging the window is smooth and resizing happens once at the end.
+
+            return 0;
         }
 
         default:
@@ -426,10 +451,34 @@ bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
         return false;
     }
 
-    // ここを「カーソル下モニタに作成」に変更
-    const int desiredClientWidth  = 1920;
-    const int desiredClientHeight = 1080;
-    return CreateWindowOnBestMonitor(hInstance, nCmdShow, desiredClientWidth, desiredClientHeight);
+    const int initialWidth = 1920;
+    const int initialHeight = 1080;
+    if (!CreateWindowOnBestMonitor(hInstance, nCmdShow, initialWidth, initialHeight)) {
+        return false;
+    }
+
+    // クライアント実寸から既知解像度へスナップして一回送信
+    RECT rc{}; GetClientRect(g_hWnd, &rc);
+    int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
+    int tw, th;
+    SnapToKnownResolution(cw, ch, tw, th);
+
+    currentResolutionWidth = tw;
+    currentResolutionHeight = th;
+
+    // If snapping changed the size, we might need to adjust the window
+    if (cw != tw || ch != th) {
+        RECT wr = {0, 0, tw, th};
+        DWORD style = GetWindowLong(g_hWnd, GWL_STYLE);
+        DWORD ex = GetWindowLong(g_hWnd, GWL_EXSTYLE);
+        AdjustWindowRectEx(&wr, style, GetMenu(g_hWnd) != NULL, ex);
+        int ww = wr.right - wr.left;
+        int wh = wr.bottom - wr.top;
+        SetWindowPos(g_hWnd, nullptr, 0, 0, ww, wh, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    SendFinalResolution(tw, th);
+    return true;
 }
 
 bool InitD3D() {
@@ -1032,12 +1081,10 @@ void CleanupD3DRenderResources() {
 }
 
 
-void SendWindowSize() {
-    // ウィンドウサイズの変更を通知
-    int width = currentResolutionWidth;
-    int height = currentResolutionHeight;
+void SendFinalResolution(int width, int height) {
+    DebugLog(L"SendFinalResolution: Sending resolution " + std::to_wstring(width) + L"x" + std::to_wstring(height));
 
-    // サイズ変更メッセージを作成
+    // サイズ変更メッセージを作成 (this is the logic from the old SendWindowSize)
     std::string message = std::to_string(height) + ":" + std::to_string(width) + "#";
     std::vector<uint8_t> data(message.begin(), message.end());
 
@@ -1049,8 +1096,6 @@ void SendWindowSize() {
     if (original_data_len > 0) { // データが存在する場合は FEC を適用
         size_t min_shard_len = (original_data_len + RS_K - 1) / RS_K; // 最小シャード長を計算
 
-        // shard_len を w (8) で割った商に packetsize を sizeof(long) で割った商を掛け算する
-        // つまり shard_len を w * sizeof(long) で割った商にする (64bit 整数の場合)
         const int w = 8; // シャードの幅
         const int alignment = w * sizeof(long); // 8 * 8 = 64 (64bit 整数の場合)
         shard_len = (min_shard_len + alignment - 1) / alignment * alignment;
@@ -1058,42 +1103,36 @@ void SendWindowSize() {
         size_t padded_data_len = shard_len * RS_K;
         if (original_data_len < padded_data_len) {
             data.resize(padded_data_len, 0); // 0 でパディング
-            //DebugLog(L"Padded H.264 data from " + std::to_wstring(original_data_len) + L" to " + std::to_wstring(padded_data_len) + L" (shard_len=" + std::to_wstring(shard_len) + L", packetsize=" + std::to_wstring(shard_len/w) + L")");
         } else if (original_data_len > padded_data_len) {
-            // 受信データがパディング後のデータ長を超えた場合 (padded_data_len < original_data_len の場合)
-            // これは通常発生しないはず
             DebugLog(L"Warning: original_data_len > padded_data_len. This should not happen.");
-            data.resize(padded_data_len); // padded_data_len �ɍ��킹��
+            data.resize(padded_data_len);
         }
 
-        // 2. パリティシャード格納ベクター (parityShards は既に宣言済み)
-
-        // 3. Jerasure �ŃG���R�[�h���s
         if (g_matrix_initialized) {
             fec_success = EncodeFEC_Jerasure(
-                data.data(), // 入力データ
+                data.data(),
                 padded_data_len,
-                parityShards,          // パリティシャード
+                parityShards,
                 RS_K,
                 RS_M,
-                g_jerasure_matrix,     // Jerasure 行列
+                g_jerasure_matrix,
                 shard_len
             );
             if (!fec_success) {
-                DebugLog(L"WorkerThreadLoop: EncodeFEC_Jerasure failed for H.264 data.");
+                DebugLog(L"SendFinalResolution: EncodeFEC_Jerasure failed.");
             }
         } else {
-            DebugLog(L"WorkerThreadLoop: Jerasure matrix not initialized. Skipping FEC for H.264 data.");
+            DebugLog(L"SendFinalResolution: Jerasure matrix not initialized. Skipping FEC.");
             fec_success = false;
         }
     } else {
-        DebugLog(L"WorkerThreadLoop: original_data_len is 0. Skipping FEC for H.264 data.");
-        fec_success = false; // FEC を適用しない
+        DebugLog(L"SendFinalResolution: original_data_len is 0. Skipping FEC.");
+        fec_success = false;
     }
 
     SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (udpSocket == INVALID_SOCKET) {
-        DebugLog(L"Failed to create socket.");
+        DebugLog(L"SendFinalResolution: Failed to create socket.");
         return;
     }
 
@@ -1102,72 +1141,58 @@ void SendWindowSize() {
     serverAddr.sin_port = htons(CLIENT_PORT_FEC);
     inet_pton(AF_INET, CLIENT_IP_FEC, &serverAddr.sin_addr);
 
-    if (fec_success && original_data_len > 0) { // FEC を適用する条件
-        uint32_t currentFrameNumber = g_globalFrameNumber.fetch_add(1); // 現在のフレーム番号を取得
+    if (fec_success && original_data_len > 0) {
+        uint32_t currentFrameNumber = g_globalFrameNumber.fetch_add(1);
         const size_t shardHeaderSize = sizeof(ShardInfoHeader);
 
-        // データシャードの送信 (k 番目)
+        // データシャードの送信
         for (int i = 0; i < RS_K; ++i) {
             std::vector<uint8_t> packetData;
             packetData.reserve(shardHeaderSize + shard_len);
 
-            // ヘッダーの作成
             ShardInfoHeader header;
             header.frameNumber = htonl(currentFrameNumber);
-            header.shardIndex = htonl(i); // データシャードのインデックス 0 から k-1
-            header.totalDataShards = htonl(RS_K);
-            header.totalParityShards = htonl(RS_M);
-            header.originalDataLen = htonl(static_cast<uint32_t>(original_data_len)); // 元のデータ長
-
-            // ヘッダーの追加
-            packetData.insert(packetData.end(), reinterpret_cast<uint8_t*>(&header), reinterpret_cast<uint8_t*>(&header) + shardHeaderSize);
-
-            // データシャードの追加
-            const uint8_t* shardStart = data.data() + i * shard_len;
-            packetData.insert(packetData.end(), shardStart, shardStart + shard_len);
-
-            // パケットデータの検証
-            if (packetData.data() != nullptr && packetData.size() > 0 && packetData.size() <= SIZE_PACKET_SIZE) { // SIZE_PACKET_SIZE を超えないことを確認
-                int result = sendto(udpSocket, reinterpret_cast<const char*>(packetData.data()), static_cast<int>(packetData.size()), 0, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
-                if (result == SOCKET_ERROR) {
-                    DebugLog(L"Failed to send data shard: " + std::to_wstring(WSAGetLastError()));
-                }
-            } else {
-                DebugLog(L"SendWindowSize: Invalid packetData for data shard. Pointer: " + std::wstring(packetData.data() ? L"Valid" : L"NULL") + L", Size: " + std::to_wstring(packetData.size()));
-                DebugLog(L"Failed to send data shard: " + std::to_wstring(WSAGetLastError()));
-            }
-        }
-
-        // パリティシェアの送信 (m 番目)
-        for (int i = 0; i < RS_M; ++i) {
-            std::vector<uint8_t> packetData;
-            packetData.reserve(shardHeaderSize + shard_len);
-
-            // ヘッダーの作成 (shardIndex も含める)
-            ShardInfoHeader header;
-            header.frameNumber = htonl(currentFrameNumber);
-            header.shardIndex = htonl(RS_K + i); // パリティシェアのインデックス k から k+m-1
+            header.shardIndex = htonl(i);
             header.totalDataShards = htonl(RS_K);
             header.totalParityShards = htonl(RS_M);
             header.originalDataLen = htonl(static_cast<uint32_t>(original_data_len));
 
-            // ヘッダーの追加
             packetData.insert(packetData.end(), reinterpret_cast<uint8_t*>(&header), reinterpret_cast<uint8_t*>(&header) + shardHeaderSize);
+            const uint8_t* shardStart = data.data() + i * shard_len;
+            packetData.insert(packetData.end(), shardStart, shardStart + shard_len);
 
-            // パリティシェアの追加
-            packetData.insert(packetData.end(), parityShards[i].begin(), parityShards[i].end());
-
-            // パケットデータの検証
-            if (packetData.data() != nullptr && packetData.size() > 0 && packetData.size() <= SIZE_PACKET_SIZE) { // SIZE_PACKET_SIZE を超えないことを確認
-                int result = sendto(udpSocket, reinterpret_cast<const char*>(packetData.data()), static_cast<int>(packetData.size()), 0, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
-                if (result == SOCKET_ERROR) {
-                    DebugLog(L"Failed to send parity shard: " + std::to_wstring(WSAGetLastError()));
+            if (packetData.data() != nullptr && packetData.size() > 0 && packetData.size() <= SIZE_PACKET_SIZE) {
+                if (sendto(udpSocket, reinterpret_cast<const char*>(packetData.data()), static_cast<int>(packetData.size()), 0, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) == SOCKET_ERROR) {
+                    DebugLog(L"SendFinalResolution: Failed to send data shard: " + std::to_wstring(WSAGetLastError()));
                 }
             } else {
-                DebugLog(L"SendWindowSize: Invalid packetData for parity shard. Pointer: " + std::wstring(packetData.data() ? L"Valid" : L"NULL") + L", Size: " + std::to_wstring(packetData.size()));
+                DebugLog(L"SendFinalResolution: Invalid packetData for data shard.");
+            }
+        }
+
+        // パリティシャードの送信
+        for (int i = 0; i < RS_M; ++i) {
+            std::vector<uint8_t> packetData;
+            packetData.reserve(shardHeaderSize + shard_len);
+
+            ShardInfoHeader header;
+            header.frameNumber = htonl(currentFrameNumber);
+            header.shardIndex = htonl(RS_K + i);
+            header.totalDataShards = htonl(RS_K);
+            header.totalParityShards = htonl(RS_M);
+            header.originalDataLen = htonl(static_cast<uint32_t>(original_data_len));
+
+            packetData.insert(packetData.end(), reinterpret_cast<uint8_t*>(&header), reinterpret_cast<uint8_t*>(&header) + shardHeaderSize);
+            packetData.insert(packetData.end(), parityShards[i].begin(), parityShards[i].end());
+
+            if (packetData.data() != nullptr && packetData.size() > 0 && packetData.size() <= SIZE_PACKET_SIZE) {
+                if (sendto(udpSocket, reinterpret_cast<const char*>(packetData.data()), static_cast<int>(packetData.size()), 0, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) == SOCKET_ERROR) {
+                    DebugLog(L"SendFinalResolution: Failed to send parity shard: " + std::to_wstring(WSAGetLastError()));
+                }
+            } else {
+                DebugLog(L"SendFinalResolution: Invalid packetData for parity shard.");
             }
         }
     }
-    // ソケットのクローズ
     closesocket(udpSocket);
 }
