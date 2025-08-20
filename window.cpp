@@ -32,6 +32,10 @@
 #include "AppShutdown.h"
 #include "main.h" // For RequestIDRNow
 
+// Defer DPI changes during sizing
+static std::atomic<bool> g_deferFinalize{false};
+static RECT g_deferredDpiRect{};
+
 // ==== [Multi-monitor helpers - BEGIN] ====
 #ifndef _USE_MATH_DEFINES
 #define _USE_MATH_DEFINES
@@ -452,6 +456,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         {
             g_isSizing = false;
 
+            // Apply any deferred DPI rect then finalize once.
+            if (g_deferFinalize.exchange(false, std::memory_order_acq_rel)) {
+                const RECT& r = g_deferredDpiRect;
+                SetWindowPos(hWnd, nullptr,
+                             r.left, r.top, r.right - r.left, r.bottom - r.top,
+                             SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+
             // 1) Finalize and FORCE the resolution announce at drag end.
             FinalizeResize(hWnd, /*forceAnnounce=*/true);
 
@@ -469,16 +481,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         {
             const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
             if (suggested) {
-                SetWindowPos(hWnd, nullptr,
-                             suggested->left, suggested->top,
-                             suggested->right - suggested->left,
-                             suggested->bottom - suggested->top,
-                             SWP_NOZORDER | SWP_NOACTIVATE);
+                if (g_isSizing) {
+                    g_deferredDpiRect = *suggested;
+                    g_deferFinalize.store(true, std::memory_order_release);
+                } else {
+                    SetWindowPos(hWnd, nullptr,
+                                 suggested->left, suggested->top,
+                                 suggested->right - suggested->left,
+                                 suggested->bottom - suggested->top,
+                                 SWP_NOZORDER | SWP_NOACTIVATE);
+                    FinalizeResize(hWnd); // current behavior
+                }
             }
-            // After a DPI change, the size and position have changed, so we must
-            // trigger the same logic as a completed resize to restart the stream.
-            FinalizeResize(hWnd);
-            break;
+            return 0;
         }
         case WM_DISPLAYCHANGE:
         {
@@ -1134,7 +1149,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     DebugLog(L"RenderThread: RTVs recreated after resize.");
 }
 
-void RenderFrame() {
+void RenderFrame(bool deferResize) {
     // ---- [Release completed frame resources - BEGIN] ----
     // GPUがどこまで処理を終えたかを確認
     const UINT64 completedFenceValue = g_fence->GetCompletedValue();
@@ -1148,11 +1163,13 @@ void RenderFrame() {
     // ---- [Release completed frame resources - END] ----
 
     // Pick up pending resize, if any
-    if (g_pendingResize.has.load(std::memory_order_acquire)) {
-        int newW = g_pendingResize.w.load(std::memory_order_relaxed);
-        int newH = g_pendingResize.h.load(std::memory_order_relaxed);
-        g_pendingResize.has.store(false, std::memory_order_release);
-        ResizeSwapChainOnRenderThread(newW, newH);
+    if (!deferResize) {
+        if (g_pendingResize.has.load(std::memory_order_acquire)) {
+            int newW = g_pendingResize.w.load(std::memory_order_relaxed);
+            int newH = g_pendingResize.h.load(std::memory_order_relaxed);
+            g_pendingResize.has.store(false, std::memory_order_release);
+            ResizeSwapChainOnRenderThread(newW, newH);
+        }
     }
 
     auto frameStartTime = std::chrono::system_clock::now();

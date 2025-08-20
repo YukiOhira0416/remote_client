@@ -1319,25 +1319,32 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             g_lastFrameRenderTimeForKick = {};
         }
 
-        // After processing messages, render a frame, respecting the frame rate.
-        // This ensures rendering continues even during a message-heavy event like resizing.
+        // After processing messages, render a frame.
         auto currentTime = std::chrono::high_resolution_clock::now();
-        auto timeSinceLastRender = currentTime - lastFrameRenderTime;
 
         if (g_isSizing) {
-            // We are resizing, so just yield the CPU. When we resume, the large
-            // timeSinceLastRender will trigger an immediate frame.
-            Sleep(16); // Sleep for roughly one frame to avoid busy-waiting.
-        }
-        else if (timeSinceLastRender >= TARGET_FRAME_DURATION) {
-            RenderFrame();
-            lastFrameRenderTime = currentTime;
+            // While sizing, render throttled to ~30 FPS to keep video moving,
+            // but defer any expensive swap-chain resizes.
+            static auto lastResizeFrameTime = std::chrono::high_resolution_clock::now();
+            if (currentTime - lastResizeFrameTime >= std::chrono::milliseconds(33)) {
+                RenderFrame(true); // Defer swap-chain resize
+                lastResizeFrameTime = currentTime;
+            } else {
+                Sleep(1); // Yield to avoid busy-waiting
+            }
         } else {
-            // Yield CPU time if we are ahead of schedule to avoid spinning.
-            auto timeToWait = TARGET_FRAME_DURATION - timeSinceLastRender;
-            long long msToWait = std::chrono::duration_cast<std::chrono::milliseconds>(timeToWait).count();
-            if (msToWait > 1) {
-                Sleep(static_cast<DWORD>(msToWait - 1));
+            // Normal rendering path, respecting the target frame rate.
+            auto timeSinceLastRender = currentTime - lastFrameRenderTime;
+            if (timeSinceLastRender >= TARGET_FRAME_DURATION) {
+                RenderFrame(false); // Allow swap-chain resize
+                lastFrameRenderTime = currentTime;
+            } else {
+                // Yield CPU time if we are ahead of schedule.
+                auto timeToWait = TARGET_FRAME_DURATION - timeSinceLastRender;
+                long long msToWait = std::chrono::duration_cast<std::chrono::milliseconds>(timeToWait).count();
+                if (msToWait > 1) {
+                    Sleep(static_cast<DWORD>(msToWait - 1));
+                }
             }
         }
     }

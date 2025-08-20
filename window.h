@@ -6,7 +6,7 @@ extern std::atomic<bool> g_isSizing;
 
 bool InitWindow(HINSTANCE hInstance, int nCmdShow);
 bool InitD3D();
-void RenderFrame();
+void RenderFrame(bool deferResize = false);
 void SendWindowSize();
 void CleanupD3DRenderResources();
 void WaitForGpu();
