@@ -229,6 +229,10 @@ bool g_allowTearing = false; // ティアリングを許可するかどうか
 // ==== [Resize helpers - BEGIN] ====
 static std::atomic<bool> g_isSizing{false};         // WM_ENTERSIZEMOVE～EXITSIZEMOVE間
 
+// --- Window client padding around the video (in pixels) ---
+static constexpr int kClientPaddingX = 16;
+static constexpr int kClientPaddingY = 16;
+
 // 「既知解像度」テーブルを共通化
 struct TargetResolution { int width; int height; };
 // Dense 16:9 ladder from 8K to 360p + practical intermediate widths.
@@ -400,22 +404,39 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
             RECT rc{}; GetClientRect(hWnd, &rc);
             int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
-            int tw = 0, th = 0;
-            SnapToKnownResolution(cw, ch, tw, th);
 
-            // Update globals for everyone (NVDEC, layout, etc.)
+            int tw = 0, th = 0;
+            SnapToKnownResolution(cw, ch, tw, th); // tw,th = snapped *video* size (16:9)
+
+            // Update globals: these represent the *video* resolution (server-side encode)
             currentResolutionWidth  = tw;
             currentResolutionHeight = th;
 
-            // Enqueue resize for the render thread
-            g_pendingResize.w.store(tw, std::memory_order_relaxed);
-            g_pendingResize.h.store(th, std::memory_order_relaxed);
+            // --- pad the client area for margins around the video ---
+            const int paddedClientW = tw + kClientPaddingX * 2;
+            const int paddedClientH = th + kClientPaddingY * 2;
+
+            // Adjust *outer* window so that client becomes padded size
+            RECT wr{0, 0, paddedClientW, paddedClientH};
+            DWORD style = GetWindowLong(hWnd, GWL_STYLE);
+            DWORD ex    = GetWindowLong(hWnd, GWL_EXSTYLE);
+            AdjustWindowRectEx(&wr, style, GetMenu(hWnd)!=NULL, ex);
+            const int ww = wr.right - wr.left, wh = wr.bottom - wr.top;
+
+            RECT wrNow{}; GetWindowRect(hWnd, &wrNow);
+            if ((wrNow.right - wrNow.left) != ww || (wrNow.bottom - wrNow.top) != wh) {
+                SetWindowPos(hWnd, nullptr, 0, 0, ww, wh,
+                             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+
+            // Enqueue swap-chain resize to *padded client size*
+            g_pendingResize.w.store(paddedClientW, std::memory_order_relaxed);
+            g_pendingResize.h.store(paddedClientH, std::memory_order_relaxed);
             g_pendingResize.has.store(true, std::memory_order_release);
 
-            // Notify server (single gate: sends final resolution, clears reorder, requests IDR)
+            // Notify server (single gate) with the *video* resolution ONLY
             OnResolutionChanged_GatedSend(tw, th, /*force=*/false);
 
-            // Nudge a frame so the render thread picks it up immediately
             InvalidateRect(hWnd, nullptr, FALSE);
             return 0;
         }
@@ -526,18 +547,24 @@ bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
     currentResolutionWidth = tw;
     currentResolutionHeight = th;
 
-    // If snapping changed the size, we might need to adjust the window
-    if (cw != tw || ch != th) {
-        RECT wr = {0, 0, tw, th};
+    // Make the *client area* slightly larger than the video to leave margins
+    const int paddedClientW = tw + kClientPaddingX * 2;
+    const int paddedClientH = th + kClientPaddingY * 2;
+
+    // If the initial client size differs from the snapped+padded size, adjust the window.
+    if (cw != paddedClientW || ch != paddedClientH) {
+        RECT wr = {0, 0, paddedClientW, paddedClientH};
         DWORD style = GetWindowLong(g_hWnd, GWL_STYLE);
-        DWORD ex = GetWindowLong(g_hWnd, GWL_EXSTYLE);
+        DWORD ex    = GetWindowLong(g_hWnd, GWL_EXSTYLE);
         AdjustWindowRectEx(&wr, style, GetMenu(g_hWnd) != NULL, ex);
-        int ww = wr.right - wr.left;
-        int wh = wr.bottom - wr.top;
+        const int ww = wr.right - wr.left;
+        const int wh = wr.bottom - wr.top;
         SetWindowPos(g_hWnd, nullptr, 0, 0, ww, wh, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
-    // ここで直接 SendFinalResolution(tw, th) しない
+    // Notify the server with the *video* resolution only.
+    // The swap-chain resize to the padded client size will be triggered by the WM_SIZE
+    // message that SetWindowPos generates, which is handled by the render thread.
     OnResolutionChanged_GatedSend(tw, th, false);
     return true;
 }
@@ -871,8 +898,8 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart(), g_currentFrameBufferIndex, g_rtvDescriptorSize);
     g_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
-    // Clear the entire render target first. The viewport will then constrain the drawing area.
-    const float clearColor[] = { 0.1f, 0.1f, 0.3f, 1.0f }; // DirectX::Colors::CornflowerBlue
+    // Optional: clear to black so gutters are black (no blue flicker around the content)
+    const float clearColor[4] = {0.f, 0.f, 0.f, 1.f};
     g_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 
     // --- Render the decoded frame ---
@@ -949,10 +976,15 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     }
 
     if (hasFrameToRender && outFrameToRender.hw_decoded_texture_Y && outFrameToRender.hw_decoded_texture_UV) {
-        // Set the viewport to preserve aspect ratio (letterboxing)
+        // Use the *video* size for centering (what the server encodes)
+        const int videoW = currentResolutionWidth.load();
+        const int videoH = currentResolutionHeight.load();
+
+        // Center the draw region inside the (possibly larger) backbuffer
         ID3D12Resource* backbuffer = g_renderTargets[g_currentFrameBufferIndex].Get();
         if (backbuffer) {
-            SetLetterboxViewport(g_commandList.Get(), backbuffer->GetDesc(), outFrameToRender.width, outFrameToRender.height);
+            const D3D12_RESOURCE_DESC bbDesc = backbuffer->GetDesc();
+            SetLetterboxViewport(g_commandList.Get(), bbDesc, videoW, videoH);
         }
 
         // Create SRVs for Y and UV textures
