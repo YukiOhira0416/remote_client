@@ -39,6 +39,16 @@
 #include <ShellScalingApi.h> // AdjustWindowRectExForDpi 等
 #pragma comment(lib, "Shcore.lib")
 
+// Use a single monotonic clock for all latency metrics.
+static inline uint64_t SteadyNowMs() noexcept {
+    using clock = std::chrono::steady_clock;
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            clock::now().time_since_epoch()
+        ).count()
+    );
+}
+
 UINT64 RenderCount = 0;
 
 static UINT GetDpiForMonitorOrDefault(HMONITOR hMon) {
@@ -909,6 +919,8 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     hr = g_commandList->Reset(g_commandAllocator.Get(), nullptr); // No initial PSO for clear
     if (FAILED(hr)) { DebugLog(L"PopulateCommandList: Failed to reset command list. HR: " + HResultToHexWString(hr)); return false; }
 
+    outFrameToRender.render_start_ms = SteadyNowMs(); // steady clock start
+
     // Transition the current back buffer from PRESENT to RENDER_TARGET.
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -1004,10 +1016,6 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             }
         }
     }
-
-    auto RenderStartTime = std::chrono::system_clock::now();
-    uint64_t RenderStartTimeTs = std::chrono::duration_cast<std::chrono::milliseconds>(RenderStartTime.time_since_epoch()).count();
-    outFrameToRender.RenderStartTimeTs = RenderStartTimeTs;
 
     if (hasFrameToRender && outFrameToRender.hw_decoded_texture_Y && outFrameToRender.hw_decoded_texture_UV) {
         // Use the *video* size for centering (what the server encodes)
@@ -1246,23 +1254,55 @@ void RenderFrame() {
     }
 
     // ---- Logging (only if a new frame was actually rendered) ----
-    auto frameEndTime = std::chrono::system_clock::now();
-    uint64_t frameEndTimeTs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndTime.time_since_epoch()).count();
     if (frameWasRendered) {
-        int64_t latencyMs = static_cast<int64_t>(frameEndTimeTs) - static_cast<int64_t>(renderedFrameData.timestamp);
-        if(RenderCount++ % 60 == 0){
-            DebugLog(L"RenderFrame Latency: StreamFrame #"
-            + std::to_wstring(renderedFrameData.streamFrameNumber)
-            + L", OriginalFrame #" + std::to_wstring(renderedFrameData.originalFrameNumber)
-            + L" (ID: " + std::to_wstring(renderedFrameData.id) + L")"
-            + L" - WGC to RenderEnd: " + std::to_wstring(latencyMs) + L" ms.");
+        const uint64_t render_end_ms = SteadyNowMs();
+        renderedFrameData.present_ms = render_end_ms;   // Present just finished (approx)
+        renderedFrameData.fence_done_ms = render_end_ms; // after waits; same endpoint for now
+
+        // Render totals (steady)
+        const uint64_t render_total_ms = (render_end_ms >= renderedFrameData.render_start_ms)
+            ? (render_end_ms - renderedFrameData.render_start_ms)
+            : 0;
+
+        // End-to-end client latency (steady), if rx_done_ms is known
+        uint64_t client_e2e_ms = 0;
+        if (renderedFrameData.rx_done_ms != 0) {
+            client_e2e_ms = (render_end_ms >= renderedFrameData.rx_done_ms)
+                ? (render_end_ms - renderedFrameData.rx_done_ms)
+                : 0;
+        }
+
+        // NVDEC->RenderEnd (steady), if nvdec_done_ms is known
+        uint64_t nvdec_to_end_ms = 0;
+        if (renderedFrameData.nvdec_done_ms != 0) {
+            nvdec_to_end_ms = (render_end_ms >= renderedFrameData.nvdec_done_ms)
+                ? (render_end_ms - renderedFrameData.nvdec_done_ms)
+                : 0;
+        }
+
+        // Finalize back-compat field for older log readers:
+        renderedFrameData.client_fec_end_to_render_end_time_ms = client_e2e_ms;
+
+        // Logging cadence preserved
+        if (RenderCount++ % 60 == 0) {
+            DebugLog(L"RenderFrame Total (wall): " + std::to_wstring(render_total_ms) + L" ms.");
+            DebugLog(L"Client FEC->RenderEnd (monotonic): " + std::to_wstring(client_e2e_ms) + L" ms.");
+            DebugLog(L"NVDEC->RenderEnd (monotonic): " + std::to_wstring(nvdec_to_end_ms) + L" ms.");
+        }
+
+        // Keep the existing cross-machine log, but label it as unsynced:
+        auto frameEndSys = std::chrono::system_clock::now();
+        uint64_t frameEndSysTs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
+        int64_t wgc_to_renderend_ms = static_cast<int64_t>(frameEndSysTs) - static_cast<int64_t>(renderedFrameData.timestamp);
+
+        if (RenderCount % 60 == 0) {
+            DebugLog(L"RenderFrame Latency (unsynced clocks): StreamFrame #"
+                + std::to_wstring(renderedFrameData.streamFrameNumber)
+                + L", OriginalFrame #" + std::to_wstring(renderedFrameData.originalFrameNumber)
+                + L" (ID: " + std::to_wstring(renderedFrameData.id) + L")"
+                + L" - WGC to RenderEnd: " + std::to_wstring(wgc_to_renderend_ms) + L" ms.");
         }
     }
-
-    uint64_t renderDuration = frameEndTimeTs - renderedFrameData.RenderStartTimeTs;
-    if(RenderCount % 60 == 0)DebugLog(L"RenderFrame Execution Time: " + std::to_wstring(renderDuration) + L" ms.");
-
-    if(RenderCount % 60 == 0)DebugLog(L"Client FEC End toRender Duration Time: " + std::to_wstring(renderedFrameData.client_fec_end_to_render_end_time_ms + renderDuration) + L" ms.");
 }
 
 // Minimal blocking wait, only for shutdown.
