@@ -1286,8 +1286,8 @@ void RenderFrame() {
         // Logging cadence preserved
         if (RenderCount++ % 60 == 0) {
             DebugLog(L"RenderFrame Total (wall): " + std::to_wstring(render_total_ms) + L" ms.");
-            DebugLog(L"Client FEC->RenderEnd (monotonic): " + std::to_wstring(client_e2e_ms) + L" ms.");
-            DebugLog(L"NVDEC->RenderEnd (monotonic): " + std::to_wstring(nvdec_to_end_ms) + L" ms.");
+            DebugLog(L"Client FEC End->RenderEnd: " + std::to_wstring(client_e2e_ms) + L" ms.");
+            DebugLog(L"NVDEC End->RenderEnd: " + std::to_wstring(nvdec_to_end_ms) + L" ms.");
         }
 
         // Keep the existing cross-machine log, but label it as unsynced:
