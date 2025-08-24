@@ -1124,7 +1124,7 @@ void FecWorkerThread(int threadId) {
             count++;
         } else {
             // Queue was empty
-            if (!g_fec_worker_Running && g_parsedShardQueue.size_approx() == 0) { // Exit if flag is false AND queue is empty
+            if (!g_fec_worker_Running.load() && g_parsedShardQueue.size_approx() == 0) { // Exit if flag is false AND queue is empty
                 break;
             }
             std::this_thread::sleep_for(EMPTY_QUEUE_WAIT_MS);
