@@ -229,6 +229,11 @@ void FrameDecoder::Decode(const H264Frame& frame) {
     CUDA_CHECK(cuCtxPopCurrent(NULL));
 }
 
+void FrameDecoder::RecordDequeueTime(uint64_t timestamp) {
+    std::lock_guard<std::mutex> lk(m_dequeueTimesMutex);
+    m_dequeueTimes[timestamp] = std::chrono::steady_clock::now();
+}
+
 bool FrameDecoder::reconfigureDecoder(CUVIDEOFORMAT* pVideoFormat) {
     DebugLog(L"Reconfiguring decoder for new video format or resolution.");
 
@@ -690,6 +695,20 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     }
 
     {
+        std::lock_guard<std::mutex> lk(self->m_dequeueTimesMutex);
+        auto it = self->m_dequeueTimes.find(pDispInfo->timestamp);
+        if (it != self->m_dequeueTimes.end()) {
+            auto startTime = it->second;
+            auto endTime = std::chrono::steady_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
+            if (HandlePictureDisplayCount % 200 == 0) { // Log with the same frequency
+                 DebugLog(L"Decoder pipeline latency: " + std::to_wstring(duration) + L" ms");
+            }
+            self->m_dequeueTimes.erase(it);
+        }
+    }
+
+    {
         std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
         g_readyGpuFrameQueue.push_back(std::move(readyFrame));
         if(HandlePictureDisplayCount++ % 200 == 0) {
@@ -714,6 +733,7 @@ void NvdecThread(int threadId) {
     while (g_decode_worker_Running) { // Use the same global running flag
         H264Frame frame;
         if (g_h264FrameQueue.try_dequeue(frame)) {
+            g_frameDecoder->RecordDequeueTime(frame.timestamp); // Record dequeue time for latency measurement.
             auto nvdec_start = std::chrono::system_clock::now();
             g_frameDecoder->Decode(frame);
             auto nvdec_end = std::chrono::system_clock::now();

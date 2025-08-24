@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <unordered_map>
 #include <mutex>
+#include <chrono>
+#include <map>
 
 // CUDA includes
 #include <cuda.h>
@@ -31,6 +33,7 @@ public:
 
     bool Init();
     void Decode(const H264Frame& frame);
+    void RecordDequeueTime(uint64_t timestamp);
 
     // Static callbacks for CUVIDDECODECREATEINFO
     static int CUDAAPI HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoFormat);
@@ -44,6 +47,10 @@ private:
     std::unordered_map<uint64_t, uint32_t> m_tsToFrameNo;
     std::mutex m_tsMapMutex;
     uint32_t m_lastStreamFrameNo = 0; // フォールバック用カウンタ
+
+    // For performance logging
+    std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> m_dequeueTimes;
+    std::mutex m_dequeueTimesMutex;
 
     bool createDecoder(CUVIDEOFORMAT* pVideoFormat);
     bool allocateFrameBuffers();
