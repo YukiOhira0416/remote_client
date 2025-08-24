@@ -75,7 +75,8 @@ inline std::wstring HResultToHexWString(HRESULT hr) {
 
 // ReadyGpuFrame struct for D3D12
 struct ReadyGpuFrame {
-    uint64_t timestamp;    
+    uint64_t wgc_timestamp;    
+    uint64_t rawpacket_to_render_time_ms;
     Microsoft::WRL::ComPtr<ID3D12Resource> hw_decoded_texture_Y;  // Y plane texture
     Microsoft::WRL::ComPtr<ID3D12Resource> hw_decoded_texture_UV; // UV plane texture
     int width;
@@ -90,10 +91,9 @@ struct ReadyGpuFrame {
 struct H264Frame {
     uint64_t wgc_timestamp;
     uint64_t rawpacket_to_render_time_ms;
-    uint64_t decode_start_timestamp;
+    uint64_t decode_start_timestamp; // in milliseconds since epoch
     uint32_t frameNumber;
     std::vector<uint8_t> data;
-    uint64_t decode_start_timestamp;
 };
 
 // Global running flag for wWinMain loop
