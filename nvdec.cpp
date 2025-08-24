@@ -198,7 +198,9 @@ void FrameDecoder::Decode(const H264Frame& frame) {
     {
         std::lock_guard<std::mutex> lk(m_tsMapMutex);
         m_tsToFrameNo[frame.wgc_timestamp] = frame.frameNumber;
-        // BEGIN add: also store decode start ms (same key)
+        // BEGIN add: also store decode elaplsed (same key)
+        m_tsDecodeElapsedMs[frame.wgc_timestamp] = frame.rawpacket_to_render_time_ms;
+
         m_tsDecodeStartMs[frame.wgc_timestamp] = frame.decode_start_timestamp;
         // END add
     }
@@ -673,7 +675,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     ReadyGpuFrame readyFrame;
     readyFrame.hw_decoded_texture_Y  = self->m_frameResources[pDispInfo->picture_index].pTextureY;
     readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
-    readyFrame.timestamp             = pDispInfo->timestamp;
+    readyFrame.wgc_timestamp             = pDispInfo->timestamp;
     readyFrame.originalFrameNumber   = self->m_nDecodedFrameCount++;
     readyFrame.id                    = readyFrame.originalFrameNumber;
     readyFrame.width                 = self->m_frameWidth;
@@ -681,7 +683,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
 
     {
         std::lock_guard<std::mutex> lk(self->m_tsMapMutex);
-        auto it = self->m_tsToFrameNo.find(readyFrame.timestamp);
+        auto it = self->m_tsToFrameNo.find(readyFrame.wgc_timestamp);
         if (it != self->m_tsToFrameNo.end()) {
             readyFrame.streamFrameNumber = it->second;
             self->m_lastStreamFrameNo = readyFrame.streamFrameNumber;
@@ -692,16 +694,28 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         }
     }
 
-    // BEGIN add: compute and log elapsed time from NvdecThread dequeue → this enqueue point
-    uint64_t decodeStartMs = 0;
+    uint64_t DecodeStartMs = 0;
     bool haveStart = false;
     {
         std::lock_guard<std::mutex> lk(self->m_tsMapMutex);
-        auto itStart = self->m_tsDecodeStartMs.find(readyFrame.timestamp);
+        auto itStart = self->m_tsDecodeStartMs.find(readyFrame.wgc_timestamp);
         if (itStart != self->m_tsDecodeStartMs.end()) {
-            decodeStartMs = itStart->second;
+            DecodeStartMs = itStart->second;
             self->m_tsDecodeStartMs.erase(itStart); // avoid growth
             haveStart = true;
+        }
+    }
+
+    // BEGIN add: compute and log elapsed time from NvdecThread dequeue → this enqueue point
+    uint64_t DecodeElapsedMs = 0;
+    bool haveElapsed = false;
+    {
+        std::lock_guard<std::mutex> lk(self->m_tsMapMutex);
+        auto itStart = self->m_tsDecodeElapsedMs.find(readyFrame.wgc_timestamp);
+        if (itStart != self->m_tsDecodeElapsedMs.end()) {
+            DecodeElapsedMs = itStart->second;
+            self->m_tsDecodeElapsedMs.erase(itStart); // avoid growth
+            haveElapsed = true;
         }
     }
 
@@ -712,8 +726,9 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         ).count()
     );
 
+    uint64_t elapsedMs = 0;
     if (haveStart) {
-        uint64_t elapsedMs = (nowMs >= decodeStartMs) ? (nowMs - decodeStartMs) : 0ULL;
+        elapsedMs = (nowMs >= DecodeStartMs) ? (nowMs - DecodeStartMs) : 0ULL;
         // Gate the log similarly to existing logs
         if (HandlePictureDisplayCount % 200 == 0) {
             DebugLog(L"Decode→GPU-ready elapsed: "
@@ -721,9 +736,12 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
                      + L" ms (streamFrame=" + std::to_wstring(readyFrame.streamFrameNumber) + L")");
         }
     }
+
     // END add
     {
         std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
+
+        readyFrame.rawpacket_to_render_time_ms = DecodeElapsedMs + elapsedMs;
         g_readyGpuFrameQueue.push_back(std::move(readyFrame));
         if(HandlePictureDisplayCount++ % 200 == 0) {
             DebugLog(L"HandlePictureDisplay: Pushed Frame Enqueue Size: " + std::to_wstring(g_readyGpuFrameQueue.size()));
@@ -747,9 +765,13 @@ void NvdecThread(int threadId) {
     while (g_decode_worker_Running) { // Use the same global running flag
         H264Frame frame;
         if (g_h264FrameQueue.try_dequeue(frame)) {
-            auto nvdec_start = std::chrono::system_clock::now();
+            frame.decode_start_timestamp = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::high_resolution_clock::now().time_since_epoch()
+                ).count()
+            );
             g_frameDecoder->Decode(frame);
-            if(DecoderCount % 200 == 0)DebugLog(L"NvdecThread: Dequeue Size" + std::to_wstring(g_h264FrameQueue.size_approx()));
+            if(DecoderCount % 200 == 0)DebugLog(L"NvdecThread: Dequeue Size " + std::to_wstring(g_h264FrameQueue.size_approx()));
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
