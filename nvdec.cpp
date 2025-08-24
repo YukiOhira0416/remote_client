@@ -198,6 +198,9 @@ void FrameDecoder::Decode(const H264Frame& frame) {
     {
         std::lock_guard<std::mutex> lk(m_tsMapMutex);
         m_tsToFrameNo[frame.timestamp] = frame.frameNumber;
+        // BEGIN add: also store decode start ms (same key)
+        m_tsDecodeStartMs[frame.timestamp] = frame.decode_start_timestamp;
+        // END add
     }
 
     { // 複数スレッドからの呼び出しを直列化
@@ -689,6 +692,36 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         }
     }
 
+    // BEGIN add: compute and log elapsed time from NvdecThread dequeue → this enqueue point
+    uint64_t decodeStartMs = 0;
+    bool haveStart = false;
+    {
+        std::lock_guard<std::mutex> lk(self->m_tsMapMutex);
+        auto itStart = self->m_tsDecodeStartMs.find(readyFrame.timestamp);
+        if (itStart != self->m_tsDecodeStartMs.end()) {
+            decodeStartMs = itStart->second;
+            self->m_tsDecodeStartMs.erase(itStart); // avoid growth
+            haveStart = true;
+        }
+    }
+
+    // Use the SAME clock type as NvdecThread for consistency
+    uint64_t nowMs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::high_resolution_clock::now().time_since_epoch()
+        ).count()
+    );
+
+    if (haveStart) {
+        uint64_t elapsedMs = (nowMs >= decodeStartMs) ? (nowMs - decodeStartMs) : 0ULL;
+        // Gate the log similarly to existing logs
+        if (HandlePictureDisplayCount % 200 == 0) {
+            DebugLog(L"Decode→GPU-ready elapsed: "
+                     + std::to_wstring(elapsedMs)
+                     + L" ms (streamFrame=" + std::to_wstring(readyFrame.streamFrameNumber) + L")");
+        }
+    }
+    // END add
     {
         std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
         g_readyGpuFrameQueue.push_back(std::move(readyFrame));
@@ -714,6 +747,11 @@ void NvdecThread(int threadId) {
     while (g_decode_worker_Running) { // Use the same global running flag
         H264Frame frame;
         if (g_h264FrameQueue.try_dequeue(frame)) {
+            frame.decode_start_timestamp = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::high_resolution_clock::now().time_since_epoch()
+                ).count()
+            );
             auto nvdec_start = std::chrono::system_clock::now();
             g_frameDecoder->Decode(frame);
             auto nvdec_end = std::chrono::system_clock::now();
