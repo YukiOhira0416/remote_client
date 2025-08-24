@@ -769,6 +769,10 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
         return;
     }
 
+    // --- Low-latency socket tuning (do not remove comments / do not reformat) ---
+    enet_socket_set_option(server_host->socket, ENET_SOCKOPT_RCVBUF, 4 * 1024 * 1024);
+    enet_socket_set_option(server_host->socket, ENET_SOCKOPT_SNDBUF, 4 * 1024 * 1024);
+
     DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: ENet server started, listening on port " + std::to_wstring(address.port));
 
 
@@ -779,7 +783,11 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
     while (receive_raw_packet_Running) {
         
         // Service ENet events with a timeout (e.g., 10ms)
-        int service_result = enet_host_service(server_host, &event, 10);
+        int service_result = enet_host_service(server_host, &event, 0); // lower latency: non-blocking poll
+        if (service_result == 0) {
+            // No events this tick; yield very briefly without busy-spin
+            Sleep(0); // keep layout; timeBeginPeriod(1) is already set
+        }
 
         if (service_result > 0) {
             switch (event.type) {
@@ -1021,7 +1029,9 @@ void FecWorkerThread(int threadId) {
         uint64_t fec_worker_thread_start_ts = std::chrono::duration_cast<std::chrono::milliseconds>(fec_worker_thread_start.time_since_epoch()).count();
         ParsedShardInfo parsedInfo;
 
-        if(g_parsedShardQueue.size_approx() == 0){
+        if (g_parsedShardQueue.size_approx() == 0) {
+            if (!g_fec_worker_Running.load()) { break; }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1)); // minimal idle sleep
             continue;
         }
 
@@ -1213,7 +1223,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
     // === 非同期ロガー初期化 ===
     // 既存と同じファイル名で良い。ODSは有効、キュー容量は適宜調整。
-    DebugLogAsync::Init(L"debuglog_client.log", /*queueCapacity=*/16384, /*alsoOutputDebugString=*/true);
+    DebugLogAsync::Init(L"debuglog_client.log", /*queueCapacity=*/16384, /*alsoOutputDebugString=*/false);
     DebugLog(L"Async DebugLog initialized.");
 
     // Initialize network and DirectX
