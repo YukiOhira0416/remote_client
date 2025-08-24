@@ -84,6 +84,8 @@ struct ReadyGpuFrame {
     uint64_t id;
     // 新規: 送信（ストリーム）側のフレーム番号
     uint32_t streamFrameNumber = 0;
+    // Latency metric
+    uint64_t rawpacket_to_render_time_ms = 0;
 };
 
 // H264 Frame Data for decoder queue
@@ -91,6 +93,10 @@ struct H264Frame {
     uint64_t timestamp;
     uint32_t frameNumber;
     std::vector<uint8_t> data;
+
+    // Timing fields for accurate end-to-end latency
+    uint64_t rx_done_ms = 0;        // set when frame is fully received/reconstructed (K shards reached)
+    uint64_t decode_start_ms = 0;   // set when NVDEC begins decoding this frame
 };
 
 // Global running flag for wWinMain loop

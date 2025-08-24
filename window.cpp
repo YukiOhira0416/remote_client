@@ -130,52 +130,54 @@ static bool CreateWindowOnBestMonitor(HINSTANCE hInstance, int nCmdShow,
 #pragma comment(lib, "dxgi.lib") // DXGI is still used
 #pragma comment(lib, "d3dcompiler.lib")
 
-// Renders the video with its aspect ratio preserved, adding black bars (letterboxing/pillarboxing) as needed.
+// Renders the video with its aspect ratio preserved, adding black bars (letterboxing/pillarboxing).
 static void SetLetterboxViewport(ID3D12GraphicsCommandList* cmd, D3D12_RESOURCE_DESC backbufferDesc, int videoWidthInt, int videoHeightInt)
 {
     if (!cmd) return;
 
-    const float bbWidth = static_cast<float>(backbufferDesc.Width);
+    const float bbWidth  = static_cast<float>(backbufferDesc.Width);
     const float bbHeight = static_cast<float>(backbufferDesc.Height);
-    const float videoWidth = static_cast<float>(videoWidthInt);
-    const float videoHeight = static_cast<float>(videoHeightInt);
+    const float videoW   = static_cast<float>(videoWidthInt);
+    const float videoH   = static_cast<float>(videoHeightInt);
 
-    if (bbWidth == 0 || bbHeight == 0 || videoWidth == 0 || videoHeight == 0) {
-        return; // Avoid division by zero
+    if (bbWidth <= 0.0f || bbHeight <= 0.0f || videoW <= 0.0f || videoH <= 0.0f) {
+        return; // avoid div-by-zero or nonsense
     }
 
-    float vpWidth, vpHeight, vpX, vpY;
-    const float bbAspect = bbWidth / bbHeight;
-    const float videoAspect = videoWidth / videoHeight;
+    const float bbAspect    = bbWidth / bbHeight;
+    const float videoAspect = videoW / videoH;
 
+    float vpW, vpH, vpX, vpY;
     if (bbAspect > videoAspect) {
-        // Pillarbox (window is wider than video)
-        vpHeight = bbHeight;
-        vpWidth = vpHeight * videoAspect;
-        vpX = (bbWidth - vpWidth) / 2.0f;
+        // Pillarbox (window wider than video)
+        vpH = bbHeight;
+        vpW = vpH * videoAspect;
+        vpX = (bbWidth - vpW) * 0.5f;
         vpY = 0.0f;
     } else {
-        // Letterbox (window is taller than video)
-        vpWidth = bbWidth;
-        vpHeight = vpWidth / videoAspect;
+        // Letterbox (window taller than video)
+        vpW = bbWidth;
+        vpH = vpW / videoAspect;
         vpX = 0.0f;
-        vpY = (bbHeight - vpHeight) / 2.0f;
+        vpY = (bbHeight - vpH) * 0.5f;
     }
 
+    // Viewport (float)
     D3D12_VIEWPORT vp{};
     vp.TopLeftX = vpX;
     vp.TopLeftY = vpY;
-    vp.Width    = vpWidth;
-    vp.Height   = vpHeight;
+    vp.Width    = vpW;
+    vp.Height   = vpH;
     vp.MinDepth = 0.0f;
     vp.MaxDepth = 1.0f;
     cmd->RSSetViewports(1, &vp);
 
+    // Scissor (int): use ceilf on right/bottom to avoid truncation losing the last pixel.
     D3D12_RECT sc{};
     sc.left   = static_cast<LONG>(vpX);
     sc.top    = static_cast<LONG>(vpY);
-    sc.right  = static_cast<LONG>(vpX + vpWidth);
-    sc.bottom = static_cast<LONG>(vpY + vpHeight);
+    sc.right  = static_cast<LONG>(std::ceil(vpX + vpW));
+    sc.bottom = static_cast<LONG>(std::ceil(vpY + vpH));
     cmd->RSSetScissorRects(1, &sc);
 }
 

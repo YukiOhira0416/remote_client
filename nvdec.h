@@ -8,8 +8,6 @@
 #include <cstdint>
 #include <unordered_map>
 #include <mutex>
-#include <chrono>
-#include <map>
 
 // CUDA includes
 #include <cuda.h>
@@ -24,6 +22,11 @@
 // Forward declaration
 struct H264Frame;
 
+struct FrameTimings {
+    uint64_t rx_done_ms = 0;
+    uint64_t decode_start_ms = 0;
+};
+
 class FrameDecoder {
 public:
     static const int NUM_DECODE_SURFACES = 20;
@@ -33,7 +36,6 @@ public:
 
     bool Init();
     void Decode(const H264Frame& frame);
-    void RecordDequeueTime(uint64_t timestamp);
 
     // Static callbacks for CUVIDDECODECREATEINFO
     static int CUDAAPI HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoFormat);
@@ -48,9 +50,8 @@ private:
     std::mutex m_tsMapMutex;
     uint32_t m_lastStreamFrameNo = 0; // フォールバック用カウンタ
 
-    // For performance logging
-    std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> m_dequeueTimes;
-    std::mutex m_dequeueTimesMutex;
+    std::unordered_map<uint64_t, FrameTimings> m_tsToTimings;
+    std::mutex m_tsTimingsMutex;
 
     bool createDecoder(CUVIDEOFORMAT* pVideoFormat);
     bool allocateFrameBuffers();
