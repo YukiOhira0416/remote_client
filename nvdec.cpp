@@ -735,7 +735,10 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
         g_readyGpuFrameQueue.push_back(std::move(readyFrame));
         if(HandlePictureDisplayCount++ % 200 == 0) {
-            DebugLog(L"HandlePictureDisplay: Pushed Frame Enqueue Size " + std::to_wstring(g_readyGpuFrameQueue.size()));
+            std::wstringstream wss;
+            wss << L"HandlePictureDisplay: Pushed Frame Enqueue Size " << g_readyGpuFrameQueue.size()
+                << L", キューイング経過時間: " << readyFrame.rawpacket_to_render_time_ms << " ms";
+            DebugLog(wss.str());
         }
     }
     g_readyGpuFrameQueueCV.notify_one();
