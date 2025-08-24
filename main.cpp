@@ -1096,7 +1096,7 @@ void FecWorkerThread(int threadId) {
                 // currentFrameMetaForAttempt.originalDataLen is already host order
                 uint32_t originalLenForDecode = currentFrameMetaForAttempt.originalDataLen;
 
-                if (g_matrix_initialized && DecodeFEC_Jerasure(shardsForDecodeAttempt, RS_K, RS_M, originalLenForDecode, *decodedFrameData, g_jerasure_matrix)) {
+                if (g_matrix_initialized.load() && DecodeFEC_Jerasure(std::map<uint32_t, std::vector<uint8_t>>(shardsForDecodeAttempt.begin(), shardsForDecodeAttempt.end()), RS_K, RS_M, originalLenForDecode, *decodedFrameData, g_jerasure_matrix)) {
                     // Save H264 file after successful FEC decode, before enqueue
                     // SaveH264ToFile_NUM(*decodedFrameData, "decoded_frame");
 
