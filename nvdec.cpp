@@ -714,7 +714,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         total_ms = 0; // Or some other default.
         DebugLog(L"[warn] both rx_done_ms and decode_start_ms missing; metric will be 0.");
     }
-    readyFrame.rawpacket_to_render_time_ms = total_ms;
+    readyFrame.client_fec_end_to_render_end_time_ms = total_ms;
     // --- End Latency Calculation ---
 
 
@@ -737,7 +737,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         if(HandlePictureDisplayCount++ % 200 == 0) {
             std::wstringstream wss;
             wss << L"HandlePictureDisplay: Pushed Frame Enqueue Size " << g_readyGpuFrameQueue.size()
-                << L", キューイング経過時間: " << readyFrame.rawpacket_to_render_time_ms << " ms";
+                << L" Queueing Duration Time " << readyFrame.client_fec_end_to_render_end_time_ms << " ms";
             DebugLog(wss.str());
         }
     }

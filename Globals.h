@@ -85,7 +85,7 @@ struct ReadyGpuFrame {
     // 新規: 送信（ストリーム）側のフレーム番号
     uint32_t streamFrameNumber = 0;
     // Latency metric
-    uint64_t rawpacket_to_render_time_ms = 0;
+    uint64_t client_fec_end_to_render_end_time_ms = 0;
 };
 
 // H264 Frame Data for decoder queue

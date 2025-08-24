@@ -407,7 +407,7 @@ std::mutex g_appFragmentBuffersMutex; // Mutex to protect appFragmentBuffers
 // New struct for parsed shard information
 struct ParsedShardInfo {
     uint64_t wgcCaptureTimestamp;
-    uint64_t rawpacket_to_fec_timestamp;
+    uint64_t server_fec_timestamp;
     uint32_t frameNumber;        // Host byte order
     uint32_t shardIndex;         // Host byte order
     uint32_t totalDataShards;    // Host byte order
@@ -841,9 +841,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                                     parsedInfoLocal.totalDataShards = ntohl(sih_parse->totalDataShards);
                                     parsedInfoLocal.totalParityShards = ntohl(sih_parse->totalParityShards);
                                     parsedInfoLocal.originalDataLen = ntohl(sih_parse->originalDataLen);
-
-                                    uint64_t rawpacket_enqueue_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-                                    parsedInfoLocal.rawpacket_to_fec_timestamp = rawpacket_enqueue_time_ts;
+                                    parsedInfoLocal.server_fec_timestamp = worker_ts_val;
 
                                     size_t shardDataSize_parse = data_after_worker_ts + size_after_worker_ts - current_ptr_parse;//shardDataSize_parseは[Data]のサイズ
                                     if (shardDataSize_parse > 0) {
@@ -851,10 +849,6 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                                     }
 
                                     g_parsedShardQueue.enqueue(std::move(parsedInfoLocal));
-
-                                    uint64_t enqueue_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-                                    int64_t delay_ms = static_cast<int64_t>(enqueue_time_ms) - static_cast<int64_t>(worker_ts_val);
-                                    if(count % 120 == 0)DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Full Shard - Delay (Server_FECWorker to Receiver_Enqueue time): " + std::to_wstring(delay_ms) + L" ms.");
 
                                 } else {
                                     DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Full shard packet (after WorkerTS) too small for WGCCaptureTS and SIH. Size: " + std::to_wstring(size_after_worker_ts));
@@ -959,9 +953,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                                             parsedInfoLocalFrag.totalDataShards = ntohl(sih_parse_frag->totalDataShards);
                                             parsedInfoLocalFrag.totalParityShards = ntohl(sih_parse_frag->totalParityShards);
                                             parsedInfoLocalFrag.originalDataLen = ntohl(sih_parse_frag->originalDataLen);
-                                            
-                                            uint64_t rawpacket_enqueue_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-                                            parsedInfoLocalFrag.rawpacket_to_fec_timestamp = rawpacket_enqueue_time_ts;     
+                                            parsedInfoLocalFrag.server_fec_timestamp = worker_ts_val;     
 
                                             size_t shardDataSize_parse_frag = data_after_worker_ts_frag + size_after_worker_ts_frag - current_ptr_parse_frag;
                                             if (shardDataSize_parse_frag > 0) {
@@ -969,10 +961,6 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                                             }
                                             g_parsedShardQueue.enqueue(std::move(parsedInfoLocalFrag));
 
-                                            uint64_t enqueue_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-                                            int64_t delay_ms = static_cast<int64_t>(enqueue_time_ms) - static_cast<int64_t>(worker_ts_val);
-                                            if(count % 120 == 0)DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Fragment Shard - Delay (Server_FECWorker to Receiver_Enqueue time): " + std::to_wstring(delay_ms) + L" ms.");
-                                        } else {
                                              DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Reassembled AppFragment ID " + std::to_wstring(original_packet_id) + L" (after WorkerTS) too small for WGCCaptureTS and SIH. Size: " + std::to_wstring(size_after_worker_ts_frag));
                                         }
                                     } else {
@@ -1028,8 +1016,6 @@ void FecWorkerThread(int threadId) {
     const std::chrono::milliseconds EMPTY_QUEUE_WAIT_MS(1);
 
     while (g_fec_worker_Running || g_parsedShardQueue.size_approx() > 0) { // Process remaining items after flag is false
-        auto fec_worker_thread_start = std::chrono::system_clock::now();
-        uint64_t fec_worker_thread_start_ts = std::chrono::duration_cast<std::chrono::milliseconds>(fec_worker_thread_start.time_since_epoch()).count();
         ParsedShardInfo parsedInfo;
 
         if(g_parsedShardQueue.size_approx() == 0){
@@ -1047,12 +1033,8 @@ void FecWorkerThread(int threadId) {
             std::map<uint32_t, std::vector<uint8_t>> shardsForDecodeAttempt;
             FrameMetadata currentFrameMetaForAttempt;
 
-            auto fec_worker_thread_dequeue = std::chrono::system_clock::now();
-            uint64_t fec_worker_thread_dequeue_ts = std::chrono::duration_cast<std::chrono::milliseconds>(fec_worker_thread_dequeue.time_since_epoch()).count();
-
             if(count % 120 == 0)DebugLog(L"FecWorkerThread: Queue Size " + std::to_wstring(g_parsedShardQueue.size_approx()));
-            if(count % 120 == 0)DebugLog(L"FecWorkerThread: RawPackets to FECWorker " + std::to_wstring(static_cast<int>(fec_worker_thread_dequeue_ts) - static_cast<int>(parsedInfo.rawpacket_to_fec_timestamp)) + L" ms");
-
+            
             { // Metadata and FrameBuffer scope
                 // Metadata access first
                 {
@@ -1121,8 +1103,8 @@ void FecWorkerThread(int threadId) {
                     // 追加のデバッグログ
                     auto fec_worker_thread_end = std::chrono::system_clock::now();
                     uint64_t fec_worker_thread_end_ts = std::chrono::duration_cast<std::chrono::milliseconds>(fec_worker_thread_end.time_since_epoch()).count();
-                    int64_t elapsed_fec_worker_thread = static_cast<int64_t>(fec_worker_thread_end_ts) - static_cast<int64_t>(fec_worker_thread_start_ts);
-                    if(count % 120 == 0)DebugLog(L"FEC Worker Thread Process Time: " + std::to_wstring(elapsed_fec_worker_thread) + L" ms");
+                    int64_t elapsed_fec_worker_thread = static_cast<int64_t>(fec_worker_thread_end_ts) - static_cast<int64_t>(parsedInfo.server_fec_timestamp);
+                    if(count % 120 == 0)DebugLog(L"Server FEC Worker Start to Client FEC Worker End Process Time: " + std::to_wstring(elapsed_fec_worker_thread) + L" ms");
                 } else {
                     DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: FEC Decode failed for frame " + std::to_wstring(frameNumber));
                 }
