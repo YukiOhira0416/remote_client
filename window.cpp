@@ -938,6 +938,11 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart(), g_currentFrameBufferIndex, g_rtvDescriptorSize);
     g_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
+    // >>> NEW: Ensure viewport/scissor initially cover the full backbuffer <<<
+    if (g_renderTargets[g_currentFrameBufferIndex]) {
+        SetViewportScissorToBackbuffer(g_commandList.Get(), g_renderTargets[g_currentFrameBufferIndex].Get());
+    }
+
     // Optional: clear to black so gutters are black (no blue flicker around the content)
     const float clearColor[4] = {0.f, 0.f, 0.f, 1.f};
     g_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);

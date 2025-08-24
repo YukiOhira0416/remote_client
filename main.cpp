@@ -1248,12 +1248,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     currentResolutionWidth  = tw;
     currentResolutionHeight = th;
 
-    // Enqueue an initial resize for the render thread (to align swap-chain)
-    g_pendingResize.w.store(tw, std::memory_order_relaxed);
-    g_pendingResize.h.store(th, std::memory_order_relaxed);
+    // Enqueue an initial resize for the render thread (swap-chain must match CLIENT size, not video)
+    g_pendingResize.w.store(cw, std::memory_order_relaxed);
+    g_pendingResize.h.store(ch, std::memory_order_relaxed);
     g_pendingResize.has.store(true, std::memory_order_release);
 
-    // Force-send to server now (single gate):
+    // Force-send to server now (single gate): advertise *video* size (tw x th), unchanged
     OnResolutionChanged_GatedSend(tw, th, /*force=*/true);
 
     // Initialize CUDA and NVDEC
