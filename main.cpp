@@ -8,6 +8,7 @@
 #define _WIN32_WINNT 0x0600 
 #include <winsock2.h>
 #include <cstdint> // For uint64_t
+#include <chrono>
 
 // Use a single monotonic clock for all latency metrics.
 static inline uint64_t SteadyNowMs() noexcept {
@@ -24,7 +25,6 @@ static inline uint64_t SteadyNowMs() noexcept {
 #include <mmsystem.h>
 #include <thread>
 #include <atomic>
-#include <chrono>
 #include <algorithm>
 #include <fstream>
 #include <string>
