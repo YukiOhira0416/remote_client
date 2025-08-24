@@ -93,6 +93,7 @@ struct H264Frame {
     uint64_t decode_start_timestamp;
     uint32_t frameNumber;
     std::vector<uint8_t> data;
+    uint64_t decode_start_timestamp;
 };
 
 // Global running flag for wWinMain loop
