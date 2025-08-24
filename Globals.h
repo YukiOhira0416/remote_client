@@ -86,7 +86,14 @@ struct ReadyGpuFrame {
     uint32_t streamFrameNumber = 0;
     // Latency metric
     uint64_t client_fec_end_to_render_end_time_ms = 0;
-    uint64_t RenderStartTimeTs = 0;
+
+    // Client-side steady clock timestamps for latency measurement.
+    uint64_t rx_done_ms = 0;       // Client steady clock: when FEC assembly completed (set in FEC -> propagated)
+    uint64_t nvdec_done_ms = 0;    // Client steady clock: after NVDEC copy + cuCtxSynchronize
+    uint64_t render_start_ms = 0;  // Client steady clock: just before CPU populates commands
+    uint64_t submit_ms = 0;        // Client steady clock: right after ExecuteCommandLists
+    uint64_t present_ms = 0;       // Client steady clock: right after Present returns
+    uint64_t fence_done_ms = 0;    // Client steady clock: after per-frame fence wait (if any)
 };
 
 // H264 Frame Data for decoder queue

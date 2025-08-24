@@ -691,7 +691,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     readyFrame.width                 = self->m_frameWidth;
     readyFrame.height                = self->m_frameHeight;
 
-    // --- Latency Calculation ---
+    // --- Client-side timing (steady clock) ---
     FrameTimings timings;
     {
         std::lock_guard<std::mutex> lk(self->m_tsTimingsMutex);
@@ -701,21 +701,12 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
             self->m_tsToTimings.erase(it);
         }
     }
+    // Propagate rx_done_ms if known (0 otherwise)
+    readyFrame.rx_done_ms    = timings.rx_done_ms;
+    readyFrame.nvdec_done_ms = SteadyNowMs(); // after cuCtxSynchronize
 
-    const uint64_t now_ms = SteadyNowMs();
-    uint64_t total_ms = 0;
-
-    if (timings.rx_done_ms != 0) {
-        total_ms = now_ms - timings.rx_done_ms;
-    } else if (timings.decode_start_ms != 0) {
-        total_ms = now_ms - timings.decode_start_ms;
-        DebugLog(L"[warn] rx_done_ms missing; using decode_start_ms fallback.");
-    } else {
-        total_ms = 0; // Or some other default.
-        DebugLog(L"[warn] both rx_done_ms and decode_start_ms missing; metric will be 0.");
-    }
-    readyFrame.client_fec_end_to_render_end_time_ms = total_ms;
-    // --- End Latency Calculation ---
+    // Back-compat field will be finalized at RenderEnd; keep 0 here.
+    readyFrame.client_fec_end_to_render_end_time_ms = 0;
 
 
     {
