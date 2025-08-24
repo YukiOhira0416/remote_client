@@ -218,8 +218,8 @@ void FrameDecoder::Decode(const H264Frame& frame) {
     { // 複数スレッドからの呼び出しを直列化
         std::lock_guard<std::mutex> lk(m_parseMutex);
         CUVIDSOURCEDATAPACKET packet = {};
-        packet.payload = frame.data.data();
-        packet.payload_size = frame.data.size();
+        packet.payload = frame.data->data();
+        packet.payload_size = frame.data->size();
         packet.flags = CUVID_PKT_TIMESTAMP;
         packet.timestamp = frame.timestamp;
 
@@ -244,7 +244,7 @@ void FrameDecoder::Decode(const H264Frame& frame) {
     CUDA_CHECK(cuCtxPopCurrent(NULL));
 }
 
-bool FrameDecoder::reconfigureDecoder(CUVIDEOFORMAT* pVideoFormat) {
+bool FrameDecoder::reconfigureDecoder(const CUVIDEOFORMAT* pVideoFormat) {
     DebugLog(L"Reconfiguring decoder for new video format or resolution.");
 
     // Clean up existing decoder and resources
@@ -270,7 +270,7 @@ int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoForm
 
         if (!self->m_hDecoder) {
             // First time initialization
-            if (!self->createDecoder(pVideoFormat)) {
+            if (!self->createDecoder(const_cast<CUVIDEOFORMAT*>(pVideoFormat))) {
                 DebugLog(L"HandleVideoSequence: Failed to create decoder for the first time.");
                 result = 0; // Stop processing
             }
@@ -314,17 +314,17 @@ int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoForm
     return result; // Proceed with decoding
 }
 
-bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
+bool FrameDecoder::createDecoder(const CUVIDEOFORMAT* pVideoFormat) {
     // Get the target display resolution from global variables.
     // This resolution is determined by the window size and sent to the server.
-    int targetWidth = ::currentResolutionWidth.load();
-    int targetHeight = ::currentResolutionHeight.load();
+    // int targetWidth = ::currentResolutionWidth.load();
+    // int targetHeight = ::currentResolutionHeight.load();
 
     // If the target resolution hasn't been set yet, default to the stream's coded size.
-    if (targetWidth == 0 || targetHeight == 0) {
-        targetWidth = pVideoFormat->coded_width;
-        targetHeight = pVideoFormat->coded_height;
-    }
+    // if (targetWidth == 0 || targetHeight == 0) {
+    //     targetWidth = pVideoFormat->coded_width;
+    //     targetHeight = pVideoFormat->coded_height;
+    // }
 
     // Set the class members to the actual coded size of the video stream.
     // This is the intrinsic resolution of the video, which is needed for correct
@@ -350,6 +350,7 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
     m_videoDecoderCreateInfo.OutputFormat = cudaVideoSurfaceFormat_NV12;
 
     CUDA_CHECK(cuvidCreateDecoder(&m_hDecoder, &m_videoDecoderCreateInfo));
+    DebugLog(L"NVDEC: cuvidCreateDecoder OK (GPU path). No CPU H.264 decode fallback is allowed.");
 
     if (!allocateFrameBuffers()) { // This will now use targetWidth x targetHeight
         DebugLog(L"createDecoder: Failed to allocate frame buffers.");
@@ -615,7 +616,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     }
 
     // From here, we can return on error and the destructors will handle cleanup.
-    auto& fr = self->m_frameResources[pDispInfo->picture_index];
+    const auto& fr = self->m_frameResources[pDispInfo->picture_index];
     if (!fr.pCudaArrayY || !fr.pCudaArrayUV) {
         DebugLog(L"HandlePictureDisplay: mapped CUDA arrays are null. Aborting.");
         cuCtxPopCurrent(NULL);
@@ -724,13 +725,13 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
 
     {
         std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
-        g_readyGpuFrameQueue.push_back(std::move(readyFrame));
         if(HandlePictureDisplayCount++ % 200 == 0) {
             std::wstringstream wss;
             wss << L"HandlePictureDisplay: Pushed Frame Enqueue Size " << g_readyGpuFrameQueue.size()
                 << L" Queueing Duration Time " << readyFrame.client_fec_end_to_render_end_time_ms << " ms";
             DebugLog(wss.str());
         }
+        g_readyGpuFrameQueue.push_back(std::move(readyFrame));
     }
     g_readyGpuFrameQueueCV.notify_one();
 
@@ -746,12 +747,15 @@ void NvdecThread(int threadId) {
         DebugLog(L"NvdecThread: g_frameDecoder is not initialized!");
         return;
     }
+    moodycamel::ConsumerToken ctoken(g_h264FrameQueue);
 
     while (g_decode_worker_Running) { // Use the same global running flag
         H264Frame frame;
-        if (g_h264FrameQueue.try_dequeue(frame)) {
+        if (g_h264FrameQueue.try_dequeue(ctoken, frame)) {
             frame.decode_start_ms = SteadyNowMs();
             g_frameDecoder->Decode(frame);
+            // Return the buffer to the pool for reuse
+            g_h264BufferPool.enqueue(frame.data);
             if(DecoderCount++ % 200 == 0)DebugLog(L"NvdecThread: Dequeue Size " + std::to_wstring(g_h264FrameQueue.size_approx()));
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));

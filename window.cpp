@@ -350,7 +350,7 @@ void ClearReorderState()
 
 // 調整パラメータ
 static constexpr size_t REORDER_MAX_BUFFER = 8; // これを超えたら妥協して前進
-static constexpr int    REORDER_WAIT_MS    = 3; // N+1 を待つ最大時間（ms）
+static constexpr int    REORDER_WAIT_MS    = 2; // N+1 を待つ最大時間（ms）
 static std::chrono::steady_clock::time_point g_lastReorderDecision = std::chrono::steady_clock::now();
 
 // Rendering specific D3D12 globals
@@ -888,7 +888,7 @@ bool InitD3D() {
 
     // 11. Create SRV Descriptor Heap (for Y and UV textures)
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-    srvHeapDesc.NumDescriptors = 2 * 2; // 2 textures (Y, UV) per frame buffer for double buffering (or more if needed)
+    // srvHeapDesc.NumDescriptors = 2 * 2; // 2 textures (Y, UV) per frame buffer for double buffering (or more if needed)
                                         // For simplicity, let's assume we update descriptors for the current frame's textures.
                                         // So, 2 descriptors are enough if we update them each frame.
                                         // If we pre-create for all decoder surfaces, it'd be NUM_DECODE_SURFACES_IN_POOL * 2.
@@ -1148,7 +1148,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
             return;
         }
         g_d3d12Device->CreateRenderTargetView(g_renderTargets[i].Get(), nullptr, rtvHandle);
-        rtvHandle.Offset(1, g_rtvDescriptorSize);
+        rtvHandle.Offset(1, g_srvDescriptorSize);
     }
     DebugLog(L"RenderThread: RTVs recreated after resize.");
 
@@ -1260,33 +1260,34 @@ void RenderFrame() {
 
     // ---- Logging (only if a new frame was actually rendered) ----
     if (frameWasRendered) {
+        ReadyGpuFrame frameForLogging = renderedFrameData; // Copy for logging before move
         const uint64_t render_end_ms = SteadyNowMs();
-        renderedFrameData.present_ms = render_end_ms;   // Present just finished (approx)
-        renderedFrameData.fence_done_ms = render_end_ms; // after waits; same endpoint for now
+        frameForLogging.present_ms = render_end_ms;   // Present just finished (approx)
+        frameForLogging.fence_done_ms = render_end_ms; // after waits; same endpoint for now
 
         // Render totals (steady)
-        const uint64_t render_total_ms = (render_end_ms >= renderedFrameData.render_start_ms)
-            ? (render_end_ms - renderedFrameData.render_start_ms)
+        const uint64_t render_total_ms = (render_end_ms >= frameForLogging.render_start_ms)
+            ? (render_end_ms - frameForLogging.render_start_ms)
             : 0;
 
         // End-to-end client latency (steady), if rx_done_ms is known
         uint64_t client_e2e_ms = 0;
-        if (renderedFrameData.rx_done_ms != 0) {
-            client_e2e_ms = (render_end_ms >= renderedFrameData.rx_done_ms)
-                ? (render_end_ms - renderedFrameData.rx_done_ms)
+        if (frameForLogging.rx_done_ms != 0) {
+            client_e2e_ms = (render_end_ms >= frameForLogging.rx_done_ms)
+                ? (render_end_ms - frameForLogging.rx_done_ms)
                 : 0;
         }
 
         // NVDEC->RenderEnd (steady), if nvdec_done_ms is known
         uint64_t nvdec_to_end_ms = 0;
-        if (renderedFrameData.nvdec_done_ms != 0) {
-            nvdec_to_end_ms = (render_end_ms >= renderedFrameData.nvdec_done_ms)
-                ? (render_end_ms - renderedFrameData.nvdec_done_ms)
+        if (frameForLogging.nvdec_done_ms != 0) {
+            nvdec_to_end_ms = (render_end_ms >= frameForLogging.nvdec_done_ms)
+                ? (render_end_ms - frameForLogging.nvdec_done_ms)
                 : 0;
         }
 
         // Finalize back-compat field for older log readers:
-        renderedFrameData.client_fec_end_to_render_end_time_ms = client_e2e_ms;
+        frameForLogging.client_fec_end_to_render_end_time_ms = client_e2e_ms;
 
         // Logging cadence preserved
         if (RenderCount++ % 60 == 0) {
@@ -1298,13 +1299,13 @@ void RenderFrame() {
         // Keep the existing cross-machine log, but label it as unsynced:
         auto frameEndSys = std::chrono::system_clock::now();
         uint64_t frameEndSysTs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
-        int64_t wgc_to_renderend_ms = static_cast<int64_t>(frameEndSysTs) - static_cast<int64_t>(renderedFrameData.timestamp);
+        int64_t wgc_to_renderend_ms = static_cast<int64_t>(frameEndSysTs) - static_cast<int64_t>(frameForLogging.timestamp);
 
         if (RenderCount % 60 == 0) {
             DebugLog(L"RenderFrame Latency (unsynced clocks): StreamFrame #"
-                + std::to_wstring(renderedFrameData.streamFrameNumber)
-                + L", OriginalFrame #" + std::to_wstring(renderedFrameData.originalFrameNumber)
-                + L" (ID: " + std::to_wstring(renderedFrameData.id) + L")"
+                + std::to_wstring(frameForLogging.streamFrameNumber)
+                + L", OriginalFrame #" + std::to_wstring(frameForLogging.originalFrameNumber)
+                + L" (ID: " + std::to_wstring(frameForLogging.id) + L")"
                 + L" - WGC to RenderEnd: " + std::to_wstring(wgc_to_renderend_ms) + L" ms.");
         }
     }

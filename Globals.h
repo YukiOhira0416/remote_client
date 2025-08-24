@@ -100,7 +100,7 @@ struct ReadyGpuFrame {
 struct H264Frame {
     uint64_t timestamp;
     uint32_t frameNumber;
-    std::vector<uint8_t> data;
+    std::vector<uint8_t>* data; // Changed to pointer for buffer pooling
 
     // Timing fields for accurate end-to-end latency
     uint64_t rx_done_ms = 0;        // set when frame is fully received/reconstructed (K shards reached)
@@ -113,6 +113,7 @@ extern std::atomic<bool> g_isSizing;
 extern std::atomic<bool> g_forcePresentOnce; // Present at least once even if no new decoded frame
 
 // Global queues and synchronization for frame management
+extern moodycamel::ConcurrentQueue<std::vector<uint8_t>*> g_h264BufferPool;
 extern moodycamel::ConcurrentQueue<H264Frame> g_h264FrameQueue;
 extern std::deque<ReadyGpuFrame> g_readyGpuFrameQueue;
 extern std::mutex g_readyGpuFrameQueueMutex;

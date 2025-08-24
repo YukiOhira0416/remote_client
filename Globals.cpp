@@ -41,6 +41,7 @@ std::atomic<bool> dumpH264ToFiles{false};
 
 // H264 Frame queue
 moodycamel::ConcurrentQueue<H264Frame> g_h264FrameQueue;
+moodycamel::ConcurrentQueue<std::vector<uint8_t>*> g_h264BufferPool;
 
 // Decoder instance
 std::unique_ptr<FrameDecoder> g_frameDecoder;

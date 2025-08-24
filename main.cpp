@@ -39,6 +39,7 @@ static inline uint64_t SteadyNowMs() noexcept {
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <unordered_map>
 #include <queue>
 #include <condition_variable>
 #include "DebugLog.h"
@@ -232,7 +233,7 @@ static bool EvaluateGpuPolicy(const std::vector<DetectedAdapter>& adapters,
     int nonNvidiaDiscrete = 0;
     bool hasIntegrated = false;
 
-    for (auto& a : adapters) {
+    for (const auto& a : adapters) {
         if (a.isDiscrete) {
             ++discreteCount;
             if (a.isNvidia) ++nvidiaDiscrete;
@@ -336,30 +337,30 @@ std::mutex processvideosequenceMutex;
 std::mutex g_frameBufferMutex;
 
 // Frame and fragment related data structures
-std::map<int, std::map<int, std::vector<uint8_t>>> g_frameBuffer;
-std::map<int, int> expectedFrameCounts;
+std::unordered_map<int, std::unordered_map<int, std::vector<uint8_t>>> g_frameBuffer;
+std::unordered_map<int, int> expectedFrameCounts;
 
 // Fragment assembly data structures
-std::map<uint64_t, std::map<uint16_t, std::vector<uint8_t>>> g_fragmentAssemblyBuffer;
+std::unordered_map<uint64_t, std::unordered_map<uint16_t, std::vector<uint8_t>>> g_fragmentAssemblyBuffer;
 std::mutex g_fragmentAssemblyMutex;
-std::map<uint64_t, uint16_t> g_expectedFragmentsCount;
-std::map<uint64_t, uint16_t> g_receivedFragmentsCount;
-std::map<uint64_t, size_t> g_accumulatedFragmentDataSize;
+std::unordered_map<uint64_t, uint16_t> g_expectedFragmentsCount;
+std::unordered_map<uint64_t, uint16_t> g_receivedFragmentsCount;
+std::unordered_map<uint64_t, size_t> g_accumulatedFragmentDataSize;
 
 // Frame metadata structure and management
 struct FrameMetadata {
     uint64_t firstTimestamp = 0;
     uint32_t originalDataLen = 0;
 };
-std::map<int, FrameMetadata> g_frameMetadata;
+std::unordered_map<int, FrameMetadata> g_frameMetadata;
 std::mutex g_frameMetadataMutex;
 
 // Fragment timing and frame ID management
-std::map<uint64_t, std::chrono::steady_clock::time_point> g_fragmentFirstPacketTime;
+std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> g_fragmentFirstPacketTime;
 std::atomic<uint64_t> g_rgbaFrameIdCounter{0};
 
 // Number of packet processing threads
-const int NUM_FEC_WORKER_THREADS = 1;        // Threads that process ParsedShardInfo, assemble shards, and do FEC
+// const int NUM_FEC_WORKER_THREADS = 1;        // Obsolete: logic now uses getOptimalThreadConfig().fec. Kept for reference.
 
 const int NUM_RECEIVER_THREADS = 4; // Number of receiver threads
 
@@ -389,7 +390,7 @@ struct ENetAppFragmentHeader {
 }; // Size: 4 + 2 + 2 = 8 bytes
 
 struct AppFragmentAssemblyState {
-    std::map<uint16_t, std::vector<uint8_t>> fragments; // key: fragment_index (host byte order)
+    std::unordered_map<uint16_t, std::vector<uint8_t>> fragments; // key: fragment_index (host byte order)
     uint16_t total_fragments = 0;
     std::chrono::steady_clock::time_point first_fragment_received_time;
 };
@@ -401,7 +402,7 @@ const std::chrono::seconds APP_FRAGMENT_ASSEMBLY_TIMEOUT(5);
 extern std::atomic<bool> receive_raw_packet_Running; // Controls the main loop
 
 // Buffer for reassembling application-level ENet fragments
-std::map<uint32_t, AppFragmentAssemblyState> appFragmentBuffers; // key: original_packet_id (host byte order)
+std::unordered_map<uint32_t, AppFragmentAssemblyState> appFragmentBuffers; // key: original_packet_id (host byte order)
 std::mutex g_appFragmentBuffersMutex; // Mutex to protect appFragmentBuffers
 
 // New struct for parsed shard information
@@ -612,7 +613,7 @@ void InitializeRSMatrix() {
         // free(vandermonde_matrix); // ※ g_vandermonde_matrix として保持するので、ここでは解放しない
 
         // ※ デバッグ用の g_vandermonde_matrix のコピーを作成し jerasure_matrix_to_bitmatrix に渡す ※
-        int* temp_cauchy_for_bitmatrix = (int*)malloc(sizeof(int) * RS_M * RS_K); // m x k 行列
+        int* temp_cauchy_for_bitmatrix = static_cast<int*>(malloc(sizeof(int) * RS_M * RS_K)); // m x k 行列
         if (temp_cauchy_for_bitmatrix == nullptr) {
             DebugLog(L"ERROR: Failed to allocate memory for temp_cauchy_for_bitmatrix.");
             free(g_vandermonde_matrix);
@@ -733,20 +734,20 @@ void CountBandW() {
 
     while (send_bandw_Running) {
         const char* startMessage = "START";
-        sendto(udpSocket, startMessage, strlen(startMessage), 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
+        sendto(udpSocket, startMessage, strlen(startMessage), 0, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
         //DebugLog("Sent START message");
 
         int offset = 0;
         while (offset < BANDWIDTH_DATA_SIZE) {
             int packetSize = std::min(DATA_PACKET_SIZE, BANDWIDTH_DATA_SIZE - offset);
-            sendto(udpSocket, data.data() + offset, packetSize, 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
+            sendto(udpSocket, data.data() + offset, packetSize, 0, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
             offset += packetSize;
         }
 
         //DebugLog("Sent 2MB payload.");
 
         const char* endMessage = "END";
-        sendto(udpSocket, endMessage, strlen(endMessage), 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
+        sendto(udpSocket, endMessage, strlen(endMessage), 0, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
         //DebugLog("Sent END message");
 
         std::this_thread::sleep_for(std::chrono::milliseconds(60));
@@ -877,7 +878,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                         size_t fragment_actual_data_size = payload_size - sizeof(ENetAppFragmentHeader);
 
                         // Data needed for reassembly, to be populated under lock
-                        std::map<uint16_t, std::vector<uint8_t>> fragments_for_reassembly;
+                        std::unordered_map<uint16_t, std::vector<uint8_t>> fragments_for_reassembly;
                         uint16_t total_fragments_for_reassembly = 0;
                         bool ready_for_reassembly = false;
 
@@ -887,11 +888,13 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                             if (assembly_state.fragments.empty()) { // First fragment for this ID
                                 assembly_state.first_fragment_received_time = std::chrono::steady_clock::now();
                                 assembly_state.total_fragments = total_fragments;
+                                assembly_state.fragments.reserve(total_fragments);
                             } else if (assembly_state.total_fragments != total_fragments) {
                                 DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Mismatch in total_fragments for packet ID " + std::to_wstring(original_packet_id) + L". Discarding old fragments.");
                                 assembly_state.fragments.clear();
                                 assembly_state.first_fragment_received_time = std::chrono::steady_clock::now();
                                 assembly_state.total_fragments = total_fragments;
+                                assembly_state.fragments.reserve(total_fragments);
 
                             }
                             // Store the fragment if not already received
@@ -1015,6 +1018,7 @@ void FecWorkerThread(int threadId) {
     DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"] started.");
     UINT64 count = 0;
     const std::chrono::milliseconds EMPTY_QUEUE_WAIT_MS(1);
+    moodycamel::ProducerToken ptoken(g_h264FrameQueue);
 
     while (g_fec_worker_Running || g_parsedShardQueue.size_approx() > 0) { // Process remaining items after flag is false
         ParsedShardInfo parsedInfo;
@@ -1028,10 +1032,9 @@ void FecWorkerThread(int threadId) {
             int frameNumber = parsedInfo.frameNumber; // Already host order
             int shardIndex = parsedInfo.shardIndex;   // Already host order
             uint32_t originalDataLenHost = parsedInfo.originalDataLen; // Already host order
-            std::vector<uint8_t>& payload = parsedInfo.shardData; // Use reference or move if appropriate
 
             bool tryDecode = false;
-            std::map<uint32_t, std::vector<uint8_t>> shardsForDecodeAttempt;
+            std::unordered_map<uint32_t, std::vector<uint8_t>> shardsForDecodeAttempt;
             FrameMetadata currentFrameMetaForAttempt;
 
             if(count % 120 == 0)DebugLog(L"FecWorkerThread: Queue Size " + std::to_wstring(g_parsedShardQueue.size_approx()));
@@ -1040,9 +1043,8 @@ void FecWorkerThread(int threadId) {
                 // Metadata access first
                 {
                     std::lock_guard<std::mutex> metaLock(g_frameMetadataMutex);
-                    if (g_frameMetadata.find(frameNumber) == g_frameMetadata.end()) {
-                        g_frameMetadata[frameNumber] = {packetTimestamp, originalDataLenHost};
-                    }
+                    g_frameMetadata.try_emplace(frameNumber, packetTimestamp, originalDataLenHost);
+
                     // Parameter check (totalDataShards and totalParityShards from parsedInfo vs RS_K/RS_M)
                     if (parsedInfo.totalDataShards != RS_K || parsedInfo.totalParityShards != RS_M) {
                         DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: Mismatch in FEC parameters! Packet K/M: " +
@@ -1054,16 +1056,18 @@ void FecWorkerThread(int threadId) {
                 }
 
                 std::lock_guard<std::mutex> bufferLock(g_frameBufferMutex);
-                if (g_frameBuffer.find(frameNumber) == g_frameBuffer.end()) {
-                    g_frameBuffer[frameNumber] = std::map<int, std::vector<uint8_t>>();
+                auto it = g_frameBuffer.find(frameNumber);
+                if (it == g_frameBuffer.end()) {
+                    it = g_frameBuffer.try_emplace(frameNumber).first;
                 }
 
-                if (g_frameBuffer[frameNumber].find(shardIndex) == g_frameBuffer[frameNumber].end()) {
-                    g_frameBuffer[frameNumber][shardIndex] = std::move(payload); // payload is moved here
-                    // DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: Added Shard F#" + std::to_wstring(frameNumber) + L" Idx:" + std::to_wstring(shardIndex) + L". Current count: " + std::to_wstring(g_frameBuffer[frameNumber].size()));
+                auto& shardMap = it->second;
+                if (shardMap.find(shardIndex) == shardMap.end()) {
+                    shardMap.try_emplace(shardIndex, std::move(parsedInfo.shardData));
+                    // DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: Added Shard F#" + std::to_wstring(frameNumber) + L" Idx:" + std::to_wstring(shardIndex) + L". Current count: " + shardMap.size()));
                 }
 
-                if (g_frameBuffer.count(frameNumber) && g_frameBuffer[frameNumber].size() >= RS_K) {
+                if (shardMap.size() >= RS_K) {
                     std::lock_guard<std::mutex> metaLock(g_frameMetadataMutex); // Lock metadata while accessing
                     if (g_frameMetadata.count(frameNumber)) {
                         currentFrameMetaForAttempt = g_frameMetadata[frameNumber]; // This is a copy
@@ -1083,23 +1087,28 @@ void FecWorkerThread(int threadId) {
             } // End Metadata and FrameBuffer scope
 
             if (tryDecode && !shardsForDecodeAttempt.empty()) {
-                std::vector<uint8_t> decodedFrameData;
+                std::vector<uint8_t>* decodedFrameData = nullptr;
+                if (!g_h264BufferPool.try_dequeue(decodedFrameData)) {
+                    decodedFrameData = new std::vector<uint8_t>(); // Pool is empty, allocate new
+                }
+                decodedFrameData->clear();
+
                 // currentFrameMetaForAttempt.originalDataLen is already host order
                 uint32_t originalLenForDecode = currentFrameMetaForAttempt.originalDataLen;
 
-                if (g_matrix_initialized && DecodeFEC_Jerasure(shardsForDecodeAttempt, RS_K, RS_M, originalLenForDecode, decodedFrameData, g_jerasure_matrix)) {
+                if (g_matrix_initialized && DecodeFEC_Jerasure(shardsForDecodeAttempt, RS_K, RS_M, originalLenForDecode, *decodedFrameData, g_jerasure_matrix)) {
                     // Save H264 file after successful FEC decode, before enqueue
-                    // SaveH264ToFile_NUM(decodedFrameData, "decoded_frame");
+                    // SaveH264ToFile_NUM(*decodedFrameData, "decoded_frame");
 
                     H264Frame frame_to_decode;
                     frame_to_decode.timestamp = currentFrameMetaForAttempt.firstTimestamp;
                     frame_to_decode.frameNumber = frameNumber;
-                    frame_to_decode.data = std::move(decodedFrameData);
+                    frame_to_decode.data = decodedFrameData;
 
                     // Mark the precise receive-complete timestamp for end-to-end latency.
                     frame_to_decode.rx_done_ms = SteadyNowMs();
 
-                    g_h264FrameQueue.enqueue(std::move(frame_to_decode));
+                    g_h264FrameQueue.enqueue(ptoken, std::move(frame_to_decode));
                     
                     // 追加のデバッグログ
                     auto fec_worker_thread_end = std::chrono::system_clock::now();
@@ -1108,6 +1117,8 @@ void FecWorkerThread(int threadId) {
                     if(count % 120 == 0)DebugLog(L"Server FEC Worker Start to Client FEC Worker End Process Time: " + std::to_wstring(elapsed_fec_worker_thread) + L" ms");
                 } else {
                     DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: FEC Decode failed for frame " + std::to_wstring(frameNumber));
+                    // Return buffer to pool on failure
+                    g_h264BufferPool.enqueue(decodedFrameData);
                 }
             }
             count++;

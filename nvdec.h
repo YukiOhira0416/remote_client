@@ -53,11 +53,11 @@ private:
     std::unordered_map<uint64_t, FrameTimings> m_tsToTimings;
     std::mutex m_tsTimingsMutex;
 
-    bool createDecoder(CUVIDEOFORMAT* pVideoFormat);
+    bool createDecoder(const CUVIDEOFORMAT* pVideoFormat);
     bool allocateFrameBuffers();
     void copyDecodedFrameToD3D12(CUVIDPARSERDISPINFO* pDispInfo);
     void releaseDecoderResources();
-    bool reconfigureDecoder(CUVIDEOFORMAT* pVideoFormat);
+    bool reconfigureDecoder(const CUVIDEOFORMAT* pVideoFormat);
 
     CUcontext m_cuContext;
     ID3D12Device* m_pD3D12Device;
