@@ -7,6 +7,17 @@
 #endif
 #define _WIN32_WINNT 0x0600 
 #include <winsock2.h>
+#include <cstdint> // For uint64_t
+
+// Use a single monotonic clock for all latency metrics.
+static inline uint64_t SteadyNowMs() noexcept {
+    using clock = std::chrono::steady_clock;
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            clock::now().time_since_epoch()
+        ).count()
+    );
+}
 #include <ws2tcpip.h>
 #include <mswsock.h> // Required for WSARecvMsg and WSASendMsg
 #include <windows.h>
@@ -1101,6 +1112,9 @@ void FecWorkerThread(int threadId) {
                     frame_to_decode.timestamp = currentFrameMetaForAttempt.firstTimestamp;
                     frame_to_decode.frameNumber = frameNumber;
                     frame_to_decode.data = std::move(decodedFrameData);
+
+                    // Mark the precise receive-complete timestamp for end-to-end latency.
+                    frame_to_decode.rx_done_ms = SteadyNowMs();
 
                     g_h264FrameQueue.enqueue(std::move(frame_to_decode));
                     
