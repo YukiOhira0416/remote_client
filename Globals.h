@@ -86,6 +86,7 @@ struct ReadyGpuFrame {
     uint32_t streamFrameNumber = 0;
     // Latency metric
     uint64_t client_fec_end_to_render_end_time_ms = 0;
+    uint64_t RenderStartTimeTs = 0;
 };
 
 // H264 Frame Data for decoder queue

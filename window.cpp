@@ -1005,6 +1005,10 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         }
     }
 
+    auto RenderStartTime = std::chrono::system_clock::now();
+    uint64_t RenderStartTimeTs = std::chrono::duration_cast<std::chrono::milliseconds>(RenderStartTime.time_since_epoch()).count();
+    outFrameToRender.RenderStartTimeTs = RenderStartTimeTs;
+
     if (hasFrameToRender && outFrameToRender.hw_decoded_texture_Y && outFrameToRender.hw_decoded_texture_UV) {
         // Use the *video* size for centering (what the server encodes)
         const int videoW = currentResolutionWidth.load();
@@ -1169,8 +1173,6 @@ void RenderFrame() {
         ResizeSwapChainOnRenderThread(newW, newH);
     }
 
-    auto frameStartTime = std::chrono::system_clock::now();
-
     // --- D3D12 RenderFrame ---
     if (!g_commandList || !g_d3d12CommandQueue || !g_swapChain || !g_fence) {
         DebugLog(L"RenderFrame (D3D12): Core D3D12 objects not initialized.");
@@ -1245,11 +1247,9 @@ void RenderFrame() {
 
     // ---- Logging (only if a new frame was actually rendered) ----
     auto frameEndTime = std::chrono::system_clock::now();
+    uint64_t frameEndTimeTs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndTime.time_since_epoch()).count();
     if (frameWasRendered) {
-        uint64_t frameEndTimeMs =
-            std::chrono::duration_cast<std::chrono::milliseconds>(frameEndTime.time_since_epoch()).count();
-        int64_t latencyMs =
-            static_cast<int64_t>(frameEndTimeMs) - static_cast<int64_t>(renderedFrameData.timestamp);
+        int64_t latencyMs = static_cast<int64_t>(frameEndTimeTs) - static_cast<int64_t>(renderedFrameData.timestamp);
         if(RenderCount++ % 60 == 0){
             DebugLog(L"RenderFrame Latency: StreamFrame #"
             + std::to_wstring(renderedFrameData.streamFrameNumber)
@@ -1259,9 +1259,10 @@ void RenderFrame() {
         }
     }
 
-    auto renderDuration =
-        std::chrono::duration_cast<std::chrono::milliseconds>(frameEndTime - frameStartTime);
-    if(RenderCount % 60 == 0)DebugLog(L"RenderFrame Execution Time: " + std::to_wstring(renderDuration.count()) + L" ms.");
+    uint64_t renderDuration = frameEndTimeTs - renderedFrameData.RenderStartTimeTs;
+    if(RenderCount % 60 == 0)DebugLog(L"RenderFrame Execution Time: " + std::to_wstring(renderDuration) + L" ms.");
+
+    if(RenderCount % 60 == 0)DebugLog(L"Client FEC End toRender Duration Time: " + std::to_wstring(renderedFrameData.client_fec_end_to_render_end_time_ms + renderDuration) + L" ms.");
 }
 
 // Minimal blocking wait, only for shutdown.
