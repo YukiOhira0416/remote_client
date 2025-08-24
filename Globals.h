@@ -75,8 +75,7 @@ inline std::wstring HResultToHexWString(HRESULT hr) {
 
 // ReadyGpuFrame struct for D3D12
 struct ReadyGpuFrame {
-    uint64_t wgc_timestamp;    
-    uint64_t rawpacket_to_render_time_ms;
+    uint64_t timestamp;    
     Microsoft::WRL::ComPtr<ID3D12Resource> hw_decoded_texture_Y;  // Y plane texture
     Microsoft::WRL::ComPtr<ID3D12Resource> hw_decoded_texture_UV; // UV plane texture
     int width;
@@ -91,9 +90,7 @@ struct ReadyGpuFrame {
 
 // H264 Frame Data for decoder queue
 struct H264Frame {
-    uint64_t wgc_timestamp;
-    uint64_t rawpacket_to_render_time_ms;
-    uint64_t decode_start_timestamp; // in milliseconds since epoch
+    uint64_t timestamp;
     uint32_t frameNumber;
     std::vector<uint8_t> data;
 
@@ -106,7 +103,6 @@ struct H264Frame {
 extern std::atomic<bool> app_running_atomic;
 extern std::atomic<bool> g_isSizing;
 extern std::atomic<bool> g_forcePresentOnce; // Present at least once even if no new decoded frame
-extern std::atomic<bool> dumpH264ToFiles; // Flag to enable/disable dumping H264 frames to files
 
 // Global queues and synchronization for frame management
 extern moodycamel::ConcurrentQueue<H264Frame> g_h264FrameQueue;

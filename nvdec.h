@@ -47,8 +47,6 @@ private:
     std::mutex m_parseMutex; // Decode() を直列化する場合に使用
 
     std::unordered_map<uint64_t, uint32_t> m_tsToFrameNo;
-    std::unordered_map<uint64_t, uint64_t> m_tsDecodeElapsedMs; // key: CUVID timestamp == H264Frame::wgc_timestamp, value: rawpacket_to_render_time_ms (ms)
-    std::unordered_map<uint64_t, uint64_t> m_tsDecodeStartMs; // key: CUVID timestamp == H264Frame::wgc_timestamp, value: decode_start_timestamp (ms)
     std::mutex m_tsMapMutex;
     uint32_t m_lastStreamFrameNo = 0; // フォールバック用カウンタ
 

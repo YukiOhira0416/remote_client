@@ -735,7 +735,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
         g_readyGpuFrameQueue.push_back(std::move(readyFrame));
         if(HandlePictureDisplayCount++ % 200 == 0) {
-            DebugLog(L"HandlePictureDisplay: Pushed Frame Enqueue Size: " + std::to_wstring(g_readyGpuFrameQueue.size()));
+            DebugLog(L"HandlePictureDisplay: Pushed Frame Enqueue Size " + std::to_wstring(g_readyGpuFrameQueue.size()));
         }
     }
     g_readyGpuFrameQueueCV.notify_one();
@@ -758,7 +758,7 @@ void NvdecThread(int threadId) {
         if (g_h264FrameQueue.try_dequeue(frame)) {
             frame.decode_start_ms = SteadyNowMs();
             g_frameDecoder->Decode(frame);
-            if(DecoderCount++ % 200 == 0)DebugLog(L"NvdecThread: Dequeue Size" + std::to_wstring(g_h264FrameQueue.size_approx()));
+            if(DecoderCount++ % 200 == 0)DebugLog(L"NvdecThread: Dequeue Size " + std::to_wstring(g_h264FrameQueue.size_approx()));
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }

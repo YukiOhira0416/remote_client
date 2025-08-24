@@ -1249,7 +1249,7 @@ void RenderFrame() {
         uint64_t frameEndTimeMs =
             std::chrono::duration_cast<std::chrono::milliseconds>(frameEndTime.time_since_epoch()).count();
         int64_t latencyMs =
-            static_cast<int64_t>(frameEndTimeMs) - static_cast<int64_t>(renderedFrameData.wgc_timestamp);
+            static_cast<int64_t>(frameEndTimeMs) - static_cast<int64_t>(renderedFrameData.timestamp);
         if(RenderCount++ % 60 == 0){
             DebugLog(L"RenderFrame Latency: StreamFrame #"
             + std::to_wstring(renderedFrameData.streamFrameNumber)
