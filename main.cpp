@@ -1129,8 +1129,8 @@ void FecWorkerThread(int threadId) {
 ThreadConfig getOptimalThreadConfig(){
     ThreadConfig config;
 
-    config.receiver = 5;
-    config.fec = 4;
+    config.receiver = 6;
+    config.fec = 3;
     config.decoder = 1;
     config.render = 1;
     config.RS_K = 8;
