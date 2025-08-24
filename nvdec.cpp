@@ -9,6 +9,16 @@
 #include <atomic>
 #include <chrono>
 
+// Use a single monotonic clock for all latency metrics.
+static inline uint64_t SteadyNowMs() noexcept {
+    using clock = std::chrono::steady_clock;
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            clock::now().time_since_epoch()
+        ).count()
+    );
+}
+
 // Forward declaration from window.cpp
 extern void ClearReorderState();
 
@@ -198,6 +208,11 @@ void FrameDecoder::Decode(const H264Frame& frame) {
     {
         std::lock_guard<std::mutex> lk(m_tsMapMutex);
         m_tsToFrameNo[frame.timestamp] = frame.frameNumber;
+    }
+    // Store frame timings for latency calculation
+    {
+        std::lock_guard<std::mutex> lk(m_tsTimingsMutex);
+        m_tsToTimings[frame.timestamp] = { frame.rx_done_ms, frame.decode_start_ms };
     }
 
     { // 複数スレッドからの呼び出しを直列化
@@ -676,6 +691,33 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     readyFrame.width                 = self->m_frameWidth;
     readyFrame.height                = self->m_frameHeight;
 
+    // --- Latency Calculation ---
+    FrameTimings timings;
+    {
+        std::lock_guard<std::mutex> lk(self->m_tsTimingsMutex);
+        auto it = self->m_tsToTimings.find(pDispInfo->timestamp);
+        if (it != self->m_tsToTimings.end()) {
+            timings = it->second;
+            self->m_tsToTimings.erase(it);
+        }
+    }
+
+    const uint64_t now_ms = SteadyNowMs();
+    uint64_t total_ms = 0;
+
+    if (timings.rx_done_ms != 0) {
+        total_ms = now_ms - timings.rx_done_ms;
+    } else if (timings.decode_start_ms != 0) {
+        total_ms = now_ms - timings.decode_start_ms;
+        DebugLog(L"[warn] rx_done_ms missing; using decode_start_ms fallback.");
+    } else {
+        total_ms = 0; // Or some other default.
+        DebugLog(L"[warn] both rx_done_ms and decode_start_ms missing; metric will be 0.");
+    }
+    readyFrame.rawpacket_to_render_time_ms = total_ms;
+    // --- End Latency Calculation ---
+
+
     {
         std::lock_guard<std::mutex> lk(self->m_tsMapMutex);
         auto it = self->m_tsToFrameNo.find(readyFrame.timestamp);
@@ -714,12 +756,9 @@ void NvdecThread(int threadId) {
     while (g_decode_worker_Running) { // Use the same global running flag
         H264Frame frame;
         if (g_h264FrameQueue.try_dequeue(frame)) {
-            auto nvdec_start = std::chrono::system_clock::now();
+            frame.decode_start_ms = SteadyNowMs();
             g_frameDecoder->Decode(frame);
-            auto nvdec_end = std::chrono::system_clock::now();
-            auto nvdec_us = std::chrono::duration_cast<std::chrono::milliseconds>(nvdec_end - nvdec_start).count();
-            if(DecoderCount++ % 200 == 0)DebugLog(L"NvdecThread [" + std::to_wstring(threadId) + L"]: NVDEC Decode Time: " + std::to_wstring(nvdec_us) + L" ms");
-            if(DecoderCount % 200 == 0)DebugLog(L"NvdecThread: Dequeue Size" + std::to_wstring(g_h264FrameQueue.size_approx()));
+            if(DecoderCount++ % 200 == 0)DebugLog(L"NvdecThread: Dequeue Size" + std::to_wstring(g_h264FrameQueue.size_approx()));
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
