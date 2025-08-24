@@ -960,8 +960,9 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                                                 parsedInfoLocalFrag.shardData.assign(current_ptr_parse_frag, current_ptr_parse_frag + shardDataSize_parse_frag);
                                             }
                                             g_parsedShardQueue.enqueue(std::move(parsedInfoLocalFrag));
-
-                                             DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Reassembled AppFragment ID " + std::to_wstring(original_packet_id) + L" (after WorkerTS) too small for WGCCaptureTS and SIH. Size: " + std::to_wstring(size_after_worker_ts_frag));
+                                        }
+                                        else {
+                                            DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Reassembled packet ID " + std::to_wstring(original_packet_id) + L" too small for WGCCaptureTS and SIH. Size: " + std::to_wstring(size_after_worker_ts_frag));
                                         }
                                     } else {
                                         DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Reassembled packet ID " + std::to_wstring(original_packet_id) + L" has WorkerTS but no further data.");
