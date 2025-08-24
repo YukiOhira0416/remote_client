@@ -919,8 +919,6 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     hr = g_commandList->Reset(g_commandAllocator.Get(), nullptr); // No initial PSO for clear
     if (FAILED(hr)) { DebugLog(L"PopulateCommandList: Failed to reset command list. HR: " + HResultToHexWString(hr)); return false; }
 
-    outFrameToRender.render_start_ms = SteadyNowMs(); // steady clock start
-
     // Transition the current back buffer from PRESENT to RENDER_TARGET.
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -995,6 +993,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         if (haveExpected && haveNext) {
             // 理想：N と N+1 がそろった
             outFrameToRender = std::move(g_reorderBuffer[g_expectedStreamFrame]);
+            outFrameToRender.render_start_ms = SteadyNowMs(); // steady clock start
             g_reorderBuffer.erase(g_expectedStreamFrame);
             g_expectedStreamFrame++;
             hasFrameToRender = true;
@@ -1004,6 +1003,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             if (!g_reorderBuffer.empty()) {
                 auto it = g_reorderBuffer.begin();
                 outFrameToRender = std::move(it->second);
+                outFrameToRender.render_start_ms = SteadyNowMs(); // steady clock start
                 uint32_t drawn = it->first;
                 g_reorderBuffer.erase(it);
                 g_expectedStreamFrame = drawn + 1;
