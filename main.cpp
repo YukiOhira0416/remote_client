@@ -1098,7 +1098,10 @@ void FecWorkerThread(int threadId) {
 
                 if (g_matrix_initialized.load() && DecodeFEC_Jerasure(std::map<uint32_t, std::vector<uint8_t>>(shardsForDecodeAttempt.begin(), shardsForDecodeAttempt.end()), RS_K, RS_M, originalLenForDecode, *decodedFrameData, g_jerasure_matrix)) {
                     // Save H264 file after successful FEC decode, before enqueue
-                    // SaveH264ToFile_NUM(*decodedFrameData, "decoded_frame");
+
+                    if (g_dumpH264ToFile.load()) {
+                        SaveH264ToFile_NUM(*decodedFrameData, "decoded_frame");
+                    }
 
                     H264Frame frame_to_decode;
                     frame_to_decode.timestamp = currentFrameMetaForAttempt.firstTimestamp;
