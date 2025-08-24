@@ -197,7 +197,7 @@ void FrameDecoder::Decode(const H264Frame& frame) {
     // timestamp -> frameNumber を記録 (from original)
     {
         std::lock_guard<std::mutex> lk(m_tsMapMutex);
-        m_tsToFrameNo[frame.timestamp] = frame.frameNumber;
+        m_tsToFrameNo[frame.wgc_timestamp] = frame.frameNumber;
     }
 
     { // 複数スレッドからの呼び出しを直列化
@@ -206,7 +206,7 @@ void FrameDecoder::Decode(const H264Frame& frame) {
         packet.payload = frame.data.data();
         packet.payload_size = frame.data.size();
         packet.flags = CUVID_PKT_TIMESTAMP;
-        packet.timestamp = frame.timestamp;
+        packet.timestamp = frame.wgc_timestamp;
 
         if (!packet.payload || packet.payload_size == 0) {
             DebugLog(L"Decoder::Decode: Empty packet received.");
@@ -714,11 +714,8 @@ void NvdecThread(int threadId) {
     while (g_decode_worker_Running) { // Use the same global running flag
         H264Frame frame;
         if (g_h264FrameQueue.try_dequeue(frame)) {
-            auto nvdec_start = std::chrono::system_clock::now();
+            frame.decode_start_timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
             g_frameDecoder->Decode(frame);
-            auto nvdec_end = std::chrono::system_clock::now();
-            auto nvdec_us = std::chrono::duration_cast<std::chrono::milliseconds>(nvdec_end - nvdec_start).count();
-            if(DecoderCount++ % 200 == 0)DebugLog(L"NvdecThread [" + std::to_wstring(threadId) + L"]: NVDEC Decode Time: " + std::to_wstring(nvdec_us) + L" ms");
             if(DecoderCount % 200 == 0)DebugLog(L"NvdecThread: Dequeue Size" + std::to_wstring(g_h264FrameQueue.size_approx()));
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));

@@ -396,7 +396,7 @@ std::mutex g_appFragmentBuffersMutex; // Mutex to protect appFragmentBuffers
 // New struct for parsed shard information
 struct ParsedShardInfo {
     uint64_t wgcCaptureTimestamp;
-    uint64_t rawpacket_to_fec_timestamp;
+    uint64_t recieveRawPacketTimes;
     uint32_t frameNumber;        // Host byte order
     uint32_t shardIndex;         // Host byte order
     uint32_t totalDataShards;    // Host byte order
@@ -806,6 +806,8 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                     const uint8_t* payload_data = event.packet->data + 1;// payload_data is [WorkerTS (8B)][WGCCaptureTS (8B)][SIH][Data]
                     size_t payload_size = event.packet->dataLength - 1;
 
+                    uint64_t rawpacket_dequeue_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+
                     if (packet_type == PACKET_TYPE_FULL_SHARD) {
                         if (payload_size >= sizeof(uint64_t)) { // Check for WorkerTS
                             uint64_t worker_ts_val = *reinterpret_cast<const uint64_t*>(payload_data);//worker_ts_valはFECWorkerTSの値
@@ -832,7 +834,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                                     parsedInfoLocal.originalDataLen = ntohl(sih_parse->originalDataLen);
 
                                     uint64_t rawpacket_enqueue_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-                                    parsedInfoLocal.rawpacket_to_fec_timestamp = rawpacket_enqueue_time_ts;
+                                    parsedInfoLocal.recieveRawPacketTimes = rawpacket_enqueue_time_ts - rawpacket_dequeue_time_ts;
 
                                     size_t shardDataSize_parse = data_after_worker_ts + size_after_worker_ts - current_ptr_parse;//shardDataSize_parseは[Data]のサイズ
                                     if (shardDataSize_parse > 0) {
@@ -950,7 +952,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                                             parsedInfoLocalFrag.originalDataLen = ntohl(sih_parse_frag->originalDataLen);
                                             
                                             uint64_t rawpacket_enqueue_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-                                            parsedInfoLocalFrag.rawpacket_to_fec_timestamp = rawpacket_enqueue_time_ts;     
+                                            parsedInfoLocalFrag.recieveRawPacketTimes = rawpacket_enqueue_time_ts - rawpacket_dequeue_time_ts;
 
                                             size_t shardDataSize_parse_frag = data_after_worker_ts_frag + size_after_worker_ts_frag - current_ptr_parse_frag;
                                             if (shardDataSize_parse_frag > 0) {
@@ -1040,8 +1042,6 @@ void FecWorkerThread(int threadId) {
             uint64_t fec_worker_thread_dequeue_ts = std::chrono::duration_cast<std::chrono::milliseconds>(fec_worker_thread_dequeue.time_since_epoch()).count();
 
             if(count % 120 == 0)DebugLog(L"FecWorkerThread: Queue Size " + std::to_wstring(g_parsedShardQueue.size_approx()));
-            if(count % 120 == 0)DebugLog(L"FecWorkerThread: RawPackets to FECWorker " + std::to_wstring(static_cast<int>(fec_worker_thread_dequeue_ts) - static_cast<int>(parsedInfo.rawpacket_to_fec_timestamp)) + L" ms");
-
             { // Metadata and FrameBuffer scope
                 // Metadata access first
                 {
@@ -1066,7 +1066,6 @@ void FecWorkerThread(int threadId) {
 
                 if (g_frameBuffer[frameNumber].find(shardIndex) == g_frameBuffer[frameNumber].end()) {
                     g_frameBuffer[frameNumber][shardIndex] = std::move(payload); // payload is moved here
-                    // DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: Added Shard F#" + std::to_wstring(frameNumber) + L" Idx:" + std::to_wstring(shardIndex) + L". Current count: " + std::to_wstring(g_frameBuffer[frameNumber].size()));
                 }
 
                 if (g_frameBuffer.count(frameNumber) && g_frameBuffer[frameNumber].size() >= RS_K) {
@@ -1095,20 +1094,23 @@ void FecWorkerThread(int threadId) {
 
                 if (g_matrix_initialized && DecodeFEC_Jerasure(shardsForDecodeAttempt, RS_K, RS_M, originalLenForDecode, decodedFrameData, g_jerasure_matrix)) {
                     // Save H264 file after successful FEC decode, before enqueue
-                    // SaveH264ToFile_NUM(decodedFrameData, "decoded_frame");
 
-                    H264Frame frame_to_decode;
-                    frame_to_decode.timestamp = currentFrameMetaForAttempt.firstTimestamp;
-                    frame_to_decode.frameNumber = frameNumber;
-                    frame_to_decode.data = std::move(decodedFrameData);
+                    if(dumpH264ToFiles.load()){
+                        SaveH264ToFile_NUM(decodedFrameData, "decoded_frame");
+                    }
 
-                    g_h264FrameQueue.enqueue(std::move(frame_to_decode));
-                    
-                    // 追加のデバッグログ
                     auto fec_worker_thread_end = std::chrono::system_clock::now();
                     uint64_t fec_worker_thread_end_ts = std::chrono::duration_cast<std::chrono::milliseconds>(fec_worker_thread_end.time_since_epoch()).count();
                     int64_t elapsed_fec_worker_thread = static_cast<int64_t>(fec_worker_thread_end_ts) - static_cast<int64_t>(fec_worker_thread_start_ts);
                     if(count % 120 == 0)DebugLog(L"FEC Worker Thread Process Time: " + std::to_wstring(elapsed_fec_worker_thread) + L" ms");
+
+                    H264Frame frame_to_decode;
+                    frame_to_decode.wgc_timestamp = currentFrameMetaForAttempt.firstTimestamp;
+                    frame_to_decode.frameNumber = frameNumber;
+                    frame_to_decode.data = std::move(decodedFrameData);
+                    frame_to_decode.rawpacket_to_render_time_ms = parsedInfo.recieveRawPacketTimes + (fec_worker_thread_end_ts - fec_worker_thread_start_ts);
+
+                    g_h264FrameQueue.enqueue(std::move(frame_to_decode));
                 } else {
                     DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: FEC Decode failed for frame " + std::to_wstring(frameNumber));
                 }
@@ -1129,8 +1131,8 @@ void FecWorkerThread(int threadId) {
 ThreadConfig getOptimalThreadConfig(){
     ThreadConfig config;
 
-    config.receiver = 6;
-    config.fec = 3;
+    config.receiver = 3;
+    config.fec = 2;
     config.decoder = 1;
     config.render = 1;
     config.RS_K = 8;
