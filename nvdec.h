@@ -22,6 +22,11 @@
 // Forward declaration
 struct H264Frame;
 
+struct FrameTimings {
+    uint64_t rx_done_ms = 0;
+    uint64_t decode_start_ms = 0;
+};
+
 class FrameDecoder {
 public:
     static const int NUM_DECODE_SURFACES = 20;
@@ -46,6 +51,9 @@ private:
     std::unordered_map<uint64_t, uint64_t> m_tsDecodeStartMs; // key: CUVID timestamp == H264Frame::wgc_timestamp, value: decode_start_timestamp (ms)
     std::mutex m_tsMapMutex;
     uint32_t m_lastStreamFrameNo = 0; // フォールバック用カウンタ
+
+    std::unordered_map<uint64_t, FrameTimings> m_tsToTimings;
+    std::mutex m_tsTimingsMutex;
 
     bool createDecoder(CUVIDEOFORMAT* pVideoFormat);
     bool allocateFrameBuffers();
