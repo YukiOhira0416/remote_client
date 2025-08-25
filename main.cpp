@@ -58,7 +58,6 @@ using namespace DebugLogAsync;
 #include "AppShutdown.h"
 #include <cuda.h>
 #include <cuda_runtime_api.h>
-#include <cudaD3D12.h>
 #include <d3dx12.h>
 #include <d3d12.h>
 
@@ -1273,28 +1272,45 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     // Force-send to server now (single gate): advertise *video* size (tw x th), unchanged
     OnResolutionChanged_GatedSend(tw, th, /*force=*/true);
 
-    // Initialize CUDA and NVDEC, now explicitly bound to the D3D12 device.
-    // This guarantees D3D12 and CUDA are on the same physical NVIDIA GPU.
+    // Initialize CUDA and NVDEC without cudaD3D12.h binding helpers.
+    // GPU policy guarantees a single discrete NVIDIA GPU for this app; selecting CUDA device 0 is valid.
     CUdevice cuDev = 0;
     CUcontext cuContext = nullptr;
-    CUresult r = cuD3D12GetDevice(&cuDev, g_d3d12Device.Get());
-    if (r == CUDA_SUCCESS) {
-        DebugLog(L"cuD3D12GetDevice: Successfully got CUDA device from D3D12 device.");
-        // Create a CUDA context for this specific device.
-        r = cuCtxCreate(&cuContext, 0, cuDev);
-        if (r != CUDA_SUCCESS) {
-            const char* errStr;
-            cuGetErrorString(r, &errStr);
-            std::string s(errStr ? errStr : "Unknown error");
-            DebugLog(L"cuCtxCreate failed: " + std::wstring(s.begin(), s.end()));
-            return -1; // Fail fast
-        }
-    } else {
-        const char* errStr;
+
+    CUresult r = cuInit(0);
+    if (r != CUDA_SUCCESS) {
+        const char* errStr = nullptr;
         cuGetErrorString(r, &errStr);
         std::string s(errStr ? errStr : "Unknown error");
-        DebugLog(L"cuD3D12GetDevice failed: " + std::wstring(s.begin(), s.end()) + L". Cannot bind CUDA to D3D12 device.");
-        // Fallback by LUID is possible but complex; fail fast is safer per instructions.
+        DebugLog(L"cuInit failed: " + std::wstring(s.begin(), s.end()));
+        return -1;
+    }
+
+    int devCount = 0;
+    r = cuDeviceGetCount(&devCount);
+    if (r != CUDA_SUCCESS || devCount <= 0) {
+        const char* errStr = nullptr;
+        cuGetErrorString(r, &errStr);
+        std::string s(errStr ? errStr : "Unknown error");
+        DebugLog(L"cuDeviceGetCount failed or no CUDA devices: " + std::wstring(s.begin(), s.end()));
+        return -1;
+    }
+
+    r = cuDeviceGet(&cuDev, 0); // Select device 0 per single-GPU policy.
+    if (r != CUDA_SUCCESS) {
+        const char* errStr = nullptr;
+        cuGetErrorString(r, &errStr);
+        std::string s(errStr ? errStr : "Unknown error");
+        DebugLog(L"cuDeviceGet(0) failed: " + std::wstring(s.begin(), s.end()));
+        return -1;
+    }
+
+    r = cuCtxCreate(&cuContext, 0, cuDev);
+    if (r != CUDA_SUCCESS) {
+        const char* errStr = nullptr;
+        cuGetErrorString(r, &errStr);
+        std::string s(errStr ? errStr : "Unknown error");
+        DebugLog(L"cuCtxCreate failed: " + std::wstring(s.begin(), s.end()));
         return -1;
     }
 
