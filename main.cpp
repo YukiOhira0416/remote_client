@@ -1304,7 +1304,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
     // Try direct lookup by LUID (preferred)
     bool foundByLuid = false;
-#if defined(_WIN32)
+#if defined(_WIN32) && defined(CUDA_VERSION) && CUDA_VERSION >= 10010
     {
         CUdevice tmpDev = 0;
         r = cuDeviceGetByLuid(&tmpDev, dxgiLuidBytes, (unsigned int)sizeof(dxgiLuidBytes));
