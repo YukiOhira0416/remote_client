@@ -224,7 +224,7 @@ Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;
 Microsoft::WRL::ComPtr<ID3D12CommandQueue> g_d3d12CommandQueue;
 Microsoft::WRL::ComPtr<IDXGISwapChain3> g_swapChain; // Use IDXGISwapChain3 or 4
 Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_rtvHeap;
-Microsoft::WRL::ComPtr<ID3D12Resource> g_renderTargets[2]; // Double buffering
+Microsoft::WRL::ComPtr<ID3D12Resource> g_renderTargets[3]; // Support up to triple buffering
 Microsoft::WRL::ComPtr<ID3D12CommandAllocator> g_commandAllocator;
 Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> g_commandList;
 Microsoft::WRL::ComPtr<ID3D12Fence> g_fence;
@@ -232,7 +232,10 @@ UINT g_rtvDescriptorSize;
 UINT g_currentFrameBufferIndex; // Current back buffer index
 UINT64 g_fenceValue;
 HANDLE g_fenceEvent;
-UINT64 g_renderFenceValues[2]; // Fence values for each frame in flight for rendering
+UINT64 g_renderFenceValues[3]; // Fence values for each frame in flight for rendering
+
+// NEW: frames-in-flight is now configurable
+static UINT g_backBufferCount = std::max(2u, getOptimalThreadConfig().frames_in_flight);
 
 // D3D11 specific globals (to be removed or replaced)
 #define CLIENT_PORT_FEC 8080// FEC用ポート番号
@@ -350,8 +353,8 @@ void ClearReorderState()
 }
 
 // 調整パラメータ
-static constexpr size_t REORDER_MAX_BUFFER = 2; // これを超えたら妥協して前進
-static constexpr int    REORDER_WAIT_MS    = 1; // N+1 を待つ最大時間（ms）
+static std::atomic<size_t> g_reorderMaxBuffer{ static_cast<size_t>(getOptimalThreadConfig().reorder_max_buffer) }; // これを超えたら妥協して前進
+static std::atomic<int>    g_reorderWaitMs   { getOptimalThreadConfig().reorder_wait_ms };                          // N+1 を待つ最大時間（ms）
 static std::chrono::steady_clock::time_point g_lastReorderDecision = std::chrono::steady_clock::now();
 
 // Rendering specific D3D12 globals
@@ -624,7 +627,7 @@ bool InitD3D() {
     if (g_fence) g_fence.Reset();
     if (g_commandList) g_commandList.Reset();
     if (g_commandAllocator) g_commandAllocator.Reset();
-    for (UINT i = 0; i < 2; ++i) {
+    for (UINT i = 0; i < g_backBufferCount; ++i) {
         if (g_renderTargets[i]) g_renderTargets[i].Reset();
     }
     if (g_rtvHeap) g_rtvHeap.Reset();
@@ -725,7 +728,7 @@ bool InitD3D() {
 
     // 3. Create Swap Chain
     DXGI_SWAP_CHAIN_DESC1 scd1 = {};
-    scd1.BufferCount = 2; // Double buffering
+    scd1.BufferCount = g_backBufferCount; // Double buffering
     RECT rcClient;
     GetClientRect(g_hWnd, &rcClient);
     scd1.Width = (rcClient.right - rcClient.left > 0) ? (rcClient.right - rcClient.left) : 1;
@@ -756,7 +759,7 @@ bool InitD3D() {
 
     // 4. Create RTV Descriptor Heap
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = 2; // For double buffering
+    rtvHeapDesc.NumDescriptors = g_backBufferCount; // For N buffering
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     hr = g_d3d12Device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&g_rtvHeap));
@@ -769,7 +772,7 @@ bool InitD3D() {
 
     // 5. Create Render Target Views
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-    for (UINT i = 0; i < 2; ++i) {
+    for (UINT i = 0; i < g_backBufferCount; ++i) {
         hr = g_swapChain->GetBuffer(i, IID_PPV_ARGS(&g_renderTargets[i]));
         if (FAILED(hr)) {
             DebugLog(L"InitD3D (D3D12): Failed to get swap chain buffer " + std::to_wstring(i) + L". HRESULT: " + HResultToHexWString(hr));
@@ -1031,8 +1034,9 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
         const bool haveExpected = g_reorderBuffer.count(g_expectedStreamFrame) != 0;
         const bool haveNext     = g_reorderBuffer.count(g_expectedStreamFrame + 1) != 0;
-        const bool bufferTooBig = g_reorderBuffer.size() > REORDER_MAX_BUFFER;
-        const bool waitedLong   = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastReorderDecision).count() > REORDER_WAIT_MS;
+        const bool bufferTooBig = g_reorderBuffer.size() > g_reorderMaxBuffer.load(std::memory_order_relaxed);
+        const bool waitedLong = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastReorderDecision).count()
+                        > g_reorderWaitMs.load(std::memory_order_relaxed);
 
         if (haveExpected && haveNext) {
             // 理想：N と N+1 がそろった
@@ -1191,15 +1195,15 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 
     WaitForGpuWithTimeout(500); // keep pumping; don’t freeze
 
-    for (UINT i = 0; i < 2; ++i) g_renderTargets[i].Reset();
+    for (UINT i = 0; i < g_backBufferCount; ++i) g_renderTargets[i].Reset();
 
     HRESULT hr = g_swapChain->ResizeBuffers(
-        2, newW, newH, DXGI_FORMAT_R8G8B8A8_UNORM,
+        g_backBufferCount, newW, newH, DXGI_FORMAT_R8G8B8A8_UNORM,
         g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
     if (FAILED(hr)) {
         DebugLog(L"RenderThread: ResizeBuffers failed. HR: " + HResultToHexWString(hr));
         // As a fallback, try automatic size:
-        hr = g_swapChain->ResizeBuffers(2, 0, 0, DXGI_FORMAT_R8G8B8A8_UNORM,
+        hr = g_swapChain->ResizeBuffers(g_backBufferCount, 0, 0, DXGI_FORMAT_R8G8B8A8_UNORM,
                                         g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
         if (FAILED(hr)) {
             DebugLog(L"RenderThread: ResizeBuffers(0,0) also failed. HR: " + HResultToHexWString(hr));
@@ -1210,7 +1214,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
 
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-    for (UINT i = 0; i < 2; ++i) {
+    for (UINT i = 0; i < g_backBufferCount; ++i) {
         hr = g_swapChain->GetBuffer(i, IID_PPV_ARGS(&g_renderTargets[i]));
         if (FAILED(hr)) {
             DebugLog(L"RenderThread: GetBuffer(" + std::to_wstring(i) + L") failed. HR: " + HResultToHexWString(hr));
@@ -1224,7 +1228,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     // After ResizeBuffers, any old fence targets are invalid for the new back buffers.
     // This reset prevents waiting on never-signaled values.
     const UINT64 completed = g_fence->GetCompletedValue();
-    for (UINT i = 0; i < 2; ++i) {
+    for (UINT i = 0; i < g_backBufferCount; ++i) {
         g_renderFenceValues[i] = completed + 1;
     }
     // Refresh the current index, as it might have changed.
@@ -1413,7 +1417,7 @@ void CleanupD3DRenderResources() {
     if (g_fence) g_fence.Reset();
     if (g_commandList) g_commandList.Reset();
     if (g_commandAllocator) g_commandAllocator.Reset();
-    for (UINT i = 0; i < 2; ++i) {
+    for (UINT i = 0; i < g_backBufferCount; ++i) {
         if (g_renderTargets[i]) g_renderTargets[i].Reset();
     }
     if (g_rtvHeap) g_rtvHeap.Reset();

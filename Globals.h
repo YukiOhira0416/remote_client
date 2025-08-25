@@ -132,6 +132,15 @@ struct ThreadConfig {
     int render = 1;
     int RS_K = 1;
     int RS_M = 1;
+
+    // ==== NEW (for jitter buffer & GPU pacing) ====
+    int server_hz;                 // e.g., 60
+    int reorder_wait_ms;           // derived from server_hz
+    size_t reorder_max_buffer;     // e.g., 2
+    unsigned int frames_in_flight; // 2 (double) or 3 (triple)
 };
+
+// Centralized runtime tuning. Implemented in main.cpp.
+ThreadConfig getOptimalThreadConfig();
 
 #endif
