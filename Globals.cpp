@@ -38,8 +38,7 @@ std::atomic<bool> g_decode_worker_Running(true);
 std::atomic<bool> app_running_atomic(true);
 std::atomic<bool> g_isSizing{false};
 std::atomic<bool> g_forcePresentOnce{false};
-std::atomic<bool> g_deviceLost{false};
-std::atomic<bool> dumpH264ToFiles{false};
+std::atomic<bool> g_dumpH264ToFile{false};
 
 // H264 Frame queue
 moodycamel::ConcurrentQueue<H264Frame> g_h264FrameQueue;

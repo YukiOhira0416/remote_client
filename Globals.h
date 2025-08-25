@@ -114,7 +114,11 @@ struct H264Frame {
 extern std::atomic<bool> app_running_atomic;
 extern std::atomic<bool> g_isSizing;
 extern std::atomic<bool> g_forcePresentOnce; // Present at least once even if no new decoded frame
+<<<<<<< Updated upstream
 extern std::atomic<bool> g_deviceLost;
+=======
+extern std::atomic<bool> g_dumpH264ToFile;
+>>>>>>> Stashed changes
 
 // Global queues and synchronization for frame management
 extern moodycamel::ConcurrentQueue<std::vector<uint8_t>*> g_h264BufferPool;
