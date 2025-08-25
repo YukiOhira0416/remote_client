@@ -61,7 +61,7 @@ static Microsoft::WRL::ComPtr<IDXGIAdapter1> FindNvidiaAdapter(IDXGIFactory4* fa
 
     // 2) High-performance preference (often picks the discrete NVIDIA GPU)
     if (factory6) {
-        // FIX: enumerate from index = 0; increment after each iteration
+        // FIXED: enumerate from index = 0; increment after each iteration
         for (UINT index = 0; ; ++index) {
             Microsoft::WRL::ComPtr<IDXGIAdapter1> a;
             if (FAILED(factory6->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&a)))) break;
@@ -75,7 +75,7 @@ static Microsoft::WRL::ComPtr<IDXGIAdapter1> FindNvidiaAdapter(IDXGIFactory4* fa
     }
 
     // 3) Fallback: original EnumAdapters1 loop (unchanged behavior)
-    // FIX: enumerate from adapterIndex = 0; increment after each iteration
+    // FIXED: enumerate from adapterIndex = 0; increment after each iteration
     for (UINT adapterIndex = 0; ; ++adapterIndex) {
         Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
         if (DXGI_ERROR_NOT_FOUND == factory4->EnumAdapters1(adapterIndex, &adapter)) {
