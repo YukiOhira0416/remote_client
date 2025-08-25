@@ -8,6 +8,7 @@
 #include <utility>
 #include <cstdint>
 #include <d3d12.h>
+#include <dxgi1_6.h> // for LUID (if not already included)
 #include <wrl/client.h>
 #include <deque>
 #include <mutex>
@@ -43,6 +44,8 @@ extern std::atomic<int> currentResolutionHeight;
 extern HWND g_hWnd;
 // D3D12 Globals (defined in window.cpp)
 extern Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;
+
+extern LUID g_dxgiAdapterLuid; // Selected D3D12 adapter's LUID (set in window.cpp)
 
 extern const int RS_K;
 extern const int RS_M;
