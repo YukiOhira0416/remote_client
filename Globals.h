@@ -15,6 +15,7 @@
 #include <iostream>
 #include <iomanip>
 #include <condition_variable>
+#include <unordered_map>
 #include "concurrentqueue/concurrentqueue.h"
 
 #define SIZE_PACKET_SIZE 258
@@ -117,6 +118,10 @@ extern moodycamel::ConcurrentQueue<H264Frame> g_h264FrameQueue;
 extern std::deque<ReadyGpuFrame> g_readyGpuFrameQueue;
 extern std::mutex g_readyGpuFrameQueueMutex;
 extern std::condition_variable g_readyGpuFrameQueueCV;
+
+// FEC end times keyed by stream frame number (steady clock ms since epoch-like)
+extern std::unordered_map<uint32_t, uint64_t> g_fecEndTimeByStreamFrame;
+extern std::mutex g_fecEndTimeMutex;
 
 // Global instance for the decoder
 extern std::unique_ptr<FrameDecoder> g_frameDecoder;

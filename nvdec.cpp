@@ -703,7 +703,6 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     }
     // Propagate rx_done_ms if known (0 otherwise)
     readyFrame.rx_done_ms    = timings.rx_done_ms;
-    readyFrame.nvdec_done_ms = SteadyNowMs(); // after cuCtxSynchronize
 
     // Back-compat field will be finalized at RenderEnd; keep 0 here.
     readyFrame.client_fec_end_to_render_end_time_ms = 0;
