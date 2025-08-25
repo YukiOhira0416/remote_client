@@ -232,6 +232,8 @@ UINT g_rtvDescriptorSize;
 UINT g_currentFrameBufferIndex; // Current back buffer index
 UINT64 g_fenceValue;
 HANDLE g_fenceEvent;
+// NEW: Guard to prevent Present during swap-chain resize
+std::atomic<bool> g_resizeInProgress{false};
 UINT64 g_renderFenceValues[3]; // Fence values for each frame in flight for rendering
 
 // NEW: frames-in-flight is now configurable
@@ -1162,6 +1164,10 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     g_swapChain->GetDesc1(&desc);
     if (desc.Width == (UINT)newW && desc.Height == (UINT)newH) return;
 
+    // --- Begin added guard ---
+    g_resizeInProgress.store(true, std::memory_order_release);
+    // --- End added guard ---
+
     // Bounded wait so we never hard-freeze the pipeline
     auto WaitForGpuWithTimeout = [](DWORD totalTimeoutMs)->bool {
         // Signal
@@ -1197,6 +1203,15 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     WaitForGpuWithTimeout(500); // keep pumping; don’t freeze
 
     for (UINT i = 0; i < g_backBufferCount; ++i) g_renderTargets[i].Reset();
+
+    // Optional: drain any completed in-flight frames before resizing to reduce back-buffer contention.
+    {
+        const UINT64 completedVal = g_fence->GetCompletedValue();
+        std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
+        while (!g_inFlightFrames.empty() && g_inFlightFrames.front().fenceValue <= completedVal) {
+            g_inFlightFrames.pop();
+        }
+    }
 
     HRESULT hr = g_swapChain->ResizeBuffers(
         g_backBufferCount, newW, newH, DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -1237,6 +1252,11 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 
     // Ensure at least one post-resize Present to advance swap-chain even if no new frame is ready.
     g_forcePresentOnce.store(true, std::memory_order_release);
+
+    // --- Begin added guard release ---
+    // Ensure all per-frame bookkeeping is finalized before allowing Present.
+    g_resizeInProgress.store(false, std::memory_order_release);
+    // --- End added guard release ---
 }
 
 void RenderFrame() {
@@ -1251,6 +1271,12 @@ void RenderFrame() {
         }
     }
     // === Device-loss handling: end ===
+
+    // Avoid Present during swap-chain resize (prevents transient Present failures on resize)
+    if (g_resizeInProgress.load(std::memory_order_acquire)) {
+        // Do not log spam; simply skip this frame. Kick/present will happen when resize completes.
+        return;
+    }
 
     // ---- [Release completed frame resources - BEGIN] ----
     // GPUがどこまで処理を終えたかを確認
