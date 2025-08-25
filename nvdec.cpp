@@ -81,6 +81,7 @@ extern void ClearReorderState();
             }                                                                                       \
             wss << L" in " << __FILEW__ << L" at line " << __LINE__;                                \
             DebugLog(wss.str());                                                                    \
+            cuCtxPopCurrent(NULL);                                                                  \
             return 0; /* Return 0 on error, do not throw */                                         \
         }                                                                                           \
     } while (0)
@@ -104,10 +105,31 @@ extern void ClearReorderState();
             }                                                                                       \
             wss << L" in " << __FILEW__ << L" at line " << __LINE__;                                \
             DebugLog(wss.str());                                                                    \
+            cuCtxPopCurrent(NULL);                                                                  \
             return 0; /* Return 0 on error, do not throw */                                         \
         }                                                                                           \
     } while (0)
 
+namespace {
+    // RAII helper for cuvidCtxLock, moved up to be available to all callbacks.
+    class CudaCtxLocker {
+    public:
+        explicit CudaCtxLocker(CUvideoctxlock lock) : m_lock(lock) {
+            if (m_lock) {
+                cuvidCtxLock(m_lock, 0);
+            }
+        }
+        ~CudaCtxLocker() {
+            if (m_lock) {
+                cuvidCtxUnlock(m_lock, 0);
+            }
+        }
+        CudaCtxLocker(const CudaCtxLocker&) = delete;
+        CudaCtxLocker& operator=(const CudaCtxLocker&) = delete;
+    private:
+        CUvideoctxlock m_lock;
+    };
+}
 
 
 // === ここまで追加 ===
@@ -128,11 +150,6 @@ FrameDecoder::FrameDecoder(CUcontext cuContext, ID3D12Device* pD3D12Device)
 }
 
 void FrameDecoder::releaseDecoderResources() {
-    if (m_hDecoder) {
-        cuvidDestroyDecoder(m_hDecoder);
-        m_hDecoder = nullptr;
-    }
-
     for (auto& resource : m_frameResources) {
         if (resource.copyDone)  { cuEventDestroy(resource.copyDone);  resource.copyDone  = nullptr; }
         if (resource.copyStream){ cuStreamDestroy(resource.copyStream); resource.copyStream = nullptr; }
@@ -162,6 +179,11 @@ void FrameDecoder::releaseDecoderResources() {
         resource.pTextureUV.Reset();
     }
     m_frameResources.clear();
+
+    if (m_hDecoder) {
+        cuvidDestroyDecoder(m_hDecoder);
+        m_hDecoder = nullptr;
+    }
     DebugLog(L"Released decoder resources and frame buffers.");
 }
 
@@ -267,6 +289,10 @@ int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoForm
     int result = 1;
 
     try {
+        // Align coded size to even dimensions to match NVDEC expectations
+        pVideoFormat->coded_width  = (pVideoFormat->coded_width  + 1) & ~1U;
+        pVideoFormat->coded_height = (pVideoFormat->coded_height + 1) & ~1U;
+
         DebugLog(L"HandleVideoSequence: Codec: " + std::to_wstring(pVideoFormat->codec) +
             L", Coded Resolution: " + std::to_wstring(pVideoFormat->coded_width) + L"x" + std::to_wstring(pVideoFormat->coded_height) +
             L", Target Resolution: " + std::to_wstring(currentResolutionWidth.load()) + L"x" + std::to_wstring(currentResolutionHeight.load()));
@@ -342,7 +368,15 @@ bool FrameDecoder::createDecoder(const CUVIDEOFORMAT* pVideoFormat) {
     m_videoDecoderCreateInfo.ChromaFormat = pVideoFormat->chroma_format;
     m_videoDecoderCreateInfo.ulWidth = pVideoFormat->coded_width;
     m_videoDecoderCreateInfo.ulHeight = pVideoFormat->coded_height;
-    m_videoDecoderCreateInfo.ulNumDecodeSurfaces = FrameDecoder::NUM_DECODE_SURFACES; // A pool of surfaces
+
+    // Choose decode surfaces in a safe range (keep latency low but avoid starvation)
+    // The parser provides a recommendation for the minimum number of surfaces.
+    unsigned int numSurfaces = pVideoFormat->min_num_decode_surfaces;
+    if (numSurfaces == 0) numSurfaces = FrameDecoder::NUM_DECODE_SURFACES; // Fallback
+    if (numSurfaces < 8)  numSurfaces = 8;
+    if (numSurfaces > 20) numSurfaces = 20;
+    m_videoDecoderCreateInfo.ulNumDecodeSurfaces = numSurfaces;
+
     m_videoDecoderCreateInfo.ulCreationFlags = cudaVideoCreate_PreferCUVID;
     m_videoDecoderCreateInfo.DeinterlaceMode = cudaVideoDeinterlaceMode_Weave;
     // Set target size to the actual coded size so decoder does NO scaling.
@@ -527,42 +561,14 @@ int FrameDecoder::HandlePictureDecode(void* pUserData, CUVIDPICPARAMS* pPicParam
 
     self->m_nDecodePicCnt++; // Preserved from original
 
-    cuvidCtxLock(self->m_ctxLock, 0);
-    CUresult cr = cuvidDecodePicture(self->m_hDecoder, pPicParams);
-    cuvidCtxUnlock(self->m_ctxLock, 0);
+    CudaCtxLocker ctxLocker(self->m_ctxLock);
+    CUDA_CHECK_CALLBACK(cuvidDecodePicture(self->m_hDecoder, pPicParams));
 
-    if (cr != CUDA_SUCCESS) {
-        const char* es = nullptr; cuGetErrorString(cr, &es);
-        std::wstring msg = L"cuvidDecodePicture failed: ";
-        if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
-        DebugLog(msg);
-        cuCtxPopCurrent(NULL);
-        return 0;
-    }
     cuCtxPopCurrent(NULL);
     return 1;
 }
 
 namespace {
-    // RAII helper for cuvidCtxLock
-    class CudaCtxLocker {
-    public:
-        explicit CudaCtxLocker(CUvideoctxlock lock) : m_lock(lock) {
-            if (m_lock) {
-                cuvidCtxLock(m_lock, 0);
-            }
-        }
-        ~CudaCtxLocker() {
-            if (m_lock) {
-                cuvidCtxUnlock(m_lock, 0);
-            }
-        }
-        CudaCtxLocker(const CudaCtxLocker&) = delete;
-        CudaCtxLocker& operator=(const CudaCtxLocker&) = delete;
-    private:
-        CUvideoctxlock m_lock;
-    };
-
     // RAII helper for a mapped video frame
     class MappedVideoFrame {
     public:
@@ -602,6 +608,20 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     FrameDecoder* const self = static_cast<FrameDecoder*>(pUserData);
     cuCtxPushCurrent(self->m_cuContext);
 
+    if (!pDispInfo) {
+        DebugLog(L"HandlePictureDisplay: null pDispInfo");
+        cuCtxPopCurrent(NULL);
+        return 0;
+    }
+
+    // Bounds check before accessing m_frameResources
+    const int idx = pDispInfo->picture_index;
+    if (idx < 0 || idx >= static_cast<int>(self->m_frameResources.size())) {
+        DebugLog(L"HandlePictureDisplay: picture_index out of range: " + std::to_wstring(idx));
+        cuCtxPopCurrent(NULL);
+        return 0;
+    }
+
     // RAII locker for the context lock. It will be unlocked automatically.
     CudaCtxLocker ctxLocker(self->m_ctxLock);
 
@@ -623,7 +643,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     }
 
     // From here, we can return on error and the destructors will handle cleanup.
-    const auto& fr = self->m_frameResources[pDispInfo->picture_index];
+    const auto& fr = self->m_frameResources[idx];
     if (!fr.pCudaArrayY || !fr.pCudaArrayUV) {
         DebugLog(L"HandlePictureDisplay: mapped CUDA arrays are null. Aborting.");
         cuCtxPopCurrent(NULL);
@@ -650,15 +670,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     cpyY.dstArray      = fr.pCudaArrayY;
     cpyY.WidthInBytes  = srcWidthBytes_Y;
     cpyY.Height        = srcHeightRows_Y;
-    CUresult cr = cuMemcpy2DAsync(&cpyY, stream);
-    if (cr != CUDA_SUCCESS) {
-        const char* es = nullptr; cuGetErrorString(cr, &es);
-        std::wstring msg = L"cuMemcpy2DAsync(Y) failed: ";
-        if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
-        DebugLog(msg);
-        cuCtxPopCurrent(NULL);
-        return 0;
-    }
+    CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&cpyY, stream));
 
     const CUdeviceptr pSrcUV = pDecodedFrame + (size_t)srcHeightRows_Y * nDecodedPitch;
     CUDA_MEMCPY2D cpyUV = {};
@@ -669,34 +681,18 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     cpyUV.dstArray      = fr.pCudaArrayUV;
     cpyUV.WidthInBytes  = srcWidthBytes_UV;
     cpyUV.Height        = srcHeightRows_UV;
-    cr = cuMemcpy2DAsync(&cpyUV, stream);
-    if (cr != CUDA_SUCCESS) {
-        const char* es = nullptr; cuGetErrorString(cr, &es);
-        std::wstring msg = L"cuMemcpy2DAsync(UV) failed: ";
-        if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
-        DebugLog(msg);
-        cuCtxPopCurrent(NULL);
-        return 0;
-    }
+    CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&cpyUV, stream));
 
     // Record completion event for this frame's copies.
     // IMPORTANT: do NOT call cuCtxSynchronize().
-    cr = cuEventRecord(fr.copyDone, stream);
-    if (cr != CUDA_SUCCESS) {
-        const char* es = nullptr; cuGetErrorString(cr, &es);
-        std::wstring msg = L"cuEventRecord failed: ";
-        if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
-        DebugLog(msg);
-        cuCtxPopCurrent(NULL);
-        return 0;
-    }
+    CUDA_CHECK_CALLBACK(cuEventRecord(fr.copyDone, stream));
 
     // Build the ReadyGpuFrame exactly as before (same fields, same comments),
     // but DO NOT set nvdec_done_ms here. We'll set it when the event is actually complete.
     // (Keep all the existing logging/timing copy code and its text intact.)
     ReadyGpuFrame readyFrame;
-    readyFrame.hw_decoded_texture_Y  = self->m_frameResources[pDispInfo->picture_index].pTextureY;
-    readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
+    readyFrame.hw_decoded_texture_Y  = self->m_frameResources[idx].pTextureY;
+    readyFrame.hw_decoded_texture_UV = self->m_frameResources[idx].pTextureUV;
     readyFrame.timestamp             = pDispInfo->timestamp;
     readyFrame.originalFrameNumber   = self->m_nDecodedFrameCount++;
     readyFrame.id                    = readyFrame.originalFrameNumber;
@@ -737,7 +733,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     {
         std::lock_guard<std::mutex> lk(self->m_pendingMutex);
         self->m_pendingCopies.push_back({
-            (uint32_t)pDispInfo->picture_index,
+            (uint32_t)idx,
             readyFrame.timestamp,
             readyFrame.streamFrameNumber,
             readyFrame

@@ -765,6 +765,13 @@ bool InitD3D() {
     // NEW: prefer re-binding by LUID / GPU preference, then fallback to original logic.
     chosenAdapter = FindNvidiaAdapter(dxgiFactory.Get());
 
+    // If the adapter is not found, it might be a transient state after a TDR.
+    // Wait a moment and try again, as per recovery hardening plan.
+    if (!chosenAdapter) {
+        Sleep(100); // Short sleep consistent with recovery throttling.
+        chosenAdapter = FindNvidiaAdapter(dxgiFactory.Get());
+    }
+
     if (chosenAdapter) {
         DXGI_ADAPTER_DESC1 desc;
         if (SUCCEEDED(chosenAdapter->GetDesc1(&desc))) {
@@ -1564,6 +1571,11 @@ static bool HandleDeviceLost() {
     g_nextSrvCacheHeapIndex = 0;
 
     DebugLog(L"HandleDeviceLost: All old D3D12 resources released.");
+
+    // Invalidate the stored LUID before attempting re-initialization.
+    // This prevents trying to recover using a stale identifier after a TDR.
+    g_dxgiAdapterLuid.HighPart = 0;
+    g_dxgiAdapterLuid.LowPart  = 0;
 
     // Now, re-initialize everything from scratch. InitD3D will find all pointers
     // to be null and proceed with creation.
