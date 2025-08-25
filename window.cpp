@@ -678,21 +678,33 @@ bool InitD3D() {
         return false;
     }
 
-    // Find a hardware adapter
+    // Find the NVIDIA hardware adapter, as required by policy and for CUDA interop.
     Microsoft::WRL::ComPtr<IDXGIAdapter1> hardwareAdapter;
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> chosenAdapter;
     for (UINT adapterIndex = 0; dxgiFactory->EnumAdapters1(adapterIndex, &hardwareAdapter) != DXGI_ERROR_NOT_FOUND; ++adapterIndex) {
         DXGI_ADAPTER_DESC1 desc;
         hardwareAdapter->GetDesc1(&desc);
-        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue; // Skip software adapter
-        if (SUCCEEDED(D3D12CreateDevice(hardwareAdapter.Get(), D3D_FEATURE_LEVEL_11_0, _uuidof(ID3D12Device), nullptr))) break; // Check if D3D12 is supported
-        hardwareAdapter.Reset();
+        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
+            continue; // Skip software adapter
+        }
+
+        // Explicitly look for the NVIDIA adapter (VendorId 0x10DE)
+        if (desc.VendorId == 0x10DE) {
+            // Check if this adapter supports D3D12.
+            if (SUCCEEDED(D3D12CreateDevice(hardwareAdapter.Get(), D3D_FEATURE_LEVEL_11_0, _uuidof(ID3D12Device), nullptr))) {
+                chosenAdapter = hardwareAdapter;
+                DebugLog(L"InitD3D (D3D12): Selected NVIDIA GPU: " + std::wstring(desc.Description));
+                break; // Found our NVIDIA adapter, stop searching.
+            }
+        }
     }
-    if (hardwareAdapter == nullptr) {
-        DebugLog(L"InitD3D (D3D12): No suitable D3D12 hardware adapter found.");
+
+    if (chosenAdapter == nullptr) {
+        DebugLog(L"InitD3D (D3D12): No suitable NVIDIA D3D12 hardware adapter was found, which is required.");
         return false;
     }
 
-    hr = D3D12CreateDevice(hardwareAdapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g_d3d12Device));
+    hr = D3D12CreateDevice(chosenAdapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g_d3d12Device));
     if (FAILED(hr)) {
         DebugLog(L"InitD3D (D3D12): Failed to create D3D12 device. HRESULT: " + HResultToHexWString(hr));
         return false;
