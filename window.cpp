@@ -33,6 +33,17 @@
 #include "AppShutdown.h"
 #include "main.h" // For RequestIDRNow
 
+// Place near the top of window.cpp with other helpers.
+struct ResizeInProgressGuard {
+    std::atomic<bool>& flag;
+    explicit ResizeInProgressGuard(std::atomic<bool>& f) : flag(f) {
+        flag.store(true, std::memory_order_release);
+    }
+    ~ResizeInProgressGuard() {
+        flag.store(false, std::memory_order_release);
+    }
+};
+
 // ==== [Multi-monitor helpers - BEGIN] ====
 #ifndef _USE_MATH_DEFINES
 #define _USE_MATH_DEFINES
@@ -1164,9 +1175,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     g_swapChain->GetDesc1(&desc);
     if (desc.Width == (UINT)newW && desc.Height == (UINT)newH) return;
 
-    // --- Begin added guard ---
-    g_resizeInProgress.store(true, std::memory_order_release);
-    // --- End added guard ---
+    ResizeInProgressGuard _guard(g_resizeInProgress); // <-- replaces manual set/clear
 
     // Bounded wait so we never hard-freeze the pipeline
     auto WaitForGpuWithTimeout = [](DWORD totalTimeoutMs)->bool {
@@ -1252,11 +1261,6 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 
     // Ensure at least one post-resize Present to advance swap-chain even if no new frame is ready.
     g_forcePresentOnce.store(true, std::memory_order_release);
-
-    // --- Begin added guard release ---
-    // Ensure all per-frame bookkeeping is finalized before allowing Present.
-    g_resizeInProgress.store(false, std::memory_order_release);
-    // --- End added guard release ---
 }
 
 // Helper to wait for a specific fence value with a message-pumping, bounded-time wait.
@@ -1307,7 +1311,7 @@ void RenderFrame() {
             g_forcePresentOnce.store(true, std::memory_order_release);
         } else {
             DebugLog(L"RenderFrame: Device-loss recovery failed; will retry next frame.");
-            return; // Avoid spamming work/logs this frame
+            return;
         }
     }
     // === Device-loss handling: end ===
@@ -1319,23 +1323,22 @@ void RenderFrame() {
     }
 
     // ---- [Release completed frame resources - BEGIN] ----
-    // GPUがどこまで処理を終えたかを確認
     const UINT64 completedFenceValue = g_fence->GetCompletedValue();
     {
         std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
-        // キューの先頭から、完了済みのフレームを解放
         while (!g_inFlightFrames.empty() && g_inFlightFrames.front().fenceValue <= completedFenceValue) {
-            g_inFlightFrames.pop(); // Dequeue and destroy the frame object, releasing its resources.
+            g_inFlightFrames.pop();
         }
     }
     // ---- [Release completed frame resources - END] ----
 
-    // Pick up pending resize, if any
+    // Pick up pending resize, if any (unchanged)
     if (g_pendingResize.has.load(std::memory_order_acquire)) {
         int newW = g_pendingResize.w.load(std::memory_order_relaxed);
         int newH = g_pendingResize.h.load(std::memory_order_relaxed);
         g_pendingResize.has.store(false, std::memory_order_release);
         ResizeSwapChainOnRenderThread(newW, newH);
+        // After resize we may skip this frame; next loop iteration will render/present.
     }
 
     // --- D3D12 RenderFrame ---
@@ -1344,25 +1347,35 @@ void RenderFrame() {
         return;
     }
 
-    HRESULT hr; // for error checks
-    ReadyGpuFrame renderedFrameData{}; // 描画したフレームのメタ（ログ用）
-    const bool frameWasRendered = PopulateCommandList(renderedFrameData); // 今回のフレームで実描画コマンドを記録したか？
-    ReadyGpuFrame frameForLogging;
-    if (frameWasRendered) {
-        // Make a copy for logging BEFORE renderedFrameData is moved into g_inFlightFrames.
-        // This fixes a use-after-move bug found by static analysis.
-        frameForLogging = renderedFrameData;
+    // Determine which back buffer we are about to render into
+    const UINT frameIndex = g_swapChain->GetCurrentBackBufferIndex();
+
+    // === FENCE THROTTLE: wait BEFORE writing into this frame's RTV ===
+    const UINT64 fenceToWait = g_renderFenceValues[frameIndex];
+    if (g_fence->GetCompletedValue() < fenceToWait) {
+        if (!WaitForFenceValueWithMessagePump(fenceToWait, 1000)) { // 1 sec timeout
+            DebugLog(L"RenderFrame: Wait for fence timed out or failed. Proceeding cautiously.");
+            // Continue cautiously; do not hard-freeze the UI.
+        }
     }
 
-    // Command list is populated (at least with a clear). Now execute and present.
+    HRESULT hr; // for error checks
+    ReadyGpuFrame renderedFrameData{};
+    ReadyGpuFrame frameForLogging{};
+    const bool frameWasRendered = PopulateCommandList(renderedFrameData);
+    if (frameWasRendered) {
+        frameForLogging = renderedFrameData; // copy before move for logging
+    }
+
+    // Execute recorded commands (clear or full draw)
     ID3D12CommandList* ppCommandLists[] = { g_commandList.Get() };
     g_d3d12CommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
 
+    // Present (or forced present to advance swap-chain)
     const bool forcePresent = g_forcePresentOnce.exchange(false, std::memory_order_acq_rel);
     const bool shouldPresent = frameWasRendered || forcePresent;
 
     if (shouldPresent) {
-        // Present (VSync=0, tearing depends on support)
         hr = g_swapChain->Present(0, g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
         if (FAILED(hr)) {
             if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
@@ -1372,65 +1385,45 @@ void RenderFrame() {
                     DebugLog(L"RenderFrame (D3D12): GetDeviceRemovedReason: " + HResultToHexWString(dr));
                 }
                 g_deviceLost.store(true, std::memory_order_release);
-                return; // Early out; recovery will happen next frame
+                return; // recover next frame
             } else {
                 DebugLog(L"RenderFrame (D3D12): Present failed. HR: " + HResultToHexWString(hr));
             }
         }
 
         if (frameWasRendered) {
-            // ---- Standard path for a rendered frame ----
-            // Fence: Track this frame's completion
-            const UINT64 currentFenceVal = g_renderFenceValues[g_currentFrameBufferIndex];
-            hr = g_d3d12CommandQueue->Signal(g_fence.Get(), currentFenceVal);
+            // === FENCE SIGNAL: for THIS frame index ===
+            const UINT64 newFenceVal = fenceToWait + 1;
+            hr = g_d3d12CommandQueue->Signal(g_fence.Get(), newFenceVal);
             if (FAILED(hr)) {
                 DebugLog(L"RenderFrame: Failed to signal fence. HR: " + HResultToHexWString(hr));
             }
 
-            // GPUに投入したフレームのリソースを、完了まで破棄しないようにキューへ移動
+            // Track in-flight resources until fence completes
             {
                 std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
-                g_inFlightFrames.push({std::move(renderedFrameData), currentFenceVal});
+                g_inFlightFrames.push({ std::move(renderedFrameData), newFenceVal });
             }
 
-            // Update back buffer index for the next frame
-            g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
-
-            // Wait for the next frame's fence to complete, so we don't get too far ahead of the GPU
-            if (g_fence->GetCompletedValue() < g_renderFenceValues[g_currentFrameBufferIndex]) {
-                // REPLACED: Use message-pumping wait to prevent UI freeze.
-                if (!WaitForFenceValueWithMessagePump(g_renderFenceValues[g_currentFrameBufferIndex], 1000)) { // 1 sec timeout
-                    DebugLog(L"RenderFrame: Wait for fence timed out or failed. Proceeding cautiously.");
-                }
-            }
-
-            // Increment fence value for the next use of this RTV
-            g_renderFenceValues[g_currentFrameBufferIndex] = currentFenceVal + 1;
+            // Remember the fence value for this back buffer for the next reuse
+            g_renderFenceValues[frameIndex] = newFenceVal;
         } else {
-            // ---- Forced present path (no new frame rendered) ----
-            // Don't perform fence waits or signals that assume a rendered frame.
-            // Just refresh the back buffer index so the next real frame uses the correct RTV.
-            g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
-
-            // To be extra safe, align the fence value for this buffer index to what's known to be completed.
-            // This prevents a future wait on a stale, never-to-be-signaled value.
-            const UINT64 completed = g_fence->GetCompletedValue();
-            g_renderFenceValues[g_currentFrameBufferIndex] = completed + 1;
+            // Forced-present path: we didn't submit a new frame, so align this buffer's fence
+            const UINT64 completedNow = g_fence->GetCompletedValue();
+            g_renderFenceValues[frameIndex] = completedNow + 1;
         }
     }
 
     // ---- Logging (only if a new frame was actually rendered) ----
     if (frameWasRendered) {
         const uint64_t render_end_ms = SteadyNowMs();
-        frameForLogging.present_ms = render_end_ms;   // Present just finished (approx)
-        frameForLogging.fence_done_ms = render_end_ms; // after waits; same endpoint for now
+        frameForLogging.present_ms     = render_end_ms;
+        frameForLogging.fence_done_ms  = render_end_ms;
 
-        // Render totals (steady)
         const uint64_t render_total_ms = (render_end_ms >= frameForLogging.render_start_ms)
             ? (render_end_ms - frameForLogging.render_start_ms)
             : 0;
 
-        // End-to-end client latency (steady), if rx_done_ms is known
         uint64_t client_e2e_ms = 0;
         if (frameForLogging.rx_done_ms != 0) {
             client_e2e_ms = (render_end_ms >= frameForLogging.rx_done_ms)
@@ -1438,7 +1431,6 @@ void RenderFrame() {
                 : 0;
         }
 
-        // NVDEC->RenderEnd (steady), if nvdec_done_ms is known
         uint64_t nvdec_to_end_ms = 0;
         if (frameForLogging.nvdec_done_ms != 0) {
             nvdec_to_end_ms = (render_end_ms >= frameForLogging.nvdec_done_ms)
@@ -1446,17 +1438,14 @@ void RenderFrame() {
                 : 0;
         }
 
-        // Finalize back-compat field for older log readers:
         frameForLogging.client_fec_end_to_render_end_time_ms = client_e2e_ms;
 
-        // Logging cadence preserved
         if (RenderCount++ % 60 == 0) {
             DebugLog(L"RenderFrame Total (wall): " + std::to_wstring(render_total_ms) + L" ms.");
             DebugLog(L"Client FEC End->RenderEnd: " + std::to_wstring(client_e2e_ms) + L" ms.");
             DebugLog(L"NVDEC End->RenderEnd: " + std::to_wstring(nvdec_to_end_ms) + L" ms.");
         }
 
-        // Keep the existing cross-machine log, but label it as unsynced:
         auto frameEndSys = std::chrono::system_clock::now();
         uint64_t frameEndSysTs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
         int64_t wgc_to_renderend_ms = static_cast<int64_t>(frameEndSysTs) - static_cast<int64_t>(frameForLogging.timestamp);
@@ -1464,9 +1453,7 @@ void RenderFrame() {
         if (RenderCount % 60 == 0) {
             DebugLog(L"RenderFrame Latency (unsynced clocks): StreamFrame #"
                 + std::to_wstring(frameForLogging.streamFrameNumber)
-                + L", OriginalFrame #" + std::to_wstring(frameForLogging.originalFrameNumber)
-                + L" (ID: " + std::to_wstring(frameForLogging.id) + L")"
-                + L" - WGC to RenderEnd: " + std::to_wstring(wgc_to_renderend_ms) + L" ms.");
+                + L", WGC->RenderEnd(ms)=" + std::to_wstring(wgc_to_renderend_ms));
         }
     }
 }
