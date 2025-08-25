@@ -1110,6 +1110,8 @@ void FecWorkerThread(int threadId) {
 
                     // Mark the precise receive-complete timestamp for end-to-end latency.
                     frame_to_decode.rx_done_ms = SteadyNowMs();
+                    // Zero out the decode start time; the consumer (NVDEC) will set this.
+                    frame_to_decode.decode_start_ms = 0;
 
                     g_h264FrameQueue.enqueue(ptoken, std::move(frame_to_decode));
                     
@@ -1270,13 +1272,30 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     // Force-send to server now (single gate): advertise *video* size (tw x th), unchanged
     OnResolutionChanged_GatedSend(tw, th, /*force=*/true);
 
-    // Initialize CUDA and NVDEC
-    // Per Yuki's recommendation, use the primary context to ensure Runtime and Driver APIs work together.
-    cudaSetDevice(0); // Ensure runtime API is targeting the correct device.
+    // Initialize CUDA and NVDEC, now explicitly bound to the D3D12 device.
+    // This guarantees D3D12 and CUDA are on the same physical NVIDIA GPU.
     CUdevice cuDev = 0;
-    cuDeviceGet(&cuDev, 0);
     CUcontext cuContext = nullptr;
-    cuDevicePrimaryCtxRetain(&cuContext, cuDev);
+    CUresult r = cuD3D12GetDevice(&cuDev, g_d3d12Device.Get());
+    if (r == CUDA_SUCCESS) {
+        DebugLog(L"cuD3D12GetDevice: Successfully got CUDA device from D3D12 device.");
+        // Create a CUDA context for this specific device.
+        r = cuCtxCreate(&cuContext, 0, cuDev);
+        if (r != CUDA_SUCCESS) {
+            const char* errStr;
+            cuGetErrorString(r, &errStr);
+            std::string s(errStr ? errStr : "Unknown error");
+            DebugLog(L"cuCtxCreate failed: " + std::wstring(s.begin(), s.end()));
+            return -1; // Fail fast
+        }
+    } else {
+        const char* errStr;
+        cuGetErrorString(r, &errStr);
+        std::string s(errStr ? errStr : "Unknown error");
+        DebugLog(L"cuD3D12GetDevice failed: " + std::wstring(s.begin(), s.end()) + L". Cannot bind CUDA to D3D12 device.");
+        // Fallback by LUID is possible but complex; fail fast is safer per instructions.
+        return -1;
+    }
 
     g_frameDecoder = std::make_unique<FrameDecoder>(cuContext, g_d3d12Device.Get());
     if (!g_frameDecoder->Init()) {
