@@ -1269,20 +1269,17 @@ void RenderFrame() {
             ? (render_end_ms - renderedFrameData.render_start_ms)
             : 0;
 
-        // End-to-end client latency (steady), if rx_done_ms is known
+        // Client FEC End->RenderEnd (steady) using per-frame mapping
         uint64_t client_e2e_ms = 0;
-        if (renderedFrameData.rx_done_ms != 0) {
-            client_e2e_ms = (render_end_ms >= renderedFrameData.rx_done_ms)
-                ? (render_end_ms - renderedFrameData.rx_done_ms)
-                : 0;
-        }
-
-        // NVDEC->RenderEnd (steady), if nvdec_done_ms is known
-        uint64_t nvdec_to_end_ms = 0;
-        if (renderedFrameData.nvdec_done_ms != 0) {
-            nvdec_to_end_ms = (render_end_ms >= renderedFrameData.nvdec_done_ms)
-                ? (render_end_ms - renderedFrameData.nvdec_done_ms)
-                : 0;
+        {
+            std::lock_guard<std::mutex> lk(g_fecEndTimeMutex);
+            auto it = g_fecEndTimeByStreamFrame.find(renderedFrameData.streamFrameNumber);
+            if (it != g_fecEndTimeByStreamFrame.end()) {
+                const uint64_t fec_end_ms = it->second;
+                client_e2e_ms = (render_end_ms >= fec_end_ms) ? (render_end_ms - fec_end_ms) : 0;
+                // cleanup: we used it for this frame
+                g_fecEndTimeByStreamFrame.erase(it);
+            }
         }
 
         // Finalize back-compat field for older log readers:
@@ -1292,7 +1289,7 @@ void RenderFrame() {
         if (RenderCount++ % 60 == 0) {
             DebugLog(L"RenderFrame Total (wall): " + std::to_wstring(render_total_ms) + L" ms.");
             DebugLog(L"Client FEC End->RenderEnd: " + std::to_wstring(client_e2e_ms) + L" ms.");
-            DebugLog(L"NVDEC End->RenderEnd: " + std::to_wstring(nvdec_to_end_ms) + L" ms.");
+            // NOTE: NVDEC End->RenderEnd log removed per spec
         }
 
         // Keep the existing cross-machine log, but label it as unsynced:

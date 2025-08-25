@@ -1099,6 +1099,12 @@ void FecWorkerThread(int threadId) {
                     // Mark the precise receive-complete timestamp for end-to-end latency.
                     frame_to_decode.rx_done_ms = SteadyNowMs();
 
+                    // NEW: record FEC end time keyed by this frame's stream frame number
+                    {
+                        std::lock_guard<std::mutex> lk(g_fecEndTimeMutex);
+                        g_fecEndTimeByStreamFrame[frame_to_decode.frameNumber] = frame_to_decode.rx_done_ms;
+                    }
+
                     g_h264FrameQueue.enqueue(std::move(frame_to_decode));
                     
                     // 追加のデバッグログ
