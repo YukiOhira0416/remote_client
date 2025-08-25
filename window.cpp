@@ -396,7 +396,7 @@ void WaitForGpu(); // D3D12: Helper function to wait for GPU to finish commands
 
 // from main.cpp
 extern void OnResolutionChanged_GatedSend(int w, int h, bool forceResendNow);
-extern std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
+extern std::chrono::steady_clock::time_point g_lastFrameRenderTimeForKick;
 
 // 送信フレーム番号で並べる小さなバッファ
 static std::map<uint32_t, ReadyGpuFrame> g_reorderBuffer;
@@ -558,7 +558,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             RequestIDRNow();
 
             // 3) Kick the render loop once so we draw immediately.
-            g_lastFrameRenderTimeForKick = std::chrono::high_resolution_clock::now() - TARGET_FRAME_DURATION;
+            g_lastFrameRenderTimeForKick = std::chrono::steady_clock::now() - TARGET_FRAME_DURATION;
             g_forcePresentOnce.store(true, std::memory_order_release); // Present at least once even if no new decoded frame
             DebugLog(L"RenderKick: forced immediate frame after WM_EXITSIZEMOVE.");
             return 0;

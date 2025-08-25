@@ -67,7 +67,7 @@ std::atomic<bool> g_pendingResolutionValid{false};
 std::atomic<int>  g_pendingW{0}, g_pendingH{0};
 
 // Render kick global
-std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
+std::chrono::steady_clock::time_point g_lastFrameRenderTimeForKick;
 
 
 // window.cpp 側で実装されている既存API（エクスポート）
@@ -1415,7 +1415,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     // The windowSenderThread is removed as it's part of the old logic.
 
     // Main render loop
-    auto lastFrameRenderTime = std::chrono::high_resolution_clock::now();
+    auto lastFrameRenderTime = std::chrono::steady_clock::now();
 
     MSG msg = {};
     while (msg.message != WM_QUIT) {
@@ -1435,13 +1435,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         // BEFORE computing timeSinceLastRender:
         if (g_lastFrameRenderTimeForKick.time_since_epoch().count() != 0) {
             lastFrameRenderTime = g_lastFrameRenderTimeForKick;
-            g_lastFrameRenderTimeForKick = {};
+            g_lastFrameRenderTimeForKick = std::chrono::steady_clock::time_point{};
         }
 
         // After processing messages, render a frame, respecting the frame rate.
         // This ensures rendering continues even during a message-heavy event like resizing.
-        auto currentTime = std::chrono::high_resolution_clock::now();
+        auto currentTime = std::chrono::steady_clock::now();
         auto timeSinceLastRender = currentTime - lastFrameRenderTime;
+
+        // If we've been idle for a while, nudge a single present to avoid swapchain stall.
+        if (timeSinceLastRender > std::chrono::milliseconds(500)) {
+            g_forcePresentOnce.store(true, std::memory_order_release);
+        }
 
         if (g_isSizing) {
             // We are resizing, so just yield the CPU. When we resume, the large
