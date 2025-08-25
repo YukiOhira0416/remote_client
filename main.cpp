@@ -58,6 +58,7 @@ using namespace DebugLogAsync;
 #include "AppShutdown.h"
 #include <cuda.h>
 #include <cuda_runtime_api.h>
+#include <cudaD3D12.h>
 #include <d3dx12.h>
 #include <d3d12.h>
 
