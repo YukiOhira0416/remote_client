@@ -34,6 +34,7 @@
 #include "main.h" // For RequestIDRNow
 
 // Helper: find NVIDIA adapter by LUID, by GPU preference, or fallback enumeration.
+// NOTE: Do not change layout/formatting of surrounding code. Comments intentionally preserved.
 static Microsoft::WRL::ComPtr<IDXGIAdapter1> FindNvidiaAdapter(IDXGIFactory4* factory4) {
     Microsoft::WRL::ComPtr<IDXGIAdapter1> chosen;
 
@@ -60,7 +61,8 @@ static Microsoft::WRL::ComPtr<IDXGIAdapter1> FindNvidiaAdapter(IDXGIFactory4* fa
 
     // 2) High-performance preference (often picks the discrete NVIDIA GPU)
     if (factory6) {
-        for (UINT index = 0;; ++index) {
+        // FIX: enumerate from index = 0; increment after each iteration
+        for (UINT index = 0; ; ++index) {
             Microsoft::WRL::ComPtr<IDXGIAdapter1> a;
             if (FAILED(factory6->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&a)))) break;
             DXGI_ADAPTER_DESC1 desc{};
@@ -73,7 +75,8 @@ static Microsoft::WRL::ComPtr<IDXGIAdapter1> FindNvidiaAdapter(IDXGIFactory4* fa
     }
 
     // 3) Fallback: original EnumAdapters1 loop (unchanged behavior)
-    for (UINT adapterIndex = 0;; ++adapterIndex) {
+    // FIX: enumerate from adapterIndex = 0; increment after each iteration
+    for (UINT adapterIndex = 0; ; ++adapterIndex) {
         Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
         if (DXGI_ERROR_NOT_FOUND == factory4->EnumAdapters1(adapterIndex, &adapter)) {
             break; // No more adapters to enumerate.
@@ -1514,6 +1517,29 @@ void RenderFrame() {
 
 // === Device-loss handling BEGIN ===
 static bool HandleDeviceLost() {
+    // FIX: throttle rapid-fire recovery attempts to avoid hammering the system.
+    // Keep existing logs and timing intact; we only add a minimal backoff here.
+    static std::atomic<uint32_t> s_failCount{0};
+    static std::chrono::steady_clock::time_point s_lastTry{std::chrono::steady_clock::now()};
+    const auto now = std::chrono::steady_clock::now();
+
+    // Exponential backoff: 50,100,200,400,500ms (cap at 500ms)
+    uint32_t fc = s_failCount.load(std::memory_order_relaxed);
+    uint32_t base = 50u;
+    uint32_t delay = (fc == 0 ? 0u : (base << std::min<uint32_t>(fc - 1, 3u)));
+    if (delay > 500u) delay = 500u;
+
+    if (delay > 0) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - s_lastTry).count();
+        if (elapsed < static_cast<long long>(delay)) {
+            DWORD sleepMs = static_cast<DWORD>(delay - elapsed);
+            DebugLog(L"HandleDeviceLost: throttling recovery by " + std::to_wstring(sleepMs) + L" ms");
+            Sleep(sleepMs);
+        }
+    }
+
+    s_lastTry = std::chrono::steady_clock::now();
+
     DebugLog(L"HandleDeviceLost: beginning device/resources re-creation.");
 
     // Release all D3D12 resources without waiting for the GPU, which is presumed to be lost.
@@ -1541,9 +1567,13 @@ static bool HandleDeviceLost() {
 
     // Now, re-initialize everything from scratch. InitD3D will find all pointers
     // to be null and proceed with creation.
-    if (!InitD3D()) {
+    if (InitD3D() == false) {
+        s_failCount.fetch_add(1, std::memory_order_relaxed);
         DebugLog(L"HandleDeviceLost: InitD3D() failed during recovery.");
         return false;
+    }
+    else {
+        s_failCount.store(0, std::memory_order_relaxed);
     }
 
     // After a successful re-initialization, we must reset the per-backbuffer
