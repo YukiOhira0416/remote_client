@@ -1364,6 +1364,7 @@ void RenderFrame() {
             g_forcePresentOnce.store(true, std::memory_order_release);
         } else {
             DebugLog(L"RenderFrame: Device-loss recovery failed; will retry next frame.");
+            Sleep(50); // Modest backoff to prevent hot spinning on recovery failure.
             return;
         }
     }
