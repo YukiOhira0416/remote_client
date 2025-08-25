@@ -33,6 +33,67 @@
 #include "AppShutdown.h"
 #include "main.h" // For RequestIDRNow
 
+// Helper: find NVIDIA adapter by LUID, by GPU preference, or fallback enumeration.
+static Microsoft::WRL::ComPtr<IDXGIAdapter1> FindNvidiaAdapter(IDXGIFactory4* factory4) {
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> chosen;
+
+    // Try IDXGIFactory6 for advanced queries
+    Microsoft::WRL::ComPtr<IDXGIFactory6> factory6;
+    (void)factory4->QueryInterface(IID_PPV_ARGS(&factory6)); // ok if fails
+
+    // 1) By stored LUID (same adapter as before), if available
+    if (factory6 && (g_dxgiAdapterLuid.HighPart != 0 || g_dxgiAdapterLuid.LowPart != 0)) {
+        Microsoft::WRL::ComPtr<IDXGIAdapter> byLuid;
+        if (SUCCEEDED(factory6->EnumAdapterByLuid(g_dxgiAdapterLuid, IID_PPV_ARGS(&byLuid)))) {
+            Microsoft::WRL::ComPtr<IDXGIAdapter1> byLuid1;
+            if (SUCCEEDED(byLuid.As(&byLuid1))) {
+                DXGI_ADAPTER_DESC1 desc{};
+                if (SUCCEEDED(byLuid1->GetDesc1(&desc)) && desc.VendorId == 0x10DE) {
+                    // Quick capability test (same as current logic)
+                    if (SUCCEEDED(D3D12CreateDevice(byLuid1.Get(), D3D_FEATURE_LEVEL_11_0, _uuidof(ID3D12Device), nullptr))) {
+                        return byLuid1;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2) High-performance preference (often picks the discrete NVIDIA GPU)
+    if (factory6) {
+        for (UINT index = 0;; ++index) {
+            Microsoft::WRL::ComPtr<IDXGIAdapter1> a;
+            if (FAILED(factory6->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&a)))) break;
+            DXGI_ADAPTER_DESC1 desc{};
+            if (FAILED(a->GetDesc1(&desc))) continue;
+            if (desc.VendorId != 0x10DE) continue;
+            if (SUCCEEDED(D3D12CreateDevice(a.Get(), D3D_FEATURE_LEVEL_11_0, _uuidof(ID3D12Device), nullptr))) {
+                return a;
+            }
+        }
+    }
+
+    // 3) Fallback: original EnumAdapters1 loop (unchanged behavior)
+    for (UINT adapterIndex = 0;; ++adapterIndex) {
+        Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+        if (DXGI_ERROR_NOT_FOUND == factory4->EnumAdapters1(adapterIndex, &adapter)) {
+            break; // No more adapters to enumerate.
+        }
+        DXGI_ADAPTER_DESC1 desc{};
+        if (FAILED(adapter->GetDesc1(&desc))) {
+            continue;
+        }
+        // We require NVIDIA (VendorId 0x10DE); keep this policy.
+        if (desc.VendorId == 0x10DE) {
+            if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, _uuidof(ID3D12Device), nullptr))) {
+                chosen = adapter;
+                break;
+            }
+        }
+    }
+
+    return chosen; // may be null
+}
+
 // Place near the top of window.cpp with other helpers.
 struct ResizeInProgressGuard {
     std::atomic<bool>& flag;
@@ -696,24 +757,16 @@ bool InitD3D() {
     }
 
     // Find the NVIDIA hardware adapter, as required by policy and for CUDA interop.
-    Microsoft::WRL::ComPtr<IDXGIAdapter1> hardwareAdapter;
     Microsoft::WRL::ComPtr<IDXGIAdapter1> chosenAdapter;
-    for (UINT adapterIndex = 0; dxgiFactory->EnumAdapters1(adapterIndex, &hardwareAdapter) != DXGI_ERROR_NOT_FOUND; ++adapterIndex) {
-        DXGI_ADAPTER_DESC1 desc;
-        hardwareAdapter->GetDesc1(&desc);
-        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
-            continue; // Skip software adapter
-        }
 
-        // Explicitly look for the NVIDIA adapter (VendorId 0x10DE)
-        if (desc.VendorId == 0x10DE) {
-            // Check if this adapter supports D3D12.
-            if (SUCCEEDED(D3D12CreateDevice(hardwareAdapter.Get(), D3D_FEATURE_LEVEL_11_0, _uuidof(ID3D12Device), nullptr))) {
-                chosenAdapter = hardwareAdapter;
-                DebugLog(L"InitD3D (D3D12): Selected NVIDIA GPU: " + std::wstring(desc.Description));
-                g_dxgiAdapterLuid = desc.AdapterLuid; // <-- capture LUID for CUDA matching
-                break; // Found our NVIDIA adapter, stop searching.
-            }
+    // NEW: prefer re-binding by LUID / GPU preference, then fallback to original logic.
+    chosenAdapter = FindNvidiaAdapter(dxgiFactory.Get());
+
+    if (chosenAdapter) {
+        DXGI_ADAPTER_DESC1 desc;
+        if (SUCCEEDED(chosenAdapter->GetDesc1(&desc))) {
+            DebugLog(L"InitD3D (D3D12): Selected NVIDIA GPU: " + std::wstring(desc.Description));
+            g_dxgiAdapterLuid = desc.AdapterLuid; // <-- capture LUID for CUDA matching
         }
     }
 
