@@ -1037,7 +1037,7 @@ void FecWorkerThread(int threadId) {
             std::unordered_map<uint32_t, std::vector<uint8_t>> shardsForDecodeAttempt;
             FrameMetadata currentFrameMetaForAttempt;
 
-            if(count % 120 == 0)DebugLog(L"FecWorkerThread: Queue Size " + std::to_wstring(g_parsedShardQueue.size_approx()));
+            if(count % 60 == 0)DebugLog(L"FecWorkerThread: Queue Size " + std::to_wstring(g_parsedShardQueue.size_approx()));
             
             { // Metadata and FrameBuffer scope
                 // Metadata access first
@@ -1119,7 +1119,7 @@ void FecWorkerThread(int threadId) {
                     auto fec_worker_thread_end = std::chrono::system_clock::now();
                     uint64_t fec_worker_thread_end_ts = std::chrono::duration_cast<std::chrono::milliseconds>(fec_worker_thread_end.time_since_epoch()).count();
                     int64_t elapsed_fec_worker_thread = static_cast<int64_t>(fec_worker_thread_end_ts) - static_cast<int64_t>(parsedInfo.server_fec_timestamp);
-                    if(count % 120 == 0)DebugLog(L"Server FEC Worker Start to Client FEC Worker End Process Time: " + std::to_wstring(elapsed_fec_worker_thread) + L" ms");
+                    if(count % 60 == 0)DebugLog(L"Server FEC Worker Start to Client FEC Worker End Process Time: " + std::to_wstring(elapsed_fec_worker_thread) + L" ms");
                 } else {
                     DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: FEC Decode failed for frame " + std::to_wstring(frameNumber));
                     // Return buffer to pool on failure
