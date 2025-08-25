@@ -392,6 +392,7 @@ struct VertexPosTex { float x, y, z; float u, v; };
 
 
 void CleanupD3DRenderResources(); // Forward declaration
+static bool HandleDeviceLost(); // Forward declaration for device-loss recovery
 
 // Helper to handle the logic for snapping, padding, and notifying after a resize event.
 static void FinalizeResize(HWND hWnd, bool forceAnnounce = false)
@@ -1239,6 +1240,18 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 }
 
 void RenderFrame() {
+    // === Device-loss handling: early recovery ===
+    if (g_deviceLost.load(std::memory_order_acquire)) {
+        if (HandleDeviceLost()) {
+            g_deviceLost.store(false, std::memory_order_release);
+            g_forcePresentOnce.store(true, std::memory_order_release);
+        } else {
+            DebugLog(L"RenderFrame: Device-loss recovery failed; will retry next frame.");
+            return; // Avoid spamming work/logs this frame
+        }
+    }
+    // === Device-loss handling: end ===
+
     // ---- [Release completed frame resources - BEGIN] ----
     // GPUがどこまで処理を終えたかを確認
     const UINT64 completedFenceValue = g_fence->GetCompletedValue();
@@ -1288,7 +1301,12 @@ void RenderFrame() {
         if (FAILED(hr)) {
             if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
                 DebugLog(L"RenderFrame (D3D12): Device removed/reset on Present. HR: " + HResultToHexWString(hr));
-                // TODO: Handle device loss (e.g., re-initialize)
+                if (g_d3d12Device) {
+                    HRESULT dr = g_d3d12Device->GetDeviceRemovedReason();
+                    DebugLog(L"RenderFrame (D3D12): GetDeviceRemovedReason: " + HResultToHexWString(dr));
+                }
+                g_deviceLost.store(true, std::memory_order_release);
+                return; // Early out; recovery will happen next frame
             } else {
                 DebugLog(L"RenderFrame (D3D12): Present failed. HR: " + HResultToHexWString(hr));
             }
@@ -1388,6 +1406,53 @@ void RenderFrame() {
         }
     }
 }
+
+// === Device-loss handling BEGIN ===
+static bool HandleDeviceLost() {
+    DebugLog(L"HandleDeviceLost: beginning device/resources re-creation.");
+
+    // Release all D3D12 resources without waiting for the GPU, which is presumed to be lost.
+    // Releasing the COM pointers is safe. The order is important for some dependencies.
+    for (UINT i = 0; i < g_backBufferCount; ++i) g_renderTargets[i].Reset();
+    g_commandList.Reset();
+    g_commandAllocator.Reset();
+    g_rtvHeap.Reset();
+    g_srvHeap.Reset();
+    g_srvCacheHeap.Reset();
+    g_pipelineState.Reset();
+    g_rootSignature.Reset();
+    g_fence.Reset();
+    if (g_fenceEvent) { CloseHandle(g_fenceEvent); g_fenceEvent = nullptr; }
+    g_swapChain.Reset();
+    g_d3d12CommandQueue.Reset();
+    g_d3d12Device.Reset();
+
+    // Clear SRV caches
+    g_srvCacheY.clear();
+    g_srvCacheUV.clear();
+    g_nextSrvCacheHeapIndex = 0;
+
+    DebugLog(L"HandleDeviceLost: All old D3D12 resources released.");
+
+    // Now, re-initialize everything from scratch. InitD3D will find all pointers
+    // to be null and proceed with creation.
+    if (!InitD3D()) {
+        DebugLog(L"HandleDeviceLost: InitD3D() failed during recovery.");
+        return false;
+    }
+
+    // After a successful re-initialization, we must reset the per-backbuffer
+    // fence values to align with the new fence object, just like the resize path does.
+    const UINT64 completed = g_fence->GetCompletedValue();
+    for (UINT i = 0; i < g_backBufferCount; ++i) {
+        g_renderFenceValues[i] = completed + 1;
+    }
+    g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
+
+    DebugLog(L"HandleDeviceLost: completed successfully.");
+    return true;
+}
+// === Device-loss handling END ===
 
 // Minimal blocking wait, only for shutdown.
 void WaitForGpu() {
