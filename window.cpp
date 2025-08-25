@@ -1259,6 +1259,46 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     // --- End added guard release ---
 }
 
+// Helper to wait for a specific fence value with a message-pumping, bounded-time wait.
+// This prevents the main thread from freezing if the GPU is slow, by keeping the message
+// queue responsive.
+static bool WaitForFenceValueWithMessagePump(UINT64 fenceValueToWaitFor, DWORD totalTimeoutMs) {
+    if (g_fence->GetCompletedValue() >= fenceValueToWaitFor) {
+        return true;
+    }
+
+    const DWORD step = 16; // Check roughly every frame.
+    DWORD waited = 0;
+    while (g_fence->GetCompletedValue() < fenceValueToWaitFor) {
+        HRESULT hr = g_fence->SetEventOnCompletion(fenceValueToWaitFor, g_fenceEvent);
+        if (FAILED(hr)) {
+            DebugLog(L"WaitForFenceValueWithMessagePump: SetEventOnCompletion failed. HR: " + HResultToHexWString(hr));
+            return false;
+        }
+
+        // Wait for the event or a message.
+        DWORD r = MsgWaitForMultipleObjects(1, &g_fenceEvent, FALSE, step, QS_ALLINPUT);
+        if (r == WAIT_OBJECT_0) {
+            // Fence was signaled, we are done.
+            break;
+        }
+
+        // If the wait returned for any other reason (e.g., timeout, new message), pump the queue.
+        MSG msg;
+        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+
+        waited += step;
+        if (waited >= totalTimeoutMs) {
+            DebugLog(L"WaitForFenceValueWithMessagePump: timed out waiting for fence value " + std::to_wstring(fenceValueToWaitFor) + L".");
+            return false; // Indicate timeout.
+        }
+    }
+    return true;
+}
+
 void RenderFrame() {
     // === Device-loss handling: early recovery ===
     if (g_deviceLost.load(std::memory_order_acquire)) {
@@ -1358,11 +1398,9 @@ void RenderFrame() {
 
             // Wait for the next frame's fence to complete, so we don't get too far ahead of the GPU
             if (g_fence->GetCompletedValue() < g_renderFenceValues[g_currentFrameBufferIndex]) {
-                hr = g_fence->SetEventOnCompletion(g_renderFenceValues[g_currentFrameBufferIndex], g_fenceEvent);
-                if (FAILED(hr)) {
-                    DebugLog(L"RenderFrame: Failed to set event on completion. HR: " + HResultToHexWString(hr));
-                } else {
-                    WaitForSingleObjectEx(g_fenceEvent, INFINITE, FALSE);
+                // REPLACED: Use message-pumping wait to prevent UI freeze.
+                if (!WaitForFenceValueWithMessagePump(g_renderFenceValues[g_currentFrameBufferIndex], 1000)) { // 1 sec timeout
+                    DebugLog(L"RenderFrame: Wait for fence timed out or failed. Proceeding cautiously.");
                 }
             }
 
