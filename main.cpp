@@ -1273,8 +1273,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     OnResolutionChanged_GatedSend(tw, th, /*force=*/true);
 
     // Initialize CUDA and NVDEC without cudaD3D12.h binding helpers.
-    // GPU policy guarantees a single discrete NVIDIA GPU for this app; selecting CUDA device 0 is valid.
-    CUdevice cuDev = 0;
+    // IMPORTANT: Explicitly select the CUDA device that matches the D3D12 adapter by DXGI LUID.
+    CUdevice  cuDev     = 0;
     CUcontext cuContext = nullptr;
 
     CUresult r = cuInit(0);
@@ -1286,6 +1286,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         return -1;
     }
 
+    // Get CUDA device count first
     int devCount = 0;
     r = cuDeviceGetCount(&devCount);
     if (r != CUDA_SUCCESS || devCount <= 0) {
@@ -1296,15 +1297,67 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         return -1;
     }
 
-    r = cuDeviceGet(&cuDev, 0); // Select device 0 per single-GPU policy.
-    if (r != CUDA_SUCCESS) {
-        const char* errStr = nullptr;
-        cuGetErrorString(r, &errStr);
-        std::string s(errStr ? errStr : "Unknown error");
-        DebugLog(L"cuDeviceGet(0) failed: " + std::wstring(s.begin(), s.end()));
-        return -1;
+    // Prepare DXGI LUID bytes
+    char dxgiLuidBytes[sizeof(LUID)] = {};
+    static_assert(sizeof(LUID) == 8, "LUID must be 8 bytes on Windows");
+    memcpy(dxgiLuidBytes, &g_dxgiAdapterLuid, sizeof(LUID));
+
+    // Try direct lookup by LUID (preferred)
+    bool foundByLuid = false;
+#if defined(_WIN32)
+    {
+        CUdevice tmpDev = 0;
+        r = cuDeviceGetByLuid(&tmpDev, dxgiLuidBytes, (unsigned int)sizeof(dxgiLuidBytes));
+        if (r == CUDA_SUCCESS) {
+            cuDev = tmpDev;
+            foundByLuid = true;
+        } else {
+            const char* errStr = nullptr;
+            cuGetErrorString(r, &errStr);
+            std::wstring msg = L"cuDeviceGetByLuid failed; falling back to iterate devices. ";
+            if (errStr) { std::string es(errStr); msg += std::wstring(es.begin(), es.end()); }
+            DebugLog(msg);
+        }
+    }
+#endif
+
+    // Fallback: iterate all CUDA devices and match by LUID
+    if (!foundByLuid) {
+        bool matched = false;
+        for (int i = 0; i < devCount; ++i) {
+            CUdevice d = 0;
+            r = cuDeviceGet(&d, i);
+            if (r != CUDA_SUCCESS) continue;
+
+            char cudaluid[8] = {};
+            unsigned int nodeMask = 0;
+            r = cuDeviceGetLuid(cudaluid, &nodeMask, d);
+            if (r != CUDA_SUCCESS) continue;
+
+            if (memcmp(cudaluid, dxgiLuidBytes, sizeof(cudaluid)) == 0) {
+                cuDev = d;
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
+            DebugLog(L"Could not find CUDA device matching the selected D3D12 adapter LUID.");
+            return -1;
+        }
     }
 
+    // Optional: Log chosen CUDA device name and a short LUID string for verification
+    {
+        char name[256] = {};
+        if (cuDeviceGetName(name, sizeof(name), cuDev) == CUDA_SUCCESS) {
+            std::wstring wname(name, name + strlen(name));
+            wchar_t luidHex[32] = {};
+            swprintf(luidHex, 32, L"%08X%08X", g_dxgiAdapterLuid.HighPart, g_dxgiAdapterLuid.LowPart);
+            DebugLog(L"Selected CUDA device by LUID: " + wname + L" (DXGI LUID=" + std::wstring(luidHex) + L")");
+        }
+    }
+
+    // Create CUDA context on the matched device
     r = cuCtxCreate(&cuContext, 0, cuDev);
     if (r != CUDA_SUCCESS) {
         const char* errStr = nullptr;

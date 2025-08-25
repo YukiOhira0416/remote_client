@@ -694,6 +694,7 @@ bool InitD3D() {
             if (SUCCEEDED(D3D12CreateDevice(hardwareAdapter.Get(), D3D_FEATURE_LEVEL_11_0, _uuidof(ID3D12Device), nullptr))) {
                 chosenAdapter = hardwareAdapter;
                 DebugLog(L"InitD3D (D3D12): Selected NVIDIA GPU: " + std::wstring(desc.Description));
+                g_dxgiAdapterLuid = desc.AdapterLuid; // <-- capture LUID for CUDA matching
                 break; // Found our NVIDIA adapter, stop searching.
             }
         }

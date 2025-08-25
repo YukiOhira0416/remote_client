@@ -27,6 +27,7 @@ HWND g_hWnd = nullptr;
 PendingResize g_pendingResize;
 
 // D3D12 Frame queue management
+LUID g_dxgiAdapterLuid = {}; // zero-init
 std::deque<ReadyGpuFrame> g_readyGpuFrameQueue;
 std::mutex g_readyGpuFrameQueueMutex;
 std::condition_variable g_readyGpuFrameQueueCV;
