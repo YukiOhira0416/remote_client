@@ -28,6 +28,7 @@
 #include <chrono> // For time measurement
 #include <map>
 #include <queue>
+#include <unordered_map>
 #include "Globals.h"
 #include "AppShutdown.h"
 #include "main.h" // For RequestIDRNow
@@ -349,8 +350,8 @@ void ClearReorderState()
 }
 
 // 調整パラメータ
-static constexpr size_t REORDER_MAX_BUFFER = 3; // これを超えたら妥協して前進
-static constexpr int    REORDER_WAIT_MS    = 2; // N+1 を待つ最大時間（ms）
+static constexpr size_t REORDER_MAX_BUFFER = 2; // これを超えたら妥協して前進
+static constexpr int    REORDER_WAIT_MS    = 1; // N+1 を待つ最大時間（ms）
 static std::chrono::steady_clock::time_point g_lastReorderDecision = std::chrono::steady_clock::now();
 
 // Rendering specific D3D12 globals
@@ -360,6 +361,15 @@ Microsoft::WRL::ComPtr<ID3D12Resource> g_vertexBuffer;
 D3D12_VERTEX_BUFFER_VIEW g_vertexBufferView;
 Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_srvHeap; // For Y and UV textures
 UINT g_srvDescriptorSize;
+
+// For SRV Caching
+static std::unordered_map<ID3D12Resource*, D3D12_CPU_DESCRIPTOR_HANDLE> g_srvCacheY;
+static std::unordered_map<ID3D12Resource*, D3D12_CPU_DESCRIPTOR_HANDLE> g_srvCacheUV;
+Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_srvCacheHeap;
+// We need 2 descriptors (Y, UV) for each possible decode surface.
+// From nvdec.h, NUM_DECODE_SURFACES is 20. So 40 descriptors.
+static constexpr UINT MAX_CACHED_SRVS = 20 * 2;
+static std::atomic<UINT> g_nextSrvCacheHeapIndex = 0;
 
 std::atomic<uint32_t> g_globalFrameNumber(0);// FEC用フレーム番号
 
@@ -623,6 +633,10 @@ bool InitD3D() {
     if (g_d3d12CommandQueue) g_d3d12CommandQueue.Reset();
     // Release rendering specific resources
     if (g_srvHeap) g_srvHeap.Reset();
+    if (g_srvCacheHeap) g_srvCacheHeap.Reset();
+    g_srvCacheY.clear();
+    g_srvCacheUV.clear();
+    g_nextSrvCacheHeapIndex = 0;
     if (g_vertexBuffer) g_vertexBuffer.Reset();
     if (g_pipelineState) g_pipelineState.Reset();
     if (g_rootSignature) g_rootSignature.Reset();
@@ -904,6 +918,18 @@ bool InitD3D() {
     g_srvDescriptorSize = g_d3d12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     DebugLog(L"InitD3D (D3D12): SRV Descriptor Heap created.");
 
+    // Create SRV Cache Heap
+    D3D12_DESCRIPTOR_HEAP_DESC srvCacheHeapDesc = {};
+    srvCacheHeapDesc.NumDescriptors = MAX_CACHED_SRVS;
+    srvCacheHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    srvCacheHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE; // Not shader visible
+    hr = g_d3d12Device->CreateDescriptorHeap(&srvCacheHeapDesc, IID_PPV_ARGS(&g_srvCacheHeap));
+    if (FAILED(hr)) {
+        DebugLog(L"InitD3D (D3D12): Failed to create SRV cache heap. HR: " + HResultToHexWString(hr));
+        return false;
+    }
+    DebugLog(L"InitD3D (D3D12): SRV Cache Heap created.");
+
     // Vertex buffer is not strictly needed for a full-screen triangle generated in VS,
     // but if you were to use one:
     // Create vertex buffer for a quad (or use SV_VertexID in VS to generate one)
@@ -1006,17 +1032,17 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         } else if (bufferTooBig || waitedLong) {
             // 妥協：溜まりすぎor待ちすぎ → 最小キーを描画
             if (!g_reorderBuffer.empty()) {
-                auto it = g_reorderBuffer.begin();
+                // CHANGE: pick newest instead of oldest to reduce end-to-end latency metrics.
+                auto it = std::prev(g_reorderBuffer.end()); // was: g_reorderBuffer.begin()
                 outFrameToRender = std::move(it->second);
-                outFrameToRender.render_start_ms = SteadyNowMs(); // steady clock start
+                outFrameToRender.render_start_ms = SteadyNowMs();
                 uint32_t drawn = it->first;
                 g_reorderBuffer.erase(it);
                 g_expectedStreamFrame = drawn + 1;
                 hasFrameToRender = true;
                 g_lastReorderDecision = now;
-
                 if (!(haveExpected && haveNext)) {
-                    if(PopulateCommandListCount++ % 60 == 0)DebugLog(L"[REORDER] fallback draw, key=" + std::to_wstring(drawn));
+                    if (PopulateCommandListCount++ % 60 == 0) DebugLog(L"[REORDER] fallback draw, key=" + std::to_wstring(drawn));
                 }
             }
         }
@@ -1034,26 +1060,56 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             SetLetterboxViewport(g_commandList.Get(), bbDesc, videoW, videoH);
         }
 
-        // Create SRVs for Y and UV textures
+        // Create SRVs for Y and UV textures using a cache
         CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleCpu(g_srvHeap->GetCPUDescriptorHandleForHeapStart());
+
+        // --- Y and UV Textures ---
+        auto itY = g_srvCacheY.find(outFrameToRender.hw_decoded_texture_Y.Get());
+        auto itUV = g_srvCacheUV.find(outFrameToRender.hw_decoded_texture_UV.Get());
+
+        if (itY == g_srvCacheY.end() || itUV == g_srvCacheUV.end()) {
+            // Atomically allocate 2 descriptors from the cache heap for Y and UV.
+            UINT baseIndex = g_nextSrvCacheHeapIndex.fetch_add(2);
+            if (baseIndex + 1 < MAX_CACHED_SRVS) {
+                // Create SRV for Y plane
+                CD3DX12_CPU_DESCRIPTOR_HANDLE cacheHandleY(g_srvCacheHeap->GetCPUDescriptorHandleForHeapStart());
+                cacheHandleY.Offset(baseIndex, g_srvDescriptorSize);
+
+                D3D12_SHADER_RESOURCE_VIEW_DESC srvDescY = {};
+                srvDescY.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                srvDescY.Format = DXGI_FORMAT_R8_UNORM; // Y plane
+                if (!outFrameToRender.hw_decoded_texture_Y) { DebugLog(L"PopulateCommandList: frameToRender.hw_decoded_texture_Y is NULL."); return false; }
+                srvDescY.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                srvDescY.Texture2D.MipLevels = 1;
+                g_d3d12Device->CreateShaderResourceView(outFrameToRender.hw_decoded_texture_Y.Get(), &srvDescY, cacheHandleY);
+                g_srvCacheY[outFrameToRender.hw_decoded_texture_Y.Get()] = cacheHandleY;
+                itY = g_srvCacheY.find(outFrameToRender.hw_decoded_texture_Y.Get());
+
+                // Create SRV for UV plane
+                CD3DX12_CPU_DESCRIPTOR_HANDLE cacheHandleUV(g_srvCacheHeap->GetCPUDescriptorHandleForHeapStart());
+                cacheHandleUV.Offset(baseIndex + 1, g_srvDescriptorSize);
+
+                D3D12_SHADER_RESOURCE_VIEW_DESC srvDescUV = {};
+                srvDescUV.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                srvDescUV.Format = DXGI_FORMAT_R8G8_UNORM; // UV plane (NV12)
+                if (!outFrameToRender.hw_decoded_texture_UV) { DebugLog(L"PopulateCommandList: frameToRender.hw_decoded_texture_UV is NULL."); return false; }
+                srvDescUV.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                srvDescUV.Texture2D.MipLevels = 1;
+                g_d3d12Device->CreateShaderResourceView(outFrameToRender.hw_decoded_texture_UV.Get(), &srvDescUV, cacheHandleUV);
+                g_srvCacheUV[outFrameToRender.hw_decoded_texture_UV.Get()] = cacheHandleUV;
+                itUV = g_srvCacheUV.find(outFrameToRender.hw_decoded_texture_UV.Get());
+            }
+        }
         
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDescY = {};
-        srvDescY.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDescY.Format = DXGI_FORMAT_R8_UNORM; // Y plane
-        if (!outFrameToRender.hw_decoded_texture_Y) { DebugLog(L"PopulateCommandList: frameToRender.hw_decoded_texture_Y is NULL."); return false; }
-        srvDescY.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDescY.Texture2D.MipLevels = 1;
-        g_d3d12Device->CreateShaderResourceView(outFrameToRender.hw_decoded_texture_Y.Get(), &srvDescY, srvHandleCpu);
+        if (itY != g_srvCacheY.end()) {
+            g_d3d12Device->CopyDescriptorsSimple(1, srvHandleCpu, itY->second, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        }
 
-        srvHandleCpu.Offset(1, g_srvDescriptorSize); // Move to next descriptor for UV
+        srvHandleCpu.Offset(1, g_srvDescriptorSize);
 
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDescUV = {};
-        srvDescUV.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDescUV.Format = DXGI_FORMAT_R8G8_UNORM; // UV plane (NV12)
-        if (!outFrameToRender.hw_decoded_texture_UV) { DebugLog(L"PopulateCommandList: frameToRender.hw_decoded_texture_UV is NULL."); return false; }
-        srvDescUV.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDescUV.Texture2D.MipLevels = 1;
-        g_d3d12Device->CreateShaderResourceView(outFrameToRender.hw_decoded_texture_UV.Get(), &srvDescUV, srvHandleCpu);
+        if (itUV != g_srvCacheUV.end()) {
+            g_d3d12Device->CopyDescriptorsSimple(1, srvHandleCpu, itUV->second, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        }
 
         // Set descriptor heap for SRVs
         ID3D12DescriptorHeap* ppHeaps[] = { g_srvHeap.Get() };
@@ -1195,6 +1251,12 @@ void RenderFrame() {
     HRESULT hr; // for error checks
     ReadyGpuFrame renderedFrameData{}; // 描画したフレームのメタ（ログ用）
     const bool frameWasRendered = PopulateCommandList(renderedFrameData); // 今回のフレームで実描画コマンドを記録したか？
+    ReadyGpuFrame frameForLogging;
+    if (frameWasRendered) {
+        // Make a copy for logging BEFORE renderedFrameData is moved into g_inFlightFrames.
+        // This fixes a use-after-move bug found by static analysis.
+        frameForLogging = renderedFrameData;
+    }
 
     // Command list is populated (at least with a clear). Now execute and present.
     ID3D12CommandList* ppCommandLists[] = { g_commandList.Get() };
@@ -1260,7 +1322,6 @@ void RenderFrame() {
 
     // ---- Logging (only if a new frame was actually rendered) ----
     if (frameWasRendered) {
-        ReadyGpuFrame frameForLogging = renderedFrameData; // Copy for logging before move
         const uint64_t render_end_ms = SteadyNowMs();
         frameForLogging.present_ms = render_end_ms;   // Present just finished (approx)
         frameForLogging.fence_done_ms = render_end_ms; // after waits; same endpoint for now
@@ -1346,6 +1407,9 @@ void CleanupD3DRenderResources() {
     if (g_swapChain) g_swapChain.Reset();
     if (g_d3d12CommandQueue) g_d3d12CommandQueue.Reset();
     if (g_srvHeap) g_srvHeap.Reset();
+    if (g_srvCacheHeap) g_srvCacheHeap.Reset();
+    g_srvCacheY.clear();
+    g_srvCacheUV.clear();
     if (g_vertexBuffer) g_vertexBuffer.Reset();
     if (g_pipelineState) g_pipelineState.Reset();
     if (g_rootSignature) g_rootSignature.Reset();
