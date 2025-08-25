@@ -134,6 +134,9 @@ void FrameDecoder::releaseDecoderResources() {
     }
 
     for (auto& resource : m_frameResources) {
+        if (resource.copyDone)  { cuEventDestroy(resource.copyDone);  resource.copyDone  = nullptr; }
+        if (resource.copyStream){ cuStreamDestroy(resource.copyStream); resource.copyStream = nullptr; }
+
         resource.pCudaArrayY = nullptr;
         resource.pCudaArrayUV = nullptr;
         resource.pMipmappedArrayY = nullptr;
@@ -508,6 +511,10 @@ bool FrameDecoder::allocateFrameBuffers() {
         // Get Level 0
         CUDA_CHECK(cuMipmappedArrayGetLevel(&m_frameResources[i].pCudaArrayY,  m_frameResources[i].pMipmappedArrayY,  0));
         CUDA_CHECK(cuMipmappedArrayGetLevel(&m_frameResources[i].pCudaArrayUV, m_frameResources[i].pMipmappedArrayUV, 0));
+
+        // After ext mem + array mapping success per surface:
+        CUDA_CHECK(cuStreamCreate(&m_frameResources[i].copyStream, CU_STREAM_NON_BLOCKING));
+        CUDA_CHECK(cuEventCreate(&m_frameResources[i].copyDone, CU_EVENT_DISABLE_TIMING));
     }
 
     DebugLog(L"Allocated D3D12/CUDA frame buffers (Committed/Dedicated).");
@@ -631,6 +638,10 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     const size_t srcWidthBytes_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulWidth);
     const size_t srcHeightRows_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulHeight / 2);
 
+    // Use the per-surface stream
+    CUstream stream = fr.copyStream;
+
+    // Enqueue async copies
     CUDA_MEMCPY2D cpyY = {};
     cpyY.srcMemoryType = CU_MEMORYTYPE_DEVICE;
     cpyY.srcDevice     = pDecodedFrame;
@@ -639,11 +650,10 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     cpyY.dstArray      = fr.pCudaArrayY;
     cpyY.WidthInBytes  = srcWidthBytes_Y;
     cpyY.Height        = srcHeightRows_Y;
-
-    CUresult cr = cuMemcpy2D(&cpyY);
+    CUresult cr = cuMemcpy2DAsync(&cpyY, stream);
     if (cr != CUDA_SUCCESS) {
         const char* es = nullptr; cuGetErrorString(cr, &es);
-        std::wstring msg = L"cuMemcpy2D(Y) failed: ";
+        std::wstring msg = L"cuMemcpy2DAsync(Y) failed: ";
         if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
         DebugLog(msg);
         cuCtxPopCurrent(NULL);
@@ -659,30 +669,31 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     cpyUV.dstArray      = fr.pCudaArrayUV;
     cpyUV.WidthInBytes  = srcWidthBytes_UV;
     cpyUV.Height        = srcHeightRows_UV;
-
-    cr = cuMemcpy2D(&cpyUV);
+    cr = cuMemcpy2DAsync(&cpyUV, stream);
     if (cr != CUDA_SUCCESS) {
         const char* es = nullptr; cuGetErrorString(cr, &es);
-        std::wstring msg = L"cuMemcpy2D(UV) failed: ";
+        std::wstring msg = L"cuMemcpy2DAsync(UV) failed: ";
         if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
         DebugLog(msg);
         cuCtxPopCurrent(NULL);
         return 0;
     }
 
-    cr = cuCtxSynchronize();
+    // Record completion event for this frame's copies.
+    // IMPORTANT: do NOT call cuCtxSynchronize().
+    cr = cuEventRecord(fr.copyDone, stream);
     if (cr != CUDA_SUCCESS) {
         const char* es = nullptr; cuGetErrorString(cr, &es);
-        std::wstring msg = L"cuCtxSynchronize failed: ";
+        std::wstring msg = L"cuEventRecord failed: ";
         if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
         DebugLog(msg);
         cuCtxPopCurrent(NULL);
         return 0;
     }
 
-    // If we get here, all CUDA operations were successful.
-    // The destructors for mappedFrame and ctxLocker will automatically clean up.
-
+    // Build the ReadyGpuFrame exactly as before (same fields, same comments),
+    // but DO NOT set nvdec_done_ms here. We'll set it when the event is actually complete.
+    // (Keep all the existing logging/timing copy code and its text intact.)
     ReadyGpuFrame readyFrame;
     readyFrame.hw_decoded_texture_Y  = self->m_frameResources[pDispInfo->picture_index].pTextureY;
     readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
@@ -704,11 +715,10 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     }
     // Propagate rx_done_ms if known (0 otherwise)
     readyFrame.rx_done_ms    = timings.rx_done_ms;
-    readyFrame.nvdec_done_ms = SteadyNowMs(); // after cuCtxSynchronize
+    readyFrame.nvdec_done_ms = 0; // Will be set later when copy is actually complete
 
     // Back-compat field will be finalized at RenderEnd; keep 0 here.
     readyFrame.client_fec_end_to_render_end_time_ms = 0;
-
 
     {
         std::lock_guard<std::mutex> lk(self->m_tsMapMutex);
@@ -723,17 +733,61 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         }
     }
 
+    // Put this into a small pending queue with the event we just recorded.
     {
-        std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
-        if(HandlePictureDisplayCount++ % 200 == 0) {
-            std::wstringstream wss;
-            wss << L"HandlePictureDisplay: Pushed Frame Enqueue Size " << g_readyGpuFrameQueue.size()
-                << L" Queueing Duration Time " << readyFrame.client_fec_end_to_render_end_time_ms << " ms";
-            DebugLog(wss.str());
-        }
-        g_readyGpuFrameQueue.push_back(std::move(readyFrame));
+        std::lock_guard<std::mutex> lk(self->m_pendingMutex);
+        self->m_pendingCopies.push_back({
+            (uint32_t)pDispInfo->picture_index,
+            readyFrame.timestamp,
+            readyFrame.streamFrameNumber,
+            readyFrame
+        });
     }
-    g_readyGpuFrameQueueCV.notify_one();
+
+    // Non-blocking drain of pending GPU copies.
+    // Move only events that are already complete; do not busy-wait.
+    bool frame_was_enqueued = false;
+    {
+        std::lock_guard<std::mutex> lk(self->m_pendingMutex);
+        while (!self->m_pendingCopies.empty()) {
+            auto &front = self->m_pendingCopies.front();
+            auto &fr0 = self->m_frameResources[front.surfaceIndex];
+            CUresult q = cuEventQuery(fr0.copyDone);
+            if (q == CUDA_SUCCESS) {
+                // The copies are finished on GPU; now it's safe to expose the textures to D3D12.
+                // Set nvdec_done_ms NOW (preserves the meaning of this metric).
+                front.frame.nvdec_done_ms = SteadyNowMs();
+
+                // Enqueue to the existing ready-to-render queue (no layout/log text changes).
+                {
+                    std::lock_guard<std::mutex> qlk(g_readyGpuFrameQueueMutex);
+                    if (HandlePictureDisplayCount++ % 200 == 0) {
+						std::wstringstream wss;
+						wss << L"HandlePictureDisplay: Pushed Frame Enqueue Size " << g_readyGpuFrameQueue.size()
+							<< L" Queueing Duration Time " << front.frame.client_fec_end_to_render_end_time_ms << " ms";
+						DebugLog(wss.str());
+					}
+                    g_readyGpuFrameQueue.push_back(std::move(front.frame));
+                    frame_was_enqueued = true;
+                }
+
+                self->m_pendingCopies.pop_front();
+            } else if (q == CUDA_ERROR_NOT_READY) {
+                break; // head not ready; keep order and exit quickly
+            } else {
+                // Log error but continue (keep style consistent with your existing DebugLog).
+                const char* es = nullptr; cuGetErrorString(q, &es);
+                std::wstring msg = L"cuEventQuery failed: ";
+                if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
+                DebugLog(msg);
+                self->m_pendingCopies.pop_front(); // drop this frame to avoid stalling
+            }
+        }
+    }
+
+    if (frame_was_enqueued) {
+        g_readyGpuFrameQueueCV.notify_one();
+    }
 
     cuCtxPopCurrent(NULL);
     return 1;

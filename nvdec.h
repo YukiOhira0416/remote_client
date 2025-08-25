@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <unordered_map>
 #include <mutex>
+#include <deque>
 
 // CUDA includes
 #include <cuda.h>
@@ -18,6 +19,7 @@
 #include "cuviddec.h"
 
 #include "DebugLog.h"
+#include "Globals.h"
 
 // Forward declaration
 struct H264Frame;
@@ -79,6 +81,8 @@ private:
         HANDLE sharedHandleUV;
         UINT pitchY;
         UINT pitchUV;
+        CUstream  copyStream = nullptr;   // NEW: per-surface async copy stream
+        CUevent   copyDone   = nullptr;   // NEW: signals when Y+UV copies are done
     };
 
     std::vector<DecodedFrameResource> m_frameResources;
@@ -89,6 +93,17 @@ private:
 
     // The CUVIDDECODECREATEINFO struct needs to be valid for the life of the decoder
     CUVIDDECODECREATEINFO m_videoDecoderCreateInfo = {};
+
+    // Decoder-level pending queue (FIFO) for frames whose GPU copies are in-flight
+    struct PendingGpuCopy {
+        uint32_t surfaceIndex;
+        uint64_t timestamp;
+        uint32_t streamFrameNumber;
+        // Carry the frame record you already build, but DO NOT modify field names or logging-related fields.
+        ReadyGpuFrame frame;
+    };
+    std::deque<PendingGpuCopy> m_pendingCopies;  // NEW
+    std::mutex m_pendingMutex;                   // NEW
 };
 
 // Main thread function for NVDEC
