@@ -1142,12 +1142,31 @@ void FecWorkerThread(int threadId) {
 ThreadConfig getOptimalThreadConfig(){
     ThreadConfig config;
 
+    // Existing fields (keep values as before unless specified)
     config.receiver = 5;
-    config.fec = 4;
-    config.decoder = 1;
-    config.render = 1;
-    config.RS_K = 8;
-    config.RS_M = 2;
+    config.fec      = 4;
+    config.decoder  = 1;
+    config.render   = 1;
+    config.RS_K     = 8;
+    config.RS_M     = 2;
+
+    // ==== NEW: server cadence & jitter buffer policy ====
+    config.server_hz = 60; // Server renders at 60 Hz.
+
+    // Frame period in ms; derive a small jitter wait budget from the period.
+    // Policy: wait up to 25% of a frame but clamp to [1, 8] ms.
+    {
+        const double frame_ms = 1000.0 / static_cast<double>(config.server_hz); // ~16.67 at 60 Hz
+        const int derived = static_cast<int>(std::lround(frame_ms * 0.25));     // ~4 ms
+        config.reorder_wait_ms = std::clamp(derived, 1, 8);
+    }
+
+    // Keep the small buffer to avoid head-of-line blocking, but allow small reordering.
+    config.reorder_max_buffer = 2;
+
+    // ==== NEW: GPU pacing policy ====
+    // Use triple buffering by default to rarefy fence waits safely.
+    config.frames_in_flight = 3; // Must be >= 2; use 3 to reduce waits.
 
     return config;
 }
