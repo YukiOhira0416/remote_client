@@ -72,6 +72,9 @@ set(HEADERS
 # 実行ファイルを作成
 add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})
 
+# NVTX v3ヘッダを強制的にインクルードして、バージョン競合エラー(C1189)を解決する
+target_compile_options(${PROJECT_NAME} PRIVATE "/FInvtx3/nvtx3.hpp")
+
 # ライブラリのリンク
 target_link_libraries(${PROJECT_NAME}
     # Windows基本ライブラリ
