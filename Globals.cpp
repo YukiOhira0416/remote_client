@@ -22,6 +22,7 @@ std::atomic<bool> g_matrix_initialized(false);
 std::atomic<int> currentResolutionWidth(1920);
 std::atomic<int> currentResolutionHeight(1080);
 HWND g_hWnd = nullptr;
+HANDLE g_frameLatencyWaitableObject = nullptr;
 
 // Pending resize request state
 PendingResize g_pendingResize;
