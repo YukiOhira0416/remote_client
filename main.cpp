@@ -1105,6 +1105,12 @@ void FecWorkerThread(int threadId) {
                         g_fecEndTimeByStreamFrame[frame_to_decode.frameNumber] = frame_to_decode.rx_done_ms;
                     }
 
+                    // NEW: record server WGC capture timestamp keyed by this frame's stream frame number
+                    {
+                        std::lock_guard<std::mutex> lk(g_wgcTsMutex);
+                        g_wgcCaptureTimestampByStreamFrame[frame_to_decode.frameNumber] = frame_to_decode.timestamp; // server system_clock ms
+                    }
+
                     g_h264FrameQueue.enqueue(std::move(frame_to_decode));
                     
                     // 追加のデバッグログ

@@ -46,5 +46,9 @@ moodycamel::ConcurrentQueue<H264Frame> g_h264FrameQueue;
 std::unordered_map<uint32_t, uint64_t> g_fecEndTimeByStreamFrame;
 std::mutex g_fecEndTimeMutex;
 
+// WGC capture timestamps keyed by stream frame number (server system_clock ms)
+std::unordered_map<uint32_t, uint64_t> g_wgcCaptureTimestampByStreamFrame;
+std::mutex g_wgcTsMutex;
+
 // Decoder instance
 std::unique_ptr<FrameDecoder> g_frameDecoder;

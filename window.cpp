@@ -1316,10 +1316,28 @@ void RenderFrame() {
             // NOTE: NVDEC End->RenderEnd log removed per spec
         }
 
-        // Keep the existing cross-machine log, but label it as unsynced:
-        auto frameEndSys = std::chrono::system_clock::now();
-        uint64_t frameEndSysTs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
-        int64_t wgc_to_renderend_ms = static_cast<int64_t>(frameEndSysTs) - static_cast<int64_t>(renderedFrameData.timestamp);
+        // Keep the existing cross-machine log, but compute from per-frame map (unsynced clocks).
+        int64_t wgc_to_renderend_ms = 0;
+        {
+            // server WGC timestamp (ms since epoch, system_clock at server)
+            uint64_t wgc_ts_ms = 0;
+            {
+                std::lock_guard<std::mutex> lk(g_wgcTsMutex);
+                auto it = g_wgcCaptureTimestampByStreamFrame.find(renderedFrameData.streamFrameNumber);
+                if (it != g_wgcCaptureTimestampByStreamFrame.end()) {
+                    wgc_ts_ms = it->second;
+                    g_wgcCaptureTimestampByStreamFrame.erase(it); // consume once
+                }
+            }
+            if (wgc_ts_ms != 0) {
+                auto frameEndSys   = std::chrono::system_clock::now();
+                uint64_t frameEndMs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
+                wgc_to_renderend_ms = static_cast<int64_t>(frameEndMs) - static_cast<int64_t>(wgc_ts_ms);
+            } else {
+                // No timestamp found (e.g., rare drop/miss). Keep 0; still log as unsynced.
+                wgc_to_renderend_ms = 0;
+            }
+        }
 
         if (RenderCount % 60 == 0) {
             DebugLog(L"RenderFrame Latency (unsynced clocks): StreamFrame #"
