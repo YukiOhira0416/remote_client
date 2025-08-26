@@ -791,7 +791,9 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
     while (receive_raw_packet_Running) {
         
         // Service ENet events with a timeout (e.g., 10ms)
+        nvtxRangePushA("WaitRecv");
         int service_result = enet_host_service(server_host, &event, 10);
+        nvtxRangePop();
 
         if (service_result > 0) {
             switch (event.type) {
@@ -805,12 +807,14 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
 
                 case ENET_EVENT_TYPE_RECEIVE:
                 {
+                    nvtxRangePushA("ProcessPacket");
                     // DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Packet of length " + std::to_wstring(event.packet->dataLength) +
                     //          L" received from client on channel " + std::to_wstring(event.channelID));
 
                     if (event.packet->dataLength < 1) {
                         DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Received empty ENet packet.");
                         enet_packet_destroy(event.packet);
+                        nvtxRangePop();
                         continue;
                     }
 
@@ -865,6 +869,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                         if (payload_size < sizeof(ENetAppFragmentHeader)) {
                             DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: ENET_PACKET_TYPE_APP_FRAGMENT too small for header.");
                             enet_packet_destroy(event.packet);
+                            nvtxRangePop();
                             continue;
                         }
 
@@ -978,6 +983,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                     } else {
                         DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Unknown packet type " + std::to_wstring(packet_type));
                     }
+                    nvtxRangePop();
                     enet_packet_destroy(event.packet);
                     break;
                 }

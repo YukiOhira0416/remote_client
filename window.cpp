@@ -1074,12 +1074,14 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         g_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
         g_commandList->SetGraphicsRootDescriptorTable(0, g_srvHeap->GetGPUDescriptorHandleForHeapStart());
 
+        nvtxRangePushA("Render");
         // フルスクリーンクアッド（TRIANGLESTRIP で 4 頂点）
         g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         {
             nvtx3::scoped_range r("PopulateCommandList::DrawInstanced");
             g_commandList->DrawInstanced(4, 1, 0, 0);
         }
+        nvtxRangePop();
 
         // Release the ComPtrs now that they are submitted for rendering
         // The resources themselves are managed by the decoder's pool
@@ -1184,6 +1186,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 }
 
 void RenderFrame() {
+    nvtxRangePushA("Frame");
     nvtx3::scoped_range r("D3D12Present");
     // ---- [Release completed frame resources - BEGIN] ----
     // GPUがどこまで処理を終えたかを確認
@@ -1223,8 +1226,10 @@ void RenderFrame() {
     const bool shouldPresent = frameWasRendered || forcePresent;
 
     if (shouldPresent) {
+        nvtxRangePushA("Present");
         // Present (VSync=0, tearing depends on support)
         hr = g_swapChain->Present(0, g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
+        nvtxRangePop();
         if (FAILED(hr)) {
             if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
                 DebugLog(L"RenderFrame (D3D12): Device removed/reset on Present. HR: " + HResultToHexWString(hr));
@@ -1356,6 +1361,7 @@ void RenderFrame() {
                 + L" - WGC to RenderEnd: " + std::to_wstring(wgc_to_renderend_ms) + L" ms.");
         }
     }
+    nvtxRangePop();
 }
 
 // Minimal blocking wait, only for shutdown.

@@ -593,6 +593,7 @@ UINT64 HandlePictureDisplayCount = 0;
 int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDispInfo) {
     FrameDecoder* const self = static_cast<FrameDecoder*>(pUserData);
     cuCtxPushCurrent(self->m_cuContext);
+    nvtxRangePushA("Decode");
 
     // RAII locker for the context lock. It will be unlocked automatically.
     CudaCtxLocker ctxLocker(self->m_ctxLock);
@@ -743,6 +744,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     }
     g_readyGpuFrameQueueCV.notify_one();
 
+    nvtxRangePop();
     cuCtxPopCurrent(NULL);
     return 1;
 }
