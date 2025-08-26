@@ -1,5 +1,6 @@
 #include "nvdec.h"
 #include "Globals.h"
+#include "nvtx_helpers.h"
 #include <stdexcept>
 #include <fstream>
 #include <vector>
@@ -228,11 +229,14 @@ void FrameDecoder::Decode(const H264Frame& frame) {
             // Fall through to pop context and return.
         } else {
             // NVDEC API 呼び出し前後をロック（公式の方法）
+            nvtxPushU64("DecodePacket", frame.frameNumber, 0xFF008080);
             cuvidCtxLock(m_ctxLock, 0);
             CUresult cr = cuvidParseVideoData(m_hParser, &packet);
             cuvidCtxUnlock(m_ctxLock, 0);
+            nvtxPop();
 
             if (cr != CUDA_SUCCESS) {
+                nvtxMarkU64("cuvidParseVideoData:ERROR", frame.timestamp, 0xFFFF0000);
                 const char* es = nullptr; cuGetErrorString(cr, &es);
                 std::wstring msg = L"cuvidParseVideoData failed: ";
                 if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
@@ -291,6 +295,7 @@ int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoForm
             // Target display size is a renderer concern; decoder operates at coded size.
 
             if (needsReconfig) {
+                nvtxMarkU64("DecoderReconfig", (uint64_t)pVideoFormat->coded_width << 16 | pVideoFormat->coded_height, 0xFFFFFF00);
                 if (!self->reconfigureDecoder(pVideoFormat)) {
                     DebugLog(L"HandleVideoSequence: Failed to reconfigure decoder.");
                     result = 0; // Stop processing
@@ -732,6 +737,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     }
 
     {
+        nvtxPushU64("FrameReady", readyFrame.streamFrameNumber, 0xFF008080);
         nvtx3::scoped_range r("HandlePictureDisplay::EnqueueFrame");
         std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
         if(HandlePictureDisplayCount++ % 200 == 0) {
@@ -741,6 +747,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
             DebugLog(wss.str());
         }
         g_readyGpuFrameQueue.push_back(std::move(readyFrame));
+        nvtxPop();
     }
     g_readyGpuFrameQueueCV.notify_one();
 
@@ -748,8 +755,13 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     return 1;
 }
 
+#include <nvtx3/nvToolsExt.h>
 UINT64 DecoderCount = 0;
 void NvdecThread(int threadId) {
+#ifdef ENABLE_NVTX
+    std::wstring threadName = L"NvdecThread " + std::to_wstring(threadId);
+    nvtxNameOsThreadW(GetCurrentThreadId(), threadName.c_str());
+#endif
     DebugLog(L"NvdecThread [" + std::to_wstring(threadId) + L"] started.");
 
     if (!g_frameDecoder) {
