@@ -1,3 +1,4 @@
+#include <nvtx3/nvtx3.hpp>
 #include "nvdec.h"
 #include "Globals.h"
 #include <stdexcept>
@@ -8,7 +9,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <nvtx3/nvtx3.hpp>
 
 // Use a single monotonic clock for all latency metrics.
 static inline uint64_t SteadyNowMs() noexcept {
