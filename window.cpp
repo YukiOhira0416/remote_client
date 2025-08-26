@@ -224,7 +224,7 @@ static inline void SetViewportScissorToBackbuffer(
 }
 
 // D3D12 Global Variables
-static nvtx3::domain g_nvtx_d3d12{"D3D12"};
+struct d3d12_domain { static constexpr char const* name = "D3D12"; };
 static constexpr UINT kSwapChainBufferCount = 3; // was 2
 Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;
 Microsoft::WRL::ComPtr<ID3D12CommandQueue> g_d3d12CommandQueue;
@@ -921,7 +921,7 @@ bool InitD3D() {
 
 UINT64 PopulateCommandListCount = 0;
 bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass ReadyGpuFrame by reference
-    nvtx3::scoped_range nvtx_populate_cmdlist{"PopulateCommandList"};
+    nvtx3::scoped_range_in<d3d12_domain> nvtx_populate_cmdlist{"PopulateCommandList"};
     // Reset command allocator and command list
     HRESULT hr = g_commandAllocator->Reset();
     if (FAILED(hr)) { DebugLog(L"PopulateCommandList: Failed to reset command allocator. HR: " + HResultToHexWString(hr)); return false; }
@@ -1036,7 +1036,8 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         if (outFrameToRender.copyDone) {
             // Fast path: query first
             if (cuEventQuery(outFrameToRender.copyDone) == CUDA_ERROR_NOT_READY) {
-                nvtx3::scoped_range r("CUDA::Wait(copyDone)");
+                struct cuda_domain { static constexpr char const* name = "CUDA"; };
+                nvtx3::scoped_range_in<cuda_domain> r("Wait(copyDone)");
                 cuEventSynchronize(outFrameToRender.copyDone); // bounded (usually ~0ms)
             }
         }
@@ -1111,7 +1112,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 }
 
 static void ResizeSwapChainOnRenderThread(int newW, int newH) {
-    nvtx3::scoped_range r("ResizeSwapChain");
+    nvtx3::scoped_range_in<d3d12_domain> r("ResizeSwapChain");
     if (!g_swapChain || !g_d3d12Device || !g_d3d12CommandQueue) return;
 
     // Get existing desc; skip if already correct
@@ -1197,8 +1198,8 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 }
 
 void RenderFrame() {
-    nvtx3::scoped_range frame_r("Frame");
-    nvtx3::scoped_range r("D3D12Present");
+    nvtx3::scoped_range_in<d3d12_domain> frame_r("Frame");
+    nvtx3::scoped_range_in<d3d12_domain> r("D3D12Present");
     // Use existing fence and queue types; keep comments and layout intact.
     {
         std::lock_guard<std::mutex> lk(g_inFlightFramesMutex);
@@ -1233,7 +1234,7 @@ void RenderFrame() {
 
     // Command list is populated (at least with a clear). Now execute and present.
     {
-        nvtx3::scoped_range_in<g_nvtx_d3d12> exec_r("ExecuteCommandLists");
+        nvtx3::scoped_range_in<d3d12_domain> exec_r("ExecuteCommandLists");
         ID3D12CommandList* ppCommandLists[] = { g_commandList.Get() };
         g_d3d12CommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
     }
@@ -1246,7 +1247,7 @@ void RenderFrame() {
         const UINT presentFlags = g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
         HRESULT hrPresent = S_OK;
         {
-            nvtx3::scoped_range_in<g_nvtx_d3d12> present_r{"Present(Submit)"};
+            nvtx3::scoped_range_in<d3d12_domain> present_r{"Present(Submit)"};
             // Keep the current vsync interval (looks like 0); only flags change:
             hrPresent = g_swapChain->Present(0, presentFlags);
             // Keep existing error handling/logging if present.
@@ -1276,6 +1277,66 @@ void RenderFrame() {
             const auto log_original_frame_no = renderedFrameData.originalFrameNumber;
             const auto log_id = renderedFrameData.id;
 
+            // ---- Logging (moved here to be in scope) ----
+            const uint64_t render_end_ms = SteadyNowMs();
+
+            // Render totals (steady)
+            const uint64_t render_total_ms = (render_end_ms >= log_render_start_ms)
+                ? (render_end_ms - log_render_start_ms)
+                : 0;
+
+            // Client FEC End->RenderEnd (steady) using per-frame mapping
+            uint64_t client_e2e_ms = 0;
+            {
+                std::lock_guard<std::mutex> lk(g_fecEndTimeMutex);
+                auto it = g_fecEndTimeByStreamFrame.find(log_stream_frame_no);
+                if (it != g_fecEndTimeByStreamFrame.end()) {
+                    const uint64_t fec_end_ms = it->second;
+                    client_e2e_ms = (render_end_ms >= fec_end_ms) ? (render_end_ms - fec_end_ms) : 0;
+                    // cleanup: we used it for this frame
+                    g_fecEndTimeByStreamFrame.erase(it);
+                }
+            }
+
+            // Logging cadence preserved
+            if (RenderCount++ % 60 == 0) {
+                DebugLog(L"RenderFrame Total (wall): " + std::to_wstring(render_total_ms) + L" ms.");
+                DebugLog(L"Client FEC End->RenderEnd: " + std::to_wstring(client_e2e_ms) + L" ms.");
+                // NOTE: NVDEC End->RenderEnd log removed per spec
+            }
+
+            // Keep the existing cross-machine log, but compute from per-frame map (unsynced clocks).
+            int64_t wgc_to_renderend_ms = 0;
+            {
+                // server WGC timestamp (ms since epoch, system_clock at server)
+                uint64_t wgc_ts_ms = 0;
+                {
+                    std::lock_guard<std::mutex> lk(g_wgcTsMutex);
+                    auto it = g_wgcCaptureTimestampByStreamFrame.find(log_stream_frame_no);
+                    if (it != g_wgcCaptureTimestampByStreamFrame.end()) {
+                        wgc_ts_ms = it->second;
+                        g_wgcCaptureTimestampByStreamFrame.erase(it); // consume once
+                    }
+                }
+                if (wgc_ts_ms != 0) {
+                    auto frameEndSys   = std::chrono::system_clock::now();
+                    uint64_t frameEndMs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
+                    wgc_to_renderend_ms = static_cast<int64_t>(frameEndMs) - static_cast<int64_t>(wgc_ts_ms);
+                } else {
+                    // No timestamp found (e.g., rare drop/miss). Keep 0; still log as unsynced.
+                    wgc_to_renderend_ms = 0;
+                }
+            }
+
+            if (RenderCount % 60 == 0) {
+                DebugLog(L"RenderFrame Latency (unsynced clocks): StreamFrame #"
+                    + std::to_wstring(log_stream_frame_no)
+                    + L", OriginalFrame #" + std::to_wstring(log_original_frame_no)
+                    + L" (ID: " + std::to_wstring(log_id) + L")"
+                    + L" - WGC to RenderEnd: " + std::to_wstring(wgc_to_renderend_ms) + L" ms.");
+            }
+            // ---- End of moved logging block ----
+
             // GPUに投入したフレームのリソースを、完了まで破棄しないようにキューへ移動
             {
                 std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
@@ -1302,7 +1363,7 @@ void RenderFrame() {
                     } else {
                         // Bounded wait keeps pipeline responsive; still measured in the existing logging
                         const DWORD timeoutMs = 5; // short, non-infinite
-                        nvtx3::scoped_range_in<g_nvtx_d3d12> wait_r{"WaitForGPU(bounded)"};
+                        nvtx3::scoped_range_in<d3d12_domain> wait_r{"WaitForGPU(bounded)"};
                         WaitForSingleObjectEx(g_fenceEvent, timeoutMs, FALSE);
                     }
                 }
@@ -1320,67 +1381,6 @@ void RenderFrame() {
             // This prevents a future wait on a stale, never-to-be-signaled value.
             const UINT64 completed = g_fence->GetCompletedValue();
             g_renderFenceValues[g_currentFrameBufferIndex] = completed + 1;
-        }
-    }
-
-    // ---- Logging (only if a new frame was actually rendered) ----
-    if (frameWasRendered) {
-        const uint64_t render_end_ms = SteadyNowMs();
-
-        // Render totals (steady)
-        const uint64_t render_total_ms = (render_end_ms >= log_render_start_ms)
-            ? (render_end_ms - log_render_start_ms)
-            : 0;
-
-        // Client FEC End->RenderEnd (steady) using per-frame mapping
-        uint64_t client_e2e_ms = 0;
-        {
-            std::lock_guard<std::mutex> lk(g_fecEndTimeMutex);
-            auto it = g_fecEndTimeByStreamFrame.find(log_stream_frame_no);
-            if (it != g_fecEndTimeByStreamFrame.end()) {
-                const uint64_t fec_end_ms = it->second;
-                client_e2e_ms = (render_end_ms >= fec_end_ms) ? (render_end_ms - fec_end_ms) : 0;
-                // cleanup: we used it for this frame
-                g_fecEndTimeByStreamFrame.erase(it);
-            }
-        }
-
-        // Logging cadence preserved
-        if (RenderCount++ % 60 == 0) {
-            DebugLog(L"RenderFrame Total (wall): " + std::to_wstring(render_total_ms) + L" ms.");
-            DebugLog(L"Client FEC End->RenderEnd: " + std::to_wstring(client_e2e_ms) + L" ms.");
-            // NOTE: NVDEC End->RenderEnd log removed per spec
-        }
-
-        // Keep the existing cross-machine log, but compute from per-frame map (unsynced clocks).
-        int64_t wgc_to_renderend_ms = 0;
-        {
-            // server WGC timestamp (ms since epoch, system_clock at server)
-            uint64_t wgc_ts_ms = 0;
-            {
-                std::lock_guard<std::mutex> lk(g_wgcTsMutex);
-                auto it = g_wgcCaptureTimestampByStreamFrame.find(log_stream_frame_no);
-                if (it != g_wgcCaptureTimestampByStreamFrame.end()) {
-                    wgc_ts_ms = it->second;
-                    g_wgcCaptureTimestampByStreamFrame.erase(it); // consume once
-                }
-            }
-            if (wgc_ts_ms != 0) {
-                auto frameEndSys   = std::chrono::system_clock::now();
-                uint64_t frameEndMs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
-                wgc_to_renderend_ms = static_cast<int64_t>(frameEndMs) - static_cast<int64_t>(wgc_ts_ms);
-            } else {
-                // No timestamp found (e.g., rare drop/miss). Keep 0; still log as unsynced.
-                wgc_to_renderend_ms = 0;
-            }
-        }
-
-        if (RenderCount % 60 == 0) {
-            DebugLog(L"RenderFrame Latency (unsynced clocks): StreamFrame #"
-                + std::to_wstring(log_stream_frame_no)
-                + L", OriginalFrame #" + std::to_wstring(log_original_frame_no)
-                + L" (ID: " + std::to_wstring(log_id) + L")"
-                + L" - WGC to RenderEnd: " + std::to_wstring(wgc_to_renderend_ms) + L" ms.");
         }
     }
 }
