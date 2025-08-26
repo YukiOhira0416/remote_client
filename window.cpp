@@ -225,6 +225,7 @@ static inline void SetViewportScissorToBackbuffer(
 
 // D3D12 Global Variables
 struct d3d12_domain { static constexpr char const* name = "D3D12"; };
+struct cuda_domain { static constexpr char const* name = "CUDA"; };
 static constexpr UINT kSwapChainBufferCount = 3; // was 2
 Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;
 Microsoft::WRL::ComPtr<ID3D12CommandQueue> g_d3d12CommandQueue;
@@ -1036,7 +1037,6 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         if (outFrameToRender.copyDone) {
             // Fast path: query first
             if (cuEventQuery(outFrameToRender.copyDone) == CUDA_ERROR_NOT_READY) {
-                struct cuda_domain { static constexpr char const* name = "CUDA"; };
                 nvtx3::scoped_range_in<cuda_domain> r("Wait(copyDone)");
                 cuEventSynchronize(outFrameToRender.copyDone); // bounded (usually ~0ms)
             }
