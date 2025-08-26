@@ -346,7 +346,7 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
     // We will perform a crop manually during the cuMemcpy2D.
     m_videoDecoderCreateInfo.ulTargetWidth = pVideoFormat->coded_width;
     m_videoDecoderCreateInfo.ulTargetHeight = pVideoFormat->coded_height;
-    m_videoDecoderCreateInfo.ulNumOutputSurfaces = 8; // more headroom during resize/IDR
+    m_videoDecoderCreateInfo.ulNumOutputSurfaces = 12; // more headroom during resize/IDR
     m_videoDecoderCreateInfo.OutputFormat = cudaVideoSurfaceFormat_NV12;
 
     CUDA_CHECK(cuvidCreateDecoder(&m_hDecoder, &m_videoDecoderCreateInfo));
