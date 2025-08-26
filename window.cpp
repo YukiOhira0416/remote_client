@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN // winsock.h の含まれる量を減らす
 #define NOMINMAX
 #include <nvtx3/nvtx3.hpp>
+#include "nvtx_helpers.h"
 #include <d3dcompiler.h> // For shader compilation
 #include <DirectXColors.h> // For DirectX::Colors
 #include <windows.h>
@@ -233,6 +234,7 @@ UINT g_rtvDescriptorSize;
 UINT g_currentFrameBufferIndex; // Current back buffer index
 UINT64 g_fenceValue;
 HANDLE g_fenceEvent;
+HANDLE g_swapChainWaitable = nullptr; // For waitable swap chain
 UINT64 g_renderFenceValues[kSwapChainBufferCount]; // Fence values for each frame in flight for rendering
 
 // D3D11 specific globals (to be removed or replaced)
@@ -362,6 +364,8 @@ Microsoft::WRL::ComPtr<ID3D12Resource> g_vertexBuffer;
 D3D12_VERTEX_BUFFER_VIEW g_vertexBufferView;
 Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_srvHeap; // For Y and UV textures
 UINT g_srvDescriptorSize;
+struct YuvSrvSlots { D3D12_CPU_DESCRIPTOR_HANDLE y; D3D12_CPU_DESCRIPTOR_HANDLE uv; };
+static std::vector<YuvSrvSlots> g_srvSlots; // size = backBufferCount
 
 std::atomic<uint32_t> g_globalFrameNumber(0);// FEC用フレーム番号
 
@@ -457,11 +461,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             return 0;
 
         case WM_ENTERSIZEMOVE:
+            nvtxMarkU64("ResizeStart", 0, 0);
             g_isSizing = true;
             return 0;
 
         case WM_EXITSIZEMOVE:
         {
+            nvtxMarkU64("ResizeEnd", 0, 0);
             g_isSizing = false;
 
             // 1) Finalize and FORCE the resolution announce at drag end.
@@ -630,7 +636,11 @@ bool InitD3D() {
     if (g_rootSignature) g_rootSignature.Reset();
     if (g_d3d12Device) g_d3d12Device.Reset();
     if (g_fenceEvent) { CloseHandle(g_fenceEvent); g_fenceEvent = nullptr; }
+    if (g_swapChainWaitable) { CloseHandle(g_swapChainWaitable); g_swapChainWaitable = nullptr; }
 
+#ifdef ENABLE_NVTX
+    nvtxNameOsThreadW(GetCurrentThreadId(), L"RenderThread");
+#endif
 
     // 1. Create Device
     Microsoft::WRL::ComPtr<IDXGIFactory6> dxgiFactory; // Use a newer factory for better features
@@ -714,6 +724,7 @@ bool InitD3D() {
     scd1.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD; // Recommended for D3D12
     scd1.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
     scd1.Flags = g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+    scd1.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
     Microsoft::WRL::ComPtr<IDXGISwapChain1> tempSwapChain;
     hr = dxgiFactory->CreateSwapChainForHwnd(g_d3d12CommandQueue.Get(), g_hWnd, &scd1, nullptr, nullptr, &tempSwapChain);
@@ -726,6 +737,11 @@ bool InitD3D() {
         DebugLog(L"InitD3D (D3D12): Failed to QI for IDXGISwapChain3. HRESULT: " + HResultToHexWString(hr));
         return false;
     }
+
+    // Set waitable object properties
+    g_swapChain->SetMaximumFrameLatency(1);
+    g_swapChainWaitable = g_swapChain->GetFrameLatencyWaitableObject();
+
     g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
     DebugLog(L"InitD3D (D3D12): Swap Chain created.");
 
@@ -890,12 +906,8 @@ bool InitD3D() {
 
     // 11. Create SRV Descriptor Heap (for Y and UV textures)
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-    srvHeapDesc.NumDescriptors = 2 * 2; // 2 textures (Y, UV) per frame buffer for double buffering (or more if needed)
-                                        // For simplicity, let's assume we update descriptors for the current frame's textures.
-                                        // So, 2 descriptors are enough if we update them each frame.
-                                        // If we pre-create for all decoder surfaces, it'd be NUM_DECODE_SURFACES_IN_POOL * 2.
-                                        // Let's start with 2, for the current frame's Y and UV.
-    srvHeapDesc.NumDescriptors = 2; // One for Y, one for UV of the current frame to render
+    // Allocate 2 SRV slots (Y, UV) per backbuffer to avoid churn on resize.
+    srvHeapDesc.NumDescriptors = kSwapChainBufferCount * 2;
     srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     hr = g_d3d12Device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&g_srvHeap));
@@ -905,6 +917,16 @@ bool InitD3D() {
     }
     g_srvDescriptorSize = g_d3d12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     DebugLog(L"InitD3D (D3D12): SRV Descriptor Heap created.");
+
+    // Pre-compute and store CPU descriptor handles for each slot.
+    g_srvSlots.resize(kSwapChainBufferCount);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle(g_srvHeap->GetCPUDescriptorHandleForHeapStart());
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+        g_srvSlots[i].y = srvHandle;
+        srvHandle.Offset(1, g_srvDescriptorSize);
+        g_srvSlots[i].uv = srvHandle;
+        srvHandle.Offset(1, g_srvDescriptorSize);
+    }
 
     // Vertex buffer is not strictly needed for a full-screen triangle generated in VS,
     // but if you were to use one:
@@ -974,6 +996,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
     // 2) N と N+1 がそろったら N を描画。なければ短い待ち or 圧迫で妥協
     {
+        nvtx3::scoped_range r("ReorderDecision");
         std::lock_guard<std::mutex> rlock(g_reorderMutex);
         auto now = std::chrono::steady_clock::now();
 
@@ -1019,6 +1042,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
                 g_lastReorderDecision = now;
 
                 if (!(haveExpected && haveNext)) {
+                    nvtxMarkU64("ReorderDecision::Fallback", drawn, 0xFFFFA500);
                     if(PopulateCommandListCount++ % 60 == 0)DebugLog(L"[REORDER] fallback draw, key=" + std::to_wstring(drawn));
                 }
             }
@@ -1037,37 +1061,37 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             SetLetterboxViewport(g_commandList.Get(), bbDesc, videoW, videoH);
         }
 
-        // Create SRVs for Y and UV textures (only if resource changed)
-        static ID3D12Resource* s_lastY = nullptr;
-        static ID3D12Resource* s_lastUV = nullptr;
+        // Create SRVs for Y and UV textures using stable slots per backbuffer.
+        // Only update the view if the underlying resource pointer has changed for this slot.
+        static ID3D12Resource* s_lastResources[kSwapChainBufferCount][2] = {}; // [backbuffer_idx][y_or_uv]
 
-        CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleCpu(g_srvHeap->GetCPUDescriptorHandleForHeapStart());
+        if (g_srvSlots.empty()) { // Guard against calls before InitD3D completes
+             DebugLog(L"PopulateCommandList: g_srvSlots is empty. SRVs cannot be created.");
+             return false;
+        }
 
-        if (outFrameToRender.hw_decoded_texture_Y.Get() != s_lastY) {
+        const YuvSrvSlots& currentSrvs = g_srvSlots[g_currentFrameBufferIndex];
+        ID3D12Resource* currentY = outFrameToRender.hw_decoded_texture_Y.Get();
+        ID3D12Resource* currentUV = outFrameToRender.hw_decoded_texture_UV.Get();
+
+        if (currentY != s_lastResources[g_currentFrameBufferIndex][0]) {
             D3D12_SHADER_RESOURCE_VIEW_DESC srvDescY = {};
             srvDescY.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
             srvDescY.Format = DXGI_FORMAT_R8_UNORM; // Y plane
-            if (!outFrameToRender.hw_decoded_texture_Y) { DebugLog(L"PopulateCommandList: frameToRender.hw_decoded_texture_Y is NULL."); return false; }
             srvDescY.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
             srvDescY.Texture2D.MipLevels = 1;
-            g_d3d12Device->CreateShaderResourceView(
-                outFrameToRender.hw_decoded_texture_Y.Get(), &srvDescY, srvHandleCpu);
-            s_lastY = outFrameToRender.hw_decoded_texture_Y.Get();
+            g_d3d12Device->CreateShaderResourceView(currentY, &srvDescY, currentSrvs.y);
+            s_lastResources[g_currentFrameBufferIndex][0] = currentY;
         }
 
-        // Advance handle to UV and repeat only on change
-        srvHandleCpu.Offset(1, g_srvDescriptorSize); // (match existing offset logic)
-
-        if (outFrameToRender.hw_decoded_texture_UV.Get() != s_lastUV) {
+        if (currentUV != s_lastResources[g_currentFrameBufferIndex][1]) {
             D3D12_SHADER_RESOURCE_VIEW_DESC srvDescUV = {};
             srvDescUV.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
             srvDescUV.Format = DXGI_FORMAT_R8G8_UNORM; // UV plane (NV12)
-            if (!outFrameToRender.hw_decoded_texture_UV) { DebugLog(L"PopulateCommandList: frameToRender.hw_decoded_texture_UV is NULL."); return false; }
             srvDescUV.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
             srvDescUV.Texture2D.MipLevels = 1;
-            g_d3d12Device->CreateShaderResourceView(
-                outFrameToRender.hw_decoded_texture_UV.Get(), &srvDescUV, srvHandleCpu);
-            s_lastUV = outFrameToRender.hw_decoded_texture_UV.Get();
+            g_d3d12Device->CreateShaderResourceView(currentUV, &srvDescUV, currentSrvs.uv);
+            s_lastResources[g_currentFrameBufferIndex][1] = currentUV;
         }
 
         // Set descriptor heap for SRVs
@@ -1212,6 +1236,13 @@ void RenderFrame() {
         return;
     }
 
+    // Short, non-blocking pace to next frame.
+    if (g_swapChainWaitable) {
+        nvtx3::scoped_range r_wait("SwapChain::FramePaceWait");
+        // 7 ms timeout keeps us near 144/120/60 Hz without hard stalls.
+        WaitForSingleObjectEx(g_swapChainWaitable, 7 /*ms*/, FALSE);
+    }
+
     HRESULT hr; // for error checks
     ReadyGpuFrame renderedFrameData{}; // 描画したフレームのメタ（ログ用）
     const bool frameWasRendered = PopulateCommandList(renderedFrameData); // 今回のフレームで実描画コマンドを記録したか？
@@ -1228,8 +1259,10 @@ void RenderFrame() {
         const UINT presentFlags = g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
         HRESULT hrPresent = S_OK;
         {
+            nvtxPushU64("Present", frameWasRendered ? renderedFrameData.streamFrameNumber : 0, 0xFF0000FF);
             // Keep the current vsync interval (looks like 0); only flags change:
             hrPresent = g_swapChain->Present(0, presentFlags);
+            nvtxPop();
             // Keep existing error handling/logging if present.
         }
 
@@ -1261,12 +1294,11 @@ void RenderFrame() {
             g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
 
             // Wait only if we risk getting too far ahead of the GPU (bounded backlog)
+            constexpr size_t kMaxInFlightFrames = 2;
             bool shouldWait = false;
             {
                 std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
-                // Keep at most 2 frames in flight for this back buffer index
-                // (Adjust threshold carefully if you observe pipe underflow/overflow)
-                shouldWait = (g_inFlightFrames.size() >= 2);
+                shouldWait = (g_inFlightFrames.size() >= kMaxInFlightFrames);
             }
 
             if (shouldWait) {
@@ -1277,8 +1309,9 @@ void RenderFrame() {
                     } else {
                         // Bounded wait keeps pipeline responsive; still measured in the existing logging
                         const DWORD timeoutMs = 5; // short, non-infinite
-                        nvtx3::scoped_range wait_r("RenderFrame::WaitForGPU");
+                        nvtxPushU64("RenderFrame::WaitForGPU", renderedFrameData.streamFrameNumber, 0xFF808080);
                         WaitForSingleObjectEx(g_fenceEvent, timeoutMs, FALSE);
+                        nvtxPop();
                     }
                 }
             }
@@ -1387,6 +1420,10 @@ void WaitForGpu() {
 void CleanupD3DRenderResources() {
     WaitForGpu(); // Ensure GPU is idle before releasing resources
 
+    if (g_swapChainWaitable) {
+        CloseHandle(g_swapChainWaitable);
+        g_swapChainWaitable = nullptr;
+    }
     if (g_fenceEvent) {
         CloseHandle(g_fenceEvent);
         g_fenceEvent = nullptr;
