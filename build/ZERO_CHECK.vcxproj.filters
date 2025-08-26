@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\Jerasure\build\CMakeFiles\e35dc45cc0685f5e4f5077a530e70ced\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{8C6BCBD3-DE2C-3014-9001-C4B45A086146}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

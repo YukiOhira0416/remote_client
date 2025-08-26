@@ -1,0 +1,8 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/Users/Yuki_Ohira/source/repos/remote_client_cuda_nvenc/remote_client/Jerasure/build/cmake_install.cmake",
+		"C:/Users/Yuki_Ohira/source/repos/remote_client_cuda_nvenc/remote_client/Jerasure/build/gf-complete/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

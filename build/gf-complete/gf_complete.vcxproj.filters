@@ -1,0 +1,52 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\gf-complete\src\gf.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\gf-complete\src\gf_cpu.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\gf-complete\src\gf_general.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\gf-complete\src\gf_method.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\gf-complete\src\gf_rand.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\gf-complete\src\gf_w128.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\gf-complete\src\gf_w16.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\gf-complete\src\gf_w32.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\gf-complete\src\gf_w4.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\gf-complete\src\gf_w64.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\gf-complete\src\gf_w8.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\gf-complete\src\gf_wgen.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\gf-complete\compat\bzero.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\Yuki_Ohira\source\repos\remote_client_cuda_nvenc\remote_client\gf-complete\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{79AF2D72-A948-30F6-B83A-25FB5F444B9C}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>
