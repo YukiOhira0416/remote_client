@@ -7,6 +7,7 @@
 #include "main.h"
 
 // Reed-Solomon encoding parameters
+const bool g_useFEC = true; // Feature flag for FEC
 const int RS_K = getOptimalThreadConfig().RS_K;  // Data shards
 const int RS_M = getOptimalThreadConfig().RS_M;  // Parity shards
 const int RS_N = RS_K + RS_M;

@@ -638,6 +638,7 @@ bool InitD3D() {
     if (g_fenceEvent) { CloseHandle(g_fenceEvent); g_fenceEvent = nullptr; }
     if (g_swapChainWaitable) { CloseHandle(g_swapChainWaitable); g_swapChainWaitable = nullptr; }
 
+    SetThreadDescription(GetCurrentThread(), L"RenderThread");
 #ifdef ENABLE_NVTX
     nvtxNameOsThreadW(GetCurrentThreadId(), L"RenderThread");
 #endif
@@ -739,7 +740,13 @@ bool InitD3D() {
     }
 
     // Set waitable object properties
-    g_swapChain->SetMaximumFrameLatency(1);
+    Microsoft::WRL::ComPtr<IDXGISwapChain2> sc2;
+    if (SUCCEEDED(g_swapChain.As(&sc2))) {
+        sc2->SetMaximumFrameLatency(3);
+        DebugLog(L"InitD3D (D3D12): SetMaximumFrameLatency to 3.");
+    } else {
+        DebugLog(L"InitD3D (D3D12): Failed to get IDXGISwapChain2, cannot set max frame latency.");
+    }
     g_swapChainWaitable = g_swapChain->GetFrameLatencyWaitableObject();
 
     g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
@@ -937,7 +944,8 @@ bool InitD3D() {
 
 UINT64 PopulateCommandListCount = 0;
 bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass ReadyGpuFrame by reference
-    nvtx3::scoped_range nvtx_populate_cmdlist{"PopulateCommandList"};
+    NvtxRange r("D3D12 Record", NvtxCategory::Render, 0xFF00FFFF);
+    (void)r;
     // Reset command allocator and command list
     HRESULT hr = g_commandAllocator->Reset();
     if (FAILED(hr)) { DebugLog(L"PopulateCommandList: Failed to reset command allocator. HR: " + HResultToHexWString(hr)); return false; }
@@ -994,58 +1002,41 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         }
     }
 
-    // 2) N と N+1 がそろったら N を描画。なければ短い待ち or 圧迫で妥協
+    // 2) Decide which frame to render based on the reorder buffer state.
     {
-        nvtx3::scoped_range r("ReorderDecision");
-        std::lock_guard<std::mutex> rlock(g_reorderMutex);
-        auto now = std::chrono::steady_clock::now();
+        NvtxRange r_rd("ReorderDecision", NvtxCategory::Render, 0xFFE4E1); // MistyRose color
+        (void)r_rd;
+        std::lock_guard<std::mutex> lk(g_reorderMutex);
 
-        // 初期化：隣接ペアの最小キーを expected にする
+        // Initialize expected frame ID on the first run.
         if (!g_expectedInitialized) {
-            for (auto it = g_reorderBuffer.begin(); it != g_reorderBuffer.end(); ++it) {
-                uint32_t k = it->first;
-                if (g_reorderBuffer.find(k + 1) != g_reorderBuffer.end()) {
-                    g_expectedStreamFrame = k;
-                    g_expectedInitialized = true;
-                    break;
-                }
-            }
-            if (!g_expectedInitialized && !g_reorderBuffer.empty()) {
+            if (!g_reorderBuffer.empty()) {
                 g_expectedStreamFrame = g_reorderBuffer.begin()->first;
                 g_expectedInitialized = true;
             }
         }
 
-        const bool haveExpected = g_reorderBuffer.count(g_expectedStreamFrame) != 0;
-        const bool haveNext     = g_reorderBuffer.count(g_expectedStreamFrame + 1) != 0;
-        const bool bufferTooBig = g_reorderBuffer.size() > REORDER_MAX_BUFFER;
-        const bool waitedLong   = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastReorderDecision).count() > REORDER_WAIT_MS;
-
-        if (haveExpected && haveNext) {
-            // 理想：N と N+1 がそろった
-            outFrameToRender = std::move(g_reorderBuffer[g_expectedStreamFrame]);
-            outFrameToRender.render_start_ms = SteadyNowMs(); // steady clock start
-            g_reorderBuffer.erase(g_expectedStreamFrame);
-            g_expectedStreamFrame++;
+        auto it = g_reorderBuffer.find(g_expectedStreamFrame);
+        if (it != g_reorderBuffer.end()) {
+            // Happy path: expected frame is available.
+            outFrameToRender = std::move(it->second);
+            g_reorderBuffer.erase(it);
+            ++g_expectedStreamFrame;
             hasFrameToRender = true;
-            g_lastReorderDecision = now;
-        } else if (bufferTooBig || waitedLong) {
-            // 妥協：溜まりすぎor待ちすぎ → 最小キーを描画
-            if (!g_reorderBuffer.empty()) {
-                auto it = g_reorderBuffer.begin();
-                outFrameToRender = std::move(it->second);
-                outFrameToRender.render_start_ms = SteadyNowMs(); // steady clock start
-                uint32_t drawn = it->first;
-                g_reorderBuffer.erase(it);
-                g_expectedStreamFrame = drawn + 1;
-                hasFrameToRender = true;
-                g_lastReorderDecision = now;
-
-                if (!(haveExpected && haveNext)) {
-                    nvtxMarkU64("ReorderDecision::Fallback", drawn, 0xFFFFA500);
-                    if(PopulateCommandListCount++ % 60 == 0)DebugLog(L"[REORDER] fallback draw, key=" + std::to_wstring(drawn));
-                }
-            }
+        } else if (g_reorderBuffer.size() >= REORDER_MAX_BUFFER) {
+            // Buffer is full, we must advance to prevent a stall.
+            auto jt = g_reorderBuffer.begin(); // Smallest available frame ID
+            DebugLog(L"[REORDER] Buffer full. Jumping from expected " + std::to_wstring(g_expectedStreamFrame) + L" to " + std::to_wstring(jt->first));
+            nvtxMarkU64("ReorderDecision::Jump", jt->first, 0xFFFFA500);
+            outFrameToRender = std::move(jt->second);
+            g_expectedStreamFrame = jt->first + 1;
+            g_reorderBuffer.erase(jt);
+            hasFrameToRender = true;
+        }
+        // If neither case is met, 'hasFrameToRender' remains false.
+        // The calling function will not draw, effectively displaying the previous frame.
+        if (hasFrameToRender) {
+            outFrameToRender.render_start_ms = SteadyNowMs();
         }
     }
 
@@ -1206,8 +1197,9 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 }
 
 void RenderFrame() {
-    nvtx3::scoped_range frame_r("Frame");
-    nvtx3::scoped_range r("D3D12Present");
+    // This top-level range covers the entire frame rendering process on this thread.
+    NvtxRange frame_r("Frame", NvtxCategory::Render, 0xFF00FF00);
+    (void)frame_r;
     // Use existing fence and queue types; keep comments and layout intact.
     {
         std::lock_guard<std::mutex> lk(g_inFlightFramesMutex);
@@ -1236,14 +1228,15 @@ void RenderFrame() {
         return;
     }
 
-    // Short, non-blocking pace to next frame.
+    // Throttle to N frames in flight.
     if (g_swapChainWaitable) {
         nvtx3::scoped_range r_wait("SwapChain::FramePaceWait");
-        // 7 ms timeout keeps us near 144/120/60 Hz without hard stalls.
-        WaitForSingleObjectEx(g_swapChainWaitable, 7 /*ms*/, FALSE);
+        // Wait up to 16ms for the swap chain to signal that a frame is ready to be rendered.
+        WaitForSingleObjectEx(g_swapChainWaitable, 16 /*ms cap*/, FALSE);
     }
 
-    HRESULT hr; // for error checks
+    g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
+
     ReadyGpuFrame renderedFrameData{}; // 描画したフレームのメタ（ログ用）
     const bool frameWasRendered = PopulateCommandList(renderedFrameData); // 今回のフレームで実描画コマンドを記録したか？
 
@@ -1255,15 +1248,26 @@ void RenderFrame() {
     const bool shouldPresent = frameWasRendered || forcePresent;
 
     if (shouldPresent) {
-        // Immediately before Present:
+        // Signal the fence for the just-submitted command list. This must be done
+        // *before* Present so the GPU starts work.
+        if (frameWasRendered) {
+             g_renderFenceValues[g_currentFrameBufferIndex] = ++g_fenceValue;
+             HRESULT hr = g_d3d12CommandQueue->Signal(g_fence.Get(), g_fenceValue);
+             if (FAILED(hr)) {
+                 DebugLog(L"RenderFrame: Failed to signal fence. HR: " + HResultToHexWString(hr));
+             }
+        }
+
+        // Now, present the frame.
+        if (frameWasRendered) {
+            NvtxMark("FrameId", renderedFrameData.streamFrameNumber, NvtxCategory::Present, 0xFF0000FF);
+        }
         const UINT presentFlags = g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
         HRESULT hrPresent = S_OK;
         {
-            nvtxPushU64("Present", frameWasRendered ? renderedFrameData.streamFrameNumber : 0, 0xFF0000FF);
-            // Keep the current vsync interval (looks like 0); only flags change:
+            NvtxRange r("Present", NvtxCategory::Present, 0xFF0000FF);
+            (void)r;
             hrPresent = g_swapChain->Present(0, presentFlags);
-            nvtxPop();
-            // Keep existing error handling/logging if present.
         }
 
         if (FAILED(hrPresent)) {
@@ -1275,60 +1279,22 @@ void RenderFrame() {
             }
         }
 
+        // Update tracking for the next frame.
         if (frameWasRendered) {
-            // ---- Standard path for a rendered frame ----
-            // Fence: Track this frame's completion
-            const UINT64 currentFenceVal = g_renderFenceValues[g_currentFrameBufferIndex];
-            hr = g_d3d12CommandQueue->Signal(g_fence.Get(), currentFenceVal);
-            if (FAILED(hr)) {
-                DebugLog(L"RenderFrame: Failed to signal fence. HR: " + HResultToHexWString(hr));
-            }
-
             // GPUに投入したフレームのリソースを、完了まで破棄しないようにキューへ移動
             {
                 std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
-                g_inFlightFrames.push({std::move(renderedFrameData), currentFenceVal});
+                g_inFlightFrames.push({std::move(renderedFrameData), g_fenceValue});
             }
-
-            // Update back buffer index for the next frame
-            g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
-
-            // Wait only if we risk getting too far ahead of the GPU (bounded backlog)
-            constexpr size_t kMaxInFlightFrames = 2;
-            bool shouldWait = false;
-            {
-                std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
-                shouldWait = (g_inFlightFrames.size() >= kMaxInFlightFrames);
-            }
-
-            if (shouldWait) {
-                if (g_fence->GetCompletedValue() < g_renderFenceValues[g_currentFrameBufferIndex]) {
-                    hr = g_fence->SetEventOnCompletion(g_renderFenceValues[g_currentFrameBufferIndex], g_fenceEvent);
-                    if (FAILED(hr)) {
-                        DebugLog(L"RenderFrame: Failed to set event on completion. HR: " + HResultToHexWString(hr));
-                    } else {
-                        // Bounded wait keeps pipeline responsive; still measured in the existing logging
-                        const DWORD timeoutMs = 5; // short, non-infinite
-                        nvtxPushU64("RenderFrame::WaitForGPU", renderedFrameData.streamFrameNumber, 0xFF808080);
-                        WaitForSingleObjectEx(g_fenceEvent, timeoutMs, FALSE);
-                        nvtxPop();
-                    }
-                }
-            }
-
-            // Increment fence value for the next use of this RTV
-            g_renderFenceValues[g_currentFrameBufferIndex] = currentFenceVal + 1;
         } else {
-            // ---- Forced present path (no new frame rendered) ----
-            // Don't perform fence waits or signals that assume a rendered frame.
-            // Just refresh the back buffer index so the next real frame uses the correct RTV.
-            g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
-
-            // To be extra safe, align the fence value for this buffer index to what's known to be completed.
-            // This prevents a future wait on a stale, never-to-be-signaled value.
-            const UINT64 completed = g_fence->GetCompletedValue();
-            g_renderFenceValues[g_currentFrameBufferIndex] = completed + 1;
+             // On a forced present without a new frame, we don't advance g_fenceValue,
+             // but we do need to ensure the fence value for this buffer index is up-to-date
+             // to avoid a future wait on a stale value.
+             const UINT64 completed = g_fence->GetCompletedValue();
+             g_renderFenceValues[g_currentFrameBufferIndex] = completed;
         }
+        // The back buffer index is updated for the *next* frame, after the current present.
+        // It was already updated before PopulateCommandList.
     }
 
     // ---- Logging (only if a new frame was actually rendered) ----
@@ -1461,7 +1427,7 @@ void SendFinalResolution(int width, int height) {
     size_t shard_len = 0; // シャードの長さ
     bool fec_success = false;
     std::vector<std::vector<uint8_t>> parityShards;
-    if (original_data_len > 0) { // データが存在する場合は FEC を適用
+    if (g_useFEC && original_data_len > 0) { // データが存在する場合は FEC を適用
         size_t min_shard_len = (original_data_len + RS_K - 1) / RS_K; // 最小シャード長を計算
 
         const int w = 8; // シャードの幅
@@ -1494,7 +1460,7 @@ void SendFinalResolution(int width, int height) {
             fec_success = false;
         }
     } else {
-        DebugLog(L"SendFinalResolution: original_data_len is 0. Skipping FEC.");
+        if (g_useFEC) DebugLog(L"SendFinalResolution: original_data_len is 0. Skipping FEC.");
         fec_success = false;
     }
 
