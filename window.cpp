@@ -972,6 +972,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
     // 2) N と N+1 がそろったら N を描画。なければ短い待ち or 圧迫で妥協
     {
+        nvtx3::scoped_range r("PopulateCommandList::ReorderBuffer");
         std::lock_guard<std::mutex> rlock(g_reorderMutex);
         auto now = std::chrono::steady_clock::now();
 
@@ -1075,7 +1076,10 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
         // フルスクリーンクアッド（TRIANGLESTRIP で 4 頂点）
         g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-        g_commandList->DrawInstanced(4, 1, 0, 0);
+        {
+            nvtx3::scoped_range r("PopulateCommandList::DrawInstanced");
+            g_commandList->DrawInstanced(4, 1, 0, 0);
+        }
 
         // Release the ComPtrs now that they are submitted for rendering
         // The resources themselves are managed by the decoder's pool
@@ -1094,6 +1098,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 }
 
 static void ResizeSwapChainOnRenderThread(int newW, int newH) {
+    nvtx3::scoped_range r("ResizeSwapChain");
     if (!g_swapChain || !g_d3d12Device || !g_d3d12CommandQueue) return;
 
     // Get existing desc; skip if already correct
@@ -1239,6 +1244,10 @@ void RenderFrame() {
             }
 
             // GPUに投入したフレームのリソースを、完了まで破棄しないようにキューへ移動
+            const auto log_render_start_ms = renderedFrameData.render_start_ms;
+            const auto log_stream_frame_no = renderedFrameData.streamFrameNumber;
+            const auto log_original_frame_no = renderedFrameData.originalFrameNumber;
+            const auto log_id = renderedFrameData.id;
             {
                 std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
                 g_inFlightFrames.push({std::move(renderedFrameData), currentFenceVal});
@@ -1264,6 +1273,7 @@ void RenderFrame() {
                     } else {
                         // Bounded wait keeps pipeline responsive; still measured in the existing logging
                         const DWORD timeoutMs = 5; // short, non-infinite
+                        nvtx3::scoped_range wait_r("RenderFrame::WaitForGPU");
                         WaitForSingleObjectEx(g_fenceEvent, timeoutMs, FALSE);
                     }
                 }
@@ -1287,19 +1297,17 @@ void RenderFrame() {
     // ---- Logging (only if a new frame was actually rendered) ----
     if (frameWasRendered) {
         const uint64_t render_end_ms = SteadyNowMs();
-        renderedFrameData.present_ms = render_end_ms;   // Present just finished (approx)
-        renderedFrameData.fence_done_ms = render_end_ms; // after waits; same endpoint for now
 
         // Render totals (steady)
-        const uint64_t render_total_ms = (render_end_ms >= renderedFrameData.render_start_ms)
-            ? (render_end_ms - renderedFrameData.render_start_ms)
+        const uint64_t render_total_ms = (render_end_ms >= log_render_start_ms)
+            ? (render_end_ms - log_render_start_ms)
             : 0;
 
         // Client FEC End->RenderEnd (steady) using per-frame mapping
         uint64_t client_e2e_ms = 0;
         {
             std::lock_guard<std::mutex> lk(g_fecEndTimeMutex);
-            auto it = g_fecEndTimeByStreamFrame.find(renderedFrameData.streamFrameNumber);
+            auto it = g_fecEndTimeByStreamFrame.find(log_stream_frame_no);
             if (it != g_fecEndTimeByStreamFrame.end()) {
                 const uint64_t fec_end_ms = it->second;
                 client_e2e_ms = (render_end_ms >= fec_end_ms) ? (render_end_ms - fec_end_ms) : 0;
@@ -1307,9 +1315,6 @@ void RenderFrame() {
                 g_fecEndTimeByStreamFrame.erase(it);
             }
         }
-
-        // Finalize back-compat field for older log readers:
-        renderedFrameData.client_fec_end_to_render_end_time_ms = client_e2e_ms;
 
         // Logging cadence preserved
         if (RenderCount++ % 60 == 0) {
@@ -1325,7 +1330,7 @@ void RenderFrame() {
             uint64_t wgc_ts_ms = 0;
             {
                 std::lock_guard<std::mutex> lk(g_wgcTsMutex);
-                auto it = g_wgcCaptureTimestampByStreamFrame.find(renderedFrameData.streamFrameNumber);
+                auto it = g_wgcCaptureTimestampByStreamFrame.find(log_stream_frame_no);
                 if (it != g_wgcCaptureTimestampByStreamFrame.end()) {
                     wgc_ts_ms = it->second;
                     g_wgcCaptureTimestampByStreamFrame.erase(it); // consume once
@@ -1343,9 +1348,9 @@ void RenderFrame() {
 
         if (RenderCount % 60 == 0) {
             DebugLog(L"RenderFrame Latency (unsynced clocks): StreamFrame #"
-                + std::to_wstring(renderedFrameData.streamFrameNumber)
-                + L", OriginalFrame #" + std::to_wstring(renderedFrameData.originalFrameNumber)
-                + L" (ID: " + std::to_wstring(renderedFrameData.id) + L")"
+                + std::to_wstring(log_stream_frame_no)
+                + L", OriginalFrame #" + std::to_wstring(log_original_frame_no)
+                + L" (ID: " + std::to_wstring(log_id) + L")"
                 + L" - WGC to RenderEnd: " + std::to_wstring(wgc_to_renderend_ms) + L" ms.");
         }
     }

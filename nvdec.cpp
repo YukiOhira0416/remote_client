@@ -604,7 +604,9 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     oVPP.unpaired_field = (pDispInfo->progressive_frame == 1 || pDispInfo->repeat_first_field <= 1);
 
     // RAII mapper for the video frame. It will be unmapped automatically.
+    nvtx3::scoped_range r_map("HandlePictureDisplay::cuvidMapVideoFrame");
     MappedVideoFrame mappedFrame(self->m_hDecoder, pDispInfo->picture_index, &oVPP);
+    r_map.end();
     if (!mappedFrame.IsValid()) {
         const char* es = nullptr; cuGetErrorString(mappedFrame.GetMapResult(), &es);
         std::wstring msg = L"cuvidMapVideoFrame failed: ";
@@ -630,46 +632,52 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     const size_t srcWidthBytes_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulWidth);
     const size_t srcHeightRows_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulHeight / 2);
 
-    CUDA_MEMCPY2D cpyY = {};
-    cpyY.srcMemoryType = CU_MEMORYTYPE_DEVICE;
-    cpyY.srcDevice     = pDecodedFrame;
-    cpyY.srcPitch      = nDecodedPitch;
-    cpyY.dstMemoryType = CU_MEMORYTYPE_ARRAY;
-    cpyY.dstArray      = fr.pCudaArrayY;
-    cpyY.WidthInBytes  = srcWidthBytes_Y;
-    cpyY.Height        = srcHeightRows_Y;
+    {
+        nvtx3::scoped_range r("HandlePictureDisplay::cuMemcpy2D");
+        CUDA_MEMCPY2D cpyY = {};
+        cpyY.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+        cpyY.srcDevice     = pDecodedFrame;
+        cpyY.srcPitch      = nDecodedPitch;
+        cpyY.dstMemoryType = CU_MEMORYTYPE_ARRAY;
+        cpyY.dstArray      = fr.pCudaArrayY;
+        cpyY.WidthInBytes  = srcWidthBytes_Y;
+        cpyY.Height        = srcHeightRows_Y;
 
-    CUresult cr = cuMemcpy2D(&cpyY);
-    if (cr != CUDA_SUCCESS) {
-        const char* es = nullptr; cuGetErrorString(cr, &es);
-        std::wstring msg = L"cuMemcpy2D(Y) failed: ";
-        if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
-        DebugLog(msg);
-        cuCtxPopCurrent(NULL);
-        return 0;
+        CUresult cr = cuMemcpy2D(&cpyY);
+        if (cr != CUDA_SUCCESS) {
+            const char* es = nullptr; cuGetErrorString(cr, &es);
+            std::wstring msg = L"cuMemcpy2D(Y) failed: ";
+            if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
+            DebugLog(msg);
+            cuCtxPopCurrent(NULL);
+            return 0;
+        }
+
+        const CUdeviceptr pSrcUV = pDecodedFrame + (size_t)srcHeightRows_Y * nDecodedPitch;
+        CUDA_MEMCPY2D cpyUV = {};
+        cpyUV.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+        cpyUV.srcDevice     = pSrcUV;
+        cpyUV.srcPitch      = nDecodedPitch;
+        cpyUV.dstMemoryType = CU_MEMORYTYPE_ARRAY;
+        cpyUV.dstArray      = fr.pCudaArrayUV;
+        cpyUV.WidthInBytes  = srcWidthBytes_UV;
+        cpyUV.Height        = srcHeightRows_UV;
+
+        cr = cuMemcpy2D(&cpyUV);
+        if (cr != CUDA_SUCCESS) {
+            const char* es = nullptr; cuGetErrorString(cr, &es);
+            std::wstring msg = L"cuMemcpy2D(UV) failed: ";
+            if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
+            DebugLog(msg);
+            cuCtxPopCurrent(NULL);
+            return 0;
+        }
     }
 
-    const CUdeviceptr pSrcUV = pDecodedFrame + (size_t)srcHeightRows_Y * nDecodedPitch;
-    CUDA_MEMCPY2D cpyUV = {};
-    cpyUV.srcMemoryType = CU_MEMORYTYPE_DEVICE;
-    cpyUV.srcDevice     = pSrcUV;
-    cpyUV.srcPitch      = nDecodedPitch;
-    cpyUV.dstMemoryType = CU_MEMORYTYPE_ARRAY;
-    cpyUV.dstArray      = fr.pCudaArrayUV;
-    cpyUV.WidthInBytes  = srcWidthBytes_UV;
-    cpyUV.Height        = srcHeightRows_UV;
-
-    cr = cuMemcpy2D(&cpyUV);
-    if (cr != CUDA_SUCCESS) {
-        const char* es = nullptr; cuGetErrorString(cr, &es);
-        std::wstring msg = L"cuMemcpy2D(UV) failed: ";
-        if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
-        DebugLog(msg);
-        cuCtxPopCurrent(NULL);
-        return 0;
+    {
+        nvtx3::scoped_range r("HandlePictureDisplay::cuCtxSynchronize");
+        cr = cuCtxSynchronize();
     }
-
-    cr = cuCtxSynchronize();
     if (cr != CUDA_SUCCESS) {
         const char* es = nullptr; cuGetErrorString(cr, &es);
         std::wstring msg = L"cuCtxSynchronize failed: ";
@@ -722,14 +730,15 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     }
 
     {
+        nvtx3::scoped_range r("HandlePictureDisplay::EnqueueFrame");
         std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
-        g_readyGpuFrameQueue.push_back(std::move(readyFrame));
         if(HandlePictureDisplayCount++ % 200 == 0) {
             std::wstringstream wss;
             wss << L"HandlePictureDisplay: Pushed Frame Enqueue Size " << g_readyGpuFrameQueue.size()
                 << L" Queueing Duration Time " << readyFrame.client_fec_end_to_render_end_time_ms << " ms";
             DebugLog(wss.str());
         }
+        g_readyGpuFrameQueue.push_back(std::move(readyFrame));
     }
     g_readyGpuFrameQueueCV.notify_one();
 
