@@ -1126,6 +1126,16 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     g_swapChain->GetDesc1(&desc);
     if (desc.Width == (UINT)newW && desc.Height == (UINT)newH) return;
 
+    // Clear any buffered frames, as their underlying resources might be invalid
+    // after a resize. This prevents using stale D3D resources from the decoder.
+    DebugLog(L"Resize detected. Clearing in-flight frame queues.");
+    {
+        std::lock_guard<std::mutex> qlock(g_readyGpuFrameQueueMutex);
+        // The ComPtrs in the deque will automatically be released.
+        g_readyGpuFrameQueue.clear();
+    }
+    ClearReorderState(); // This clears the reorder buffer and resets sequence.
+
     // Bounded wait so we never hard-freeze the pipeline
     auto WaitForGpuWithTimeout = [](DWORD totalTimeoutMs)->bool {
         // Signal
