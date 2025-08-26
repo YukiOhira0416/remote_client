@@ -997,8 +997,8 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
     // 2) N と N+1 がそろったら N を描画。なければ短い待ち or 圧迫で妥協
     {
-        static nvtx3::domain g_nvtx_reorder{"REORDER"};
-        nvtx3::scoped_range_in<g_nvtx_reorder> r{"Reorder(decide)"};
+        struct reorder_domain { static constexpr char const* name = "REORDER"; };
+        nvtx3::scoped_range_in<reorder_domain> r{"Reorder(decide)"};
         std::lock_guard<std::mutex> rlock(g_reorderMutex);
         auto now = std::chrono::steady_clock::now();
 
