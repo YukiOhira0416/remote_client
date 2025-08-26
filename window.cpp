@@ -931,6 +931,7 @@ bool InitD3D() {
 }
 
 UINT64 PopulateCommandListCount = 0;
+struct reorder_domain { static constexpr char const* name = "REORDER"; };
 bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass ReadyGpuFrame by reference
     nvtx3::scoped_range_in<d3d12_domain> nvtx_populate_cmdlist{"PopulateCommandList"};
     // Reset command allocator and command list
@@ -997,7 +998,6 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
     // 2) N と N+1 がそろったら N を描画。なければ短い待ち or 圧迫で妥協
     {
-        struct reorder_domain { static constexpr char const* name = "REORDER"; };
         nvtx3::scoped_range_in<reorder_domain> r{"Reorder(decide)"};
         std::lock_guard<std::mutex> rlock(g_reorderMutex);
         auto now = std::chrono::steady_clock::now();
