@@ -461,13 +461,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             return 0;
 
         case WM_ENTERSIZEMOVE:
-            nvtxMarkU64("ResizeStart", 0, 0);
+            NvtxMark("ResizeStart", 0, NvtxCategory::Render, 0);
             g_isSizing = true;
             return 0;
 
         case WM_EXITSIZEMOVE:
         {
-            nvtxMarkU64("ResizeEnd", 0, 0);
+            NvtxMark("ResizeEnd", 0, NvtxCategory::Render, 0);
             g_isSizing = false;
 
             // 1) Finalize and FORCE the resolution announce at drag end.
@@ -1027,7 +1027,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             // Buffer is full, we must advance to prevent a stall.
             auto jt = g_reorderBuffer.begin(); // Smallest available frame ID
             DebugLog(L"[REORDER] Buffer full. Jumping from expected " + std::to_wstring(g_expectedStreamFrame) + L" to " + std::to_wstring(jt->first));
-            nvtxMarkU64("ReorderDecision::Jump", jt->first, 0xFFFFA500);
+            NvtxMark("ReorderDecision::Jump", jt->first, NvtxCategory::Render, 0xFFFFA500);
             outFrameToRender = std::move(jt->second);
             g_expectedStreamFrame = jt->first + 1;
             g_reorderBuffer.erase(jt);

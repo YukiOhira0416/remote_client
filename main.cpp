@@ -42,6 +42,7 @@ static inline uint64_t SteadyNowMs() noexcept {
 #include <queue>
 #include <condition_variable>
 #include "DebugLog.h"
+#include "nvtx_helpers.h" // For custom NVTX ranges and markers
 // 追加：非同期ロガー初期化/終了用
 using namespace DebugLogAsync;
 #include "ReedSolomon.h"
