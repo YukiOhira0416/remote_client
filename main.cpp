@@ -65,6 +65,7 @@ using namespace DebugLogAsync;
 std::atomic<bool> g_networkReady{false};
 std::atomic<bool> g_pendingResolutionValid{false};
 std::atomic<int>  g_pendingW{0}, g_pendingH{0};
+std::atomic<bool> g_didInitialAnnounce{false};
 
 // Render kick global
 std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
@@ -151,6 +152,12 @@ void OnNetworkReady()
 {
     g_networkReady = true;
     DebugLog(L"OnNetworkReady: network is ready.");
+
+    bool already_announced = g_didInitialAnnounce.exchange(true);
+    if (already_announced) {
+        DebugLog(L"OnNetworkReady: initial announce already done, skipping.");
+        return;
+    }
 
     if (g_pendingResolutionValid.load()) {
         int w = g_pendingW.load(), h = g_pendingH.load();
@@ -791,9 +798,11 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
     while (receive_raw_packet_Running) {
         
         // Service ENet events with a timeout (e.g., 10ms)
-        nvtxRangePushA("WaitRecv");
-        int service_result = enet_host_service(server_host, &event, 10);
-        nvtxRangePop();
+        int service_result;
+        {
+            nvtx3::scoped_range r("WaitRecv");
+            service_result = enet_host_service(server_host, &event, 10);
+        }
 
         if (service_result > 0) {
             switch (event.type) {
@@ -807,14 +816,13 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
 
                 case ENET_EVENT_TYPE_RECEIVE:
                 {
-                    nvtxRangePushA("ProcessPacket");
+                    nvtx3::scoped_range r("ProcessPacket");
                     // DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Packet of length " + std::to_wstring(event.packet->dataLength) +
                     //          L" received from client on channel " + std::to_wstring(event.channelID));
 
                     if (event.packet->dataLength < 1) {
                         DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Received empty ENet packet.");
                         enet_packet_destroy(event.packet);
-                        nvtxRangePop();
                         continue;
                     }
 
@@ -869,7 +877,6 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                         if (payload_size < sizeof(ENetAppFragmentHeader)) {
                             DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: ENET_PACKET_TYPE_APP_FRAGMENT too small for header.");
                             enet_packet_destroy(event.packet);
-                            nvtxRangePop();
                             continue;
                         }
 
@@ -983,7 +990,6 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                     } else {
                         DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Unknown packet type " + std::to_wstring(packet_type));
                     }
-                    nvtxRangePop();
                     enet_packet_destroy(event.packet);
                     break;
                 }
@@ -1158,7 +1164,6 @@ ThreadConfig getOptimalThreadConfig(){
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
-    nvtx3::scoped_range r("Initialization");
     // Enforce GPU policy first
     if (!EnforceGpuPolicyOrExit()) {
         return 0; // Exit early per policy

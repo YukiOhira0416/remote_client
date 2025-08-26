@@ -914,6 +914,7 @@ bool InitD3D() {
 
 UINT64 PopulateCommandListCount = 0;
 bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass ReadyGpuFrame by reference
+    nvtx3::scoped_range nvtx_populate_cmdlist{"PopulateCommandList"};
     // Reset command allocator and command list
     HRESULT hr = g_commandAllocator->Reset();
     if (FAILED(hr)) { DebugLog(L"PopulateCommandList: Failed to reset command allocator. HR: " + HResultToHexWString(hr)); return false; }
@@ -1074,14 +1075,9 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         g_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
         g_commandList->SetGraphicsRootDescriptorTable(0, g_srvHeap->GetGPUDescriptorHandleForHeapStart());
 
-        nvtxRangePushA("Render");
         // フルスクリーンクアッド（TRIANGLESTRIP で 4 頂点）
         g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-        {
-            nvtx3::scoped_range r("PopulateCommandList::DrawInstanced");
-            g_commandList->DrawInstanced(4, 1, 0, 0);
-        }
-        nvtxRangePop();
+        g_commandList->DrawInstanced(4, 1, 0, 0);
 
         // Release the ComPtrs now that they are submitted for rendering
         // The resources themselves are managed by the decoder's pool
@@ -1186,7 +1182,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 }
 
 void RenderFrame() {
-    nvtxRangePushA("Frame");
+    nvtx3::scoped_range frame_r("Frame");
     nvtx3::scoped_range r("D3D12Present");
     // ---- [Release completed frame resources - BEGIN] ----
     // GPUがどこまで処理を終えたかを確認
@@ -1229,6 +1225,7 @@ void RenderFrame() {
         // NVTX scoped range strictly around Present call
         HRESULT hrPresent = S_OK;
         {
+            nvtx3::scoped_range nvtx_present{"Present"};
             char label[128];
             int bbIndex = static_cast<int>(g_currentFrameBufferIndex);
 
@@ -1379,7 +1376,6 @@ void RenderFrame() {
                 + L" - WGC to RenderEnd: " + std::to_wstring(wgc_to_renderend_ms) + L" ms.");
         }
     }
-    nvtxRangePop();
 }
 
 // Minimal blocking wait, only for shutdown.
