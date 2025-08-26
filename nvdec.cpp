@@ -1,4 +1,5 @@
 #include "nvdec.h"
+#include <cuda_runtime.h> // for cudaHostRegister/Alloc/Free and cudaMemcpyAsync
 #include "Globals.h"
 #include <stdexcept>
 #include <fstream>
@@ -173,6 +174,8 @@ FrameDecoder::~FrameDecoder() {
         m_hParser = nullptr;
     }
 
+    if (m_pcieStream) { cudaStreamDestroy(m_pcieStream); m_pcieStream = nullptr; }
+
     if (m_ctxLock) {
         cuvidCtxLockDestroy(m_ctxLock);
         m_ctxLock = nullptr;
@@ -196,6 +199,13 @@ bool FrameDecoder::Init() {
 
     CUDA_CHECK(cuvidCreateVideoParser(&m_hParser, &videoParserParameters));
 
+    // Create non-blocking stream for PCIe staging
+    cudaError_t cs = cudaStreamCreateWithFlags(&m_pcieStream, cudaStreamNonBlocking);
+    if (cs != cudaSuccess) {
+        DebugLog(L"FrameDecoder::Init: cudaStreamCreateWithFlags failed.");
+        // keep going; we will fall back to synchronous path if nullptr
+    }
+
     CUDA_CHECK(cuCtxPopCurrent(NULL));
     DebugLog(L"FrameDecoder initialized successfully.");
     return true;
@@ -217,16 +227,43 @@ void FrameDecoder::Decode(const H264Frame& frame) {
 
     { // 複数スレッドからの呼び出しを直列化
         std::lock_guard<std::mutex> lk(m_parseMutex);
+
+        // --- New (pinned + async HtoH stage) BEGIN ---
+        const uint8_t* srcPtr = frame.data.empty() ? nullptr : frame.data.data();
+        const size_t   srcSize = frame.data.size();
+
         CUVIDSOURCEDATAPACKET packet = {};
-        packet.payload = frame.data.data();
-        packet.payload_size = frame.data.size();
         packet.flags = CUVID_PKT_TIMESTAMP;
         packet.timestamp = frame.timestamp;
 
-        if (!packet.payload || packet.payload_size == 0) {
+        if (!srcPtr || srcSize == 0) {
             DebugLog(L"Decoder::Decode: Empty packet received.");
-            // Fall through to pop context and return.
+            // Proceed to pop context and return
+            CUDA_CHECK(cuCtxPopCurrent(NULL));
+            return;
+        }
+
+        void* pinnedClone = nullptr;
+        bool srcRegistered = false;
+        cudaError_t st = cudaSuccess;
+
+        // 1) Temporarily pin the source std::vector buffer (page-locked host).
+        st = cudaHostRegister(const_cast<uint8_t*>(srcPtr), srcSize, cudaHostRegisterPortable /*| cudaHostRegisterReadOnly*/);
+        if (st == cudaSuccess) {
+            srcRegistered = true;
         } else {
+            // Not fatal; NVDEC will still get a pinned destination below.
+            DebugLog(L"Decode: cudaHostRegister failed; continuing with pinned clone only.");
+        }
+
+        // 2) Allocate a pinned host clone to hand to NVDEC (ensures DMA-friendly buffer).
+        st = cudaHostAlloc(&pinnedClone, srcSize, cudaHostAllocPortable);
+        if (st != cudaSuccess) {
+            // Fallback: if allocation fails, hand NVDEC the original pointer (still okay if srcRegistered).
+            // Note: This is still safe; payload must be host memory.
+            packet.payload = srcPtr;
+            packet.payload_size = static_cast<unsigned long>(srcSize);
+
             // NVDEC API 呼び出し前後をロック（公式の方法）
             cuvidCtxLock(m_ctxLock, 0);
             CUresult cr = cuvidParseVideoData(m_hParser, &packet);
@@ -237,10 +274,57 @@ void FrameDecoder::Decode(const H264Frame& frame) {
                 std::wstring msg = L"cuvidParseVideoData failed: ";
                 if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
                 DebugLog(msg);
-                // 継続可能：ここでは throw せず、末尾の PopCurrent に任せる
+            }
+
+            if (srcRegistered) cudaHostUnregister(const_cast<uint8_t*>(srcPtr));
+            CUDA_CHECK(cuCtxPopCurrent(NULL));
+            return;
+        }
+
+        // 3) Asynchronously stage from (registered) source to the pinned clone.
+        cudaStream_t s = m_pcieStream;
+        if (!s) {
+            // If stream creation failed, fall back to a synchronous memcpy to the pinned clone.
+            std::memcpy(pinnedClone, srcPtr, srcSize);
+        } else {
+            // If the source is registered, the HtoH async copy can be non-blocking with respect to the calling thread.
+            cudaError_t mc = cudaMemcpyAsync(pinnedClone, srcPtr, srcSize, cudaMemcpyHostToHost, s);
+            if (mc != cudaSuccess) {
+                // Fall back to synchronous memcpy on failure
+                std::memcpy(pinnedClone, srcPtr, srcSize);
+            } else {
+                // Wait for the async stage to complete before giving the payload to NVDEC.
+                cudaError_t ss = cudaStreamSynchronize(s);
+                if (ss != cudaSuccess) {
+                    // Fall back to synchronous memcpy if synchronize fails for any reason.
+                    std::memcpy(pinnedClone, srcPtr, srcSize);
+                }
             }
         }
+
+        // 4) Hand the pinned clone to NVDEC.
+        packet.payload = pinnedClone;
+        packet.payload_size = static_cast<unsigned long>(srcSize);
+
+        // NVDEC API 呼び出し前後をロック（公式の方法）
+        cuvidCtxLock(m_ctxLock, 0);
+        CUresult cr = cuvidParseVideoData(m_hParser, &packet);
+        cuvidCtxUnlock(m_ctxLock, 0);
+
+        // 5) Cleanup of pinned resources happens immediately after parse returns.
+        if (pinnedClone) cudaFreeHost(pinnedClone);
+        if (srcRegistered) cudaHostUnregister(const_cast<uint8_t*>(srcPtr));
+
+        if (cr != CUDA_SUCCESS) {
+            const char* es = nullptr; cuGetErrorString(cr, &es);
+            std::wstring msg = L"cuvidParseVideoData failed: ";
+            if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
+            DebugLog(msg);
+            // 継続可能：ここでは throw せず、末尾の PopCurrent に任せる
+        }
+        // --- New (pinned + async HtoH stage) END ---
     }
+
     CUDA_CHECK(cuCtxPopCurrent(NULL));
 }
 

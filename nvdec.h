@@ -43,6 +43,7 @@ public:
     static int CUDAAPI HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDispInfo);
 
 private:
+    cudaStream_t m_pcieStream = nullptr;
     CUvideoctxlock m_ctxLock = nullptr;
     std::mutex m_parseMutex; // Decode() を直列化する場合に使用
 
