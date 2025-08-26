@@ -48,6 +48,7 @@ extern Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;
 extern const int RS_K;
 extern const int RS_M;
 extern const int RS_N;
+extern const bool g_useFEC;
 extern std::once_flag g_matrix_init_flag;
 extern std::vector<uint8_t> g_encode_matrix;
 extern std::atomic<bool> g_matrix_initialized;

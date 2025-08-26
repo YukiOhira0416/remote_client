@@ -657,6 +657,10 @@ void InitializeRSMatrix() {
 }
 
 void ListenForResendRequests() {
+    SetThreadDescription(GetCurrentThread(), L"ResendListenThread");
+#ifdef ENABLE_NVTX
+    nvtxNameOsThreadW(GetCurrentThreadId(), L"ResendListenThread");
+#endif
     DebugLog(L"ListenForResendRequests thread started.");
 
     SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -724,6 +728,10 @@ void ListenForResendRequests() {
 }
 
 void CountBandW() {
+    SetThreadDescription(GetCurrentThread(), L"BandwidthThread");
+#ifdef ENABLE_NVTX
+    nvtxNameOsThreadW(GetCurrentThreadId(), L"BandwidthThread");
+#endif
     SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (udpSocket == INVALID_SOCKET) {
         DebugLog(L"Failed to create socket.");
@@ -766,6 +774,11 @@ void CountBandW() {
 
 
 void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsThread would be clearer
+    std::wstring threadName = L"NetworkRecvThread " + std::to_wstring(threadId);
+    SetThreadDescription(GetCurrentThread(), threadName.c_str());
+#ifdef ENABLE_NVTX
+    nvtxNameOsThreadW(GetCurrentThreadId(), threadName.c_str());
+#endif
     DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"] started.");
 
     // ENet should be initialized in wWinMain before starting this thread.
@@ -796,13 +809,11 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
     std::chrono::steady_clock::time_point last_timeout_check = std::chrono::steady_clock::now();
 
     while (receive_raw_packet_Running) {
+        NvtxRange r("NetworkRecv", NvtxCategory::Net, 0xFFFF0000);
         
         // Service ENet events with a timeout (e.g., 10ms)
         int service_result;
-        {
-            nvtx3::scoped_range r("WaitRecv");
-            service_result = enet_host_service(server_host, &event, 10);
-        }
+        service_result = enet_host_service(server_host, &event, 10);
 
         if (service_result > 0) {
             switch (event.type) {
@@ -816,7 +827,6 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
 
                 case ENET_EVENT_TYPE_RECEIVE:
                 {
-                    nvtx3::scoped_range r("ProcessPacket");
                     // DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Packet of length " + std::to_wstring(event.packet->dataLength) +
                     //          L" received from client on channel " + std::to_wstring(event.channelID));
 
@@ -1025,6 +1035,11 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
 }
 
 void FecWorkerThread(int threadId) {
+    std::wstring threadName = L"FecWorkerThread " + std::to_wstring(threadId);
+    SetThreadDescription(GetCurrentThread(), threadName.c_str());
+#ifdef ENABLE_NVTX
+    nvtxNameOsThreadW(GetCurrentThreadId(), threadName.c_str());
+#endif
     DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"] started.");
     UINT64 count = 0;
     const std::chrono::milliseconds EMPTY_QUEUE_WAIT_MS(1);
@@ -1102,7 +1117,25 @@ void FecWorkerThread(int threadId) {
                 // currentFrameMetaForAttempt.originalDataLen is already host order
                 uint32_t originalLenForDecode = currentFrameMetaForAttempt.originalDataLen;
 
-                if (g_matrix_initialized && DecodeFEC_Jerasure(shardsForDecodeAttempt, RS_K, RS_M, originalLenForDecode, decodedFrameData, g_jerasure_matrix)) {
+                bool fecDecoded = false;
+                if (g_useFEC && g_matrix_initialized) {
+                    fecDecoded = DecodeFEC_Jerasure(shardsForDecodeAttempt, RS_K, RS_M, originalLenForDecode, decodedFrameData, g_jerasure_matrix);
+                } else {
+                    // Fallback for when FEC is disabled: just use the first K data shards directly
+                    // This assumes we received at least K data shards.
+                    for (int i = 0; i < RS_K; ++i) {
+                        auto it = shardsForDecodeAttempt.find(i);
+                        if (it != shardsForDecodeAttempt.end()) {
+                            decodedFrameData.insert(decodedFrameData.end(), it->second.begin(), it->second.end());
+                        }
+                    }
+                    if (decodedFrameData.size() > originalLenForDecode) {
+                        decodedFrameData.resize(originalLenForDecode);
+                    }
+                    fecDecoded = (decodedFrameData.size() == originalLenForDecode);
+                }
+
+                if (fecDecoded) {
                     // Save H264 file after successful FEC decode, before enqueue
                     // SaveH264ToFile_NUM(decodedFrameData, "decoded_frame");
 
