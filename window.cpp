@@ -33,6 +33,10 @@
 #include "AppShutdown.h"
 #include "main.h" // For RequestIDRNow
 
+// CUDA includes
+#include <cuda.h>
+#include <cuda_runtime_api.h>
+
 // ==== [Multi-monitor helpers - BEGIN] ====
 #ifndef _USE_MATH_DEFINES
 #define _USE_MATH_DEFINES
@@ -220,6 +224,7 @@ static inline void SetViewportScissorToBackbuffer(
 }
 
 // D3D12 Global Variables
+static nvtx3::domain g_nvtx_d3d12{"D3D12"};
 static constexpr UINT kSwapChainBufferCount = 3; // was 2
 Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;
 Microsoft::WRL::ComPtr<ID3D12CommandQueue> g_d3d12CommandQueue;
@@ -352,7 +357,7 @@ void ClearReorderState()
 
 // 調整パラメータ
 static constexpr size_t REORDER_MAX_BUFFER = 8; // これを超えたら妥協して前進
-static constexpr int    REORDER_WAIT_MS    = 0; // N+1 を待つ最大時間（ms） (from 3ms)
+static constexpr int    REORDER_WAIT_MS    = 3; // N+1 を待つ最大時間（ms） (from 3ms)
 static std::chrono::steady_clock::time_point g_lastReorderDecision = std::chrono::steady_clock::now();
 
 // Rendering specific D3D12 globals
@@ -612,6 +617,7 @@ bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
 }
 
 bool InitD3D() {
+    nvtxNameOsThreadA(GetCurrentThreadId(), "RenderThread");
         // Release existing D3D12 resources if re-initializing
     if (g_fence) g_fence.Reset();
     if (g_commandList) g_commandList.Reset();
@@ -890,7 +896,7 @@ bool InitD3D() {
 
     // 11. Create SRV Descriptor Heap (for Y and UV textures)
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-    srvHeapDesc.NumDescriptors = 2 * 2; // 2 textures (Y, UV) per frame buffer for double buffering (or more if needed)
+    // srvHeapDesc.NumDescriptors = 2 * 2; // 2 textures (Y, UV) per frame buffer for double buffering (or more if needed)
                                         // For simplicity, let's assume we update descriptors for the current frame's textures.
                                         // So, 2 descriptors are enough if we update them each frame.
                                         // If we pre-create for all decoder surfaces, it'd be NUM_DECODE_SURFACES_IN_POOL * 2.
@@ -1026,6 +1032,15 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     }
 
     if (hasFrameToRender && outFrameToRender.hw_decoded_texture_Y && outFrameToRender.hw_decoded_texture_UV) {
+        // NEW: Wait for async CUDA copy to complete
+        if (outFrameToRender.copyDone) {
+            // Fast path: query first
+            if (cuEventQuery(outFrameToRender.copyDone) == CUDA_ERROR_NOT_READY) {
+                nvtx3::scoped_range r("CUDA::Wait(copyDone)");
+                cuEventSynchronize(outFrameToRender.copyDone); // bounded (usually ~0ms)
+            }
+        }
+
         // Use the *video* size for centering (what the server encodes)
         const int videoW = currentResolutionWidth.load();
         const int videoH = currentResolutionHeight.load();
@@ -1217,8 +1232,11 @@ void RenderFrame() {
     const bool frameWasRendered = PopulateCommandList(renderedFrameData); // 今回のフレームで実描画コマンドを記録したか？
 
     // Command list is populated (at least with a clear). Now execute and present.
-    ID3D12CommandList* ppCommandLists[] = { g_commandList.Get() };
-    g_d3d12CommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+    {
+        nvtx3::scoped_range_in<g_nvtx_d3d12> exec_r("ExecuteCommandLists");
+        ID3D12CommandList* ppCommandLists[] = { g_commandList.Get() };
+        g_d3d12CommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+    }
 
     const bool forcePresent = g_forcePresentOnce.exchange(false, std::memory_order_acq_rel);
     const bool shouldPresent = frameWasRendered || forcePresent;
@@ -1228,6 +1246,7 @@ void RenderFrame() {
         const UINT presentFlags = g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
         HRESULT hrPresent = S_OK;
         {
+            nvtx3::scoped_range_in<g_nvtx_d3d12> present_r{"Present(Submit)"};
             // Keep the current vsync interval (looks like 0); only flags change:
             hrPresent = g_swapChain->Present(0, presentFlags);
             // Keep existing error handling/logging if present.
@@ -1250,6 +1269,12 @@ void RenderFrame() {
             if (FAILED(hr)) {
                 DebugLog(L"RenderFrame: Failed to signal fence. HR: " + HResultToHexWString(hr));
             }
+
+            // NEW: Extract data for logging BEFORE the move
+            const auto log_render_start_ms = renderedFrameData.render_start_ms;
+            const auto log_stream_frame_no = renderedFrameData.streamFrameNumber;
+            const auto log_original_frame_no = renderedFrameData.originalFrameNumber;
+            const auto log_id = renderedFrameData.id;
 
             // GPUに投入したフレームのリソースを、完了まで破棄しないようにキューへ移動
             {
@@ -1277,7 +1302,7 @@ void RenderFrame() {
                     } else {
                         // Bounded wait keeps pipeline responsive; still measured in the existing logging
                         const DWORD timeoutMs = 5; // short, non-infinite
-                        nvtx3::scoped_range wait_r("RenderFrame::WaitForGPU");
+                        nvtx3::scoped_range_in<g_nvtx_d3d12> wait_r{"WaitForGPU(bounded)"};
                         WaitForSingleObjectEx(g_fenceEvent, timeoutMs, FALSE);
                     }
                 }
@@ -1300,12 +1325,6 @@ void RenderFrame() {
 
     // ---- Logging (only if a new frame was actually rendered) ----
     if (frameWasRendered) {
-        // ログ用変数をここで宣言
-        const auto log_render_start_ms = renderedFrameData.render_start_ms;
-        const auto log_stream_frame_no = renderedFrameData.streamFrameNumber;
-        const auto log_original_frame_no = renderedFrameData.originalFrameNumber;
-        const auto log_id = renderedFrameData.id;
-
         const uint64_t render_end_ms = SteadyNowMs();
 
         // Render totals (steady)

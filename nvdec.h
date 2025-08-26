@@ -80,6 +80,10 @@ private:
         HANDLE sharedHandleUV;
         UINT pitchY;
         UINT pitchUV;
+
+        // NEW: for async copy
+        CUstream copyStream = nullptr;
+        CUevent copyDone = nullptr;
     };
 
     std::vector<DecodedFrameResource> m_frameResources;
