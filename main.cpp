@@ -1020,6 +1020,7 @@ void FecWorkerThread(int threadId) {
         ParsedShardInfo parsedInfo;
 
         if(g_parsedShardQueue.size_approx() == 0){
+            std::this_thread::sleep_for(EMPTY_QUEUE_WAIT_MS);
             continue;
         }
 

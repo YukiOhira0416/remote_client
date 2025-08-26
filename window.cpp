@@ -350,7 +350,7 @@ void ClearReorderState()
 
 // 調整パラメータ
 static constexpr size_t REORDER_MAX_BUFFER = 8; // これを超えたら妥協して前進
-static constexpr int    REORDER_WAIT_MS    = 1; // N+1 を待つ最大時間（ms） (from 3ms)
+static constexpr int    REORDER_WAIT_MS    = 0; // N+1 を待つ最大時間（ms） (from 3ms)
 static std::chrono::steady_clock::time_point g_lastReorderDecision = std::chrono::steady_clock::now();
 
 // Rendering specific D3D12 globals
