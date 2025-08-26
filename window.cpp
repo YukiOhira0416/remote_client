@@ -1244,10 +1244,6 @@ void RenderFrame() {
             }
 
             // GPUに投入したフレームのリソースを、完了まで破棄しないようにキューへ移動
-            const auto log_render_start_ms = renderedFrameData.render_start_ms;
-            const auto log_stream_frame_no = renderedFrameData.streamFrameNumber;
-            const auto log_original_frame_no = renderedFrameData.originalFrameNumber;
-            const auto log_id = renderedFrameData.id;
             {
                 std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
                 g_inFlightFrames.push({std::move(renderedFrameData), currentFenceVal});
@@ -1296,6 +1292,12 @@ void RenderFrame() {
 
     // ---- Logging (only if a new frame was actually rendered) ----
     if (frameWasRendered) {
+        // ログ用変数をここで宣言
+        const auto log_render_start_ms = renderedFrameData.render_start_ms;
+        const auto log_stream_frame_no = renderedFrameData.streamFrameNumber;
+        const auto log_original_frame_no = renderedFrameData.originalFrameNumber;
+        const auto log_id = renderedFrameData.id;
+
         const uint64_t render_end_ms = SteadyNowMs();
 
         // Render totals (steady)

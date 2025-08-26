@@ -606,7 +606,6 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     // RAII mapper for the video frame. It will be unmapped automatically.
     nvtx3::scoped_range r_map("HandlePictureDisplay::cuvidMapVideoFrame");
     MappedVideoFrame mappedFrame(self->m_hDecoder, pDispInfo->picture_index, &oVPP);
-    r_map.end();
     if (!mappedFrame.IsValid()) {
         const char* es = nullptr; cuGetErrorString(mappedFrame.GetMapResult(), &es);
         std::wstring msg = L"cuvidMapVideoFrame failed: ";
@@ -632,6 +631,8 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     const size_t srcWidthBytes_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulWidth);
     const size_t srcHeightRows_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulHeight / 2);
 
+
+    CUresult cr;
     {
         nvtx3::scoped_range r("HandlePictureDisplay::cuMemcpy2D");
         CUDA_MEMCPY2D cpyY = {};
@@ -643,7 +644,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         cpyY.WidthInBytes  = srcWidthBytes_Y;
         cpyY.Height        = srcHeightRows_Y;
 
-        CUresult cr = cuMemcpy2D(&cpyY);
+        cr = cuMemcpy2D(&cpyY);
         if (cr != CUDA_SUCCESS) {
             const char* es = nullptr; cuGetErrorString(cr, &es);
             std::wstring msg = L"cuMemcpy2D(Y) failed: ";
