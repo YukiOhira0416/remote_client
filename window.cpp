@@ -930,6 +930,12 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     if (FAILED(hr)) { DebugLog(L"PopulateCommandList: Failed to reset command list. HR: " + HResultToHexWString(hr)); return false; }
 
     // Transition the current back buffer from PRESENT to RENDER_TARGET.
+    if (!g_renderTargets[g_currentFrameBufferIndex]) {
+        // This can happen during a resize when the swap chain is being recreated.
+        // We close the command list and return, skipping rendering for this frame.
+        g_commandList->Close();
+        return false;
+    }
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
