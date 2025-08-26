@@ -59,6 +59,7 @@ using namespace DebugLogAsync;
 #include <cuda_runtime_api.h>
 #include <d3dx12.h>
 #include <d3d12.h>
+#include <nvtx3/nvtx3.hpp>
 
 // === 新規：ネットワーク準備・解像度ペンディング管理 ===
 std::atomic<bool> g_networkReady{false};
@@ -1150,6 +1151,7 @@ ThreadConfig getOptimalThreadConfig(){
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
+    nvtx3::scoped_range r("Initialization");
     // Enforce GPU policy first
     if (!EnforceGpuPolicyOrExit()) {
         return 0; // Exit early per policy

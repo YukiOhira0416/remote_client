@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <nvtx3/nvtx3.hpp>
 
 // Use a single monotonic clock for all latency metrics.
 static inline uint64_t SteadyNowMs() noexcept {
@@ -749,6 +750,7 @@ void NvdecThread(int threadId) {
     while (g_decode_worker_Running) { // Use the same global running flag
         H264Frame frame;
         if (g_h264FrameQueue.try_dequeue(frame)) {
+            nvtx3::scoped_range r("CUDA Decode");
             frame.decode_start_ms = SteadyNowMs();
             g_frameDecoder->Decode(frame);
             if(DecoderCount++ % 200 == 0)DebugLog(L"NvdecThread: Dequeue Size " + std::to_wstring(g_h264FrameQueue.size_approx()));

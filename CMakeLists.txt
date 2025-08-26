@@ -33,6 +33,7 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/enet_x64-windows/include
     ${CMAKE_SOURCE_DIR}/gf-complete/include
     ${CMAKE_SOURCE_DIR}/Jerasure/include
+    ${CMAKE_SOURCE_DIR}/third_party/nvtx/include
     "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/include"
     "C:/Program Files/NVIDIA Corporation/Video_Codec_SDK_13.0.19/Interface"
 )
@@ -315,6 +316,7 @@ set(CPP_PROPERTIES_JSON_CONTENT "{
                 \"\${workspaceFolder}/enet_x64-windows/include\",
                 \"\${workspaceFolder}/gf-complete/include\",
                 \"\${workspaceFolder}/Jerasure/include\",
+                \"\${workspaceFolder}/third_party/nvtx/include\",
                 \"C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/include\",
                 \"C:/Program Files/NVIDIA Corporation/Video_Codec_SDK_13.0.19/Interface\"
             ],
