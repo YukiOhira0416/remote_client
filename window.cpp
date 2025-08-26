@@ -435,6 +435,50 @@ static void FinalizeResize(HWND hWnd, bool forceAnnounce = false)
 }
 
 UINT64 count = 0;
+// === Device-loss recovery (D3D12) ===
+// Minimal, bounded recovery; no layout changes elsewhere.
+static void RecoverDeviceIfLost(HWND hWnd)
+{
+    try {
+        // Optional: log the removal reason if available
+        if (g_d3d12Device) {
+            HRESULT rr = g_d3d12Device->GetDeviceRemovedReason();
+            DebugLog(L"RecoverDeviceIfLost: GetDeviceRemovedReason = " + HResultToHexWString(rr));
+        }
+
+        // 1) Release render resources safely; keep logging and global state intact.
+        CleanupD3DRenderResources(); // includes WaitForGpu(); safe even if partially initialized
+
+        // 2) Reinitialize D3D12 device/swap chain/pipeline
+        if (!InitD3D()) {
+            DebugLog(L"RecoverDeviceIfLost: InitD3D failed; will keep retrying via render loop.");
+            return;
+        }
+
+        // 3) Enqueue a swap-chain resize to current client size to ensure exact match
+        RECT rc{};
+        if (g_hWnd && GetClientRect(g_hWnd, &rc)) {
+            const int w = rc.right - rc.left;
+            const int h = rc.bottom - rc.top;
+            g_pendingResize.w.store(w, std::memory_order_relaxed);
+            g_pendingResize.h.store(h, std::memory_order_relaxed);
+            g_pendingResize.has.store(true, std::memory_order_release);
+        }
+
+        // 4) Force at least one Present to advance the chain even if no new decoded frame is ready.
+        g_forcePresentOnce.store(true, std::memory_order_release);
+
+        // 5) Nudge the streaming pipeline to resume smoothly (same as after WM_EXITSIZEMOVE)
+        ClearReorderState();
+        RequestIDRNow();
+
+        DebugLog(L"RecoverDeviceIfLost: D3D12 reinitialized and present nudged.");
+    } catch (...) {
+        DebugLog(L"RecoverDeviceIfLost: unexpected exception (ignored).");
+    }
+}
+
+
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     try {
         switch (message) {
@@ -1246,7 +1290,8 @@ void RenderFrame() {
         if (FAILED(hr)) {
             if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
                 DebugLog(L"RenderFrame (D3D12): Device removed/reset on Present. HR: " + HResultToHexWString(hr));
-                // TODO: Handle device loss (e.g., re-initialize)
+                RecoverDeviceIfLost(g_hWnd); // <— add this line
+                return; // bail out of this frame; next loop will re-render after recovery
             } else {
                 DebugLog(L"RenderFrame (D3D12): Present failed. HR: " + HResultToHexWString(hr));
             }
