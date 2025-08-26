@@ -646,8 +646,13 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     const size_t srcHeightRows_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulHeight / 2);
 
 
-    // Async copy on a per-surface stream; do not change formatting around here.
-    CUstream s = fr.copyStream; // per-surface stream you added/keep
+    // ---- begin: NVDEC copy (async unified) ----
+    // Keep all your existing variable setup and comments above this point.
+
+    // Use the per-surface stream (create/keep it alongside your per-surface arrays).
+    CUstream s = fr.copyStream;
+
+    // Y plane
     {
         nvtx3::scoped_range r("NVDEC::cuMemcpy2DAsync(Y)");
         CUDA_MEMCPY2D y = {};
@@ -660,6 +665,8 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         y.Height        = srcHeightRows_Y;
         CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&y, s));
     }
+
+    // UV plane
     {
         nvtx3::scoped_range r("NVDEC::cuMemcpy2DAsync(UV)");
         CUDA_MEMCPY2D uv = {};
@@ -673,13 +680,16 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&uv, s));
     }
 
-    // Record copy-done event; keep layout unchanged around this region.
+    // Record completion event for this frame
     CUDA_CHECK_CALLBACK(cuEventRecord(fr.copyDone, s));
 
     // If we get here, all CUDA operations were successful.
     // The destructors for mappedFrame and ctxLocker will automatically clean up.
 
     ReadyGpuFrame readyFrame;
+    // Store the event in the outgoing frame struct; keep all existing fields/logging intact.
+    readyFrame.copyDone = fr.copyDone;
+
     readyFrame.hw_decoded_texture_Y  = self->m_frameResources[pDispInfo->picture_index].pTextureY;
     readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
     readyFrame.timestamp             = pDispInfo->timestamp;
@@ -687,7 +697,8 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     readyFrame.id                    = readyFrame.originalFrameNumber;
     readyFrame.width                 = self->m_frameWidth;
     readyFrame.height                = self->m_frameHeight;
-    readyFrame.copyDone              = fr.copyDone; // NEW
+    // Remove any cuCtxSynchronize() here. Do not add sleeps.
+    // ---- end: NVDEC copy (async unified) ----
 
     // --- Client-side timing (steady clock) ---
     FrameTimings timings;

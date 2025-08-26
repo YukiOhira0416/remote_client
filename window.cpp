@@ -733,6 +733,16 @@ bool InitD3D() {
         DebugLog(L"InitD3D (D3D12): Failed to QI for IDXGISwapChain3. HRESULT: " + HResultToHexWString(hr));
         return false;
     }
+
+    {
+        Microsoft::WRL::ComPtr<IDXGISwapChain2> sc2;
+        HRESULT hr_sc2 = g_swapChain.As(&sc2);
+        if (SUCCEEDED(hr_sc2) && sc2) {
+            sc2->SetMaximumFrameLatency(2);
+            g_frameLatencyWaitableObject = sc2->GetFrameLatencyWaitableObject();
+        }
+    }
+
     g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
     DebugLog(L"InitD3D (D3D12): Swap Chain created.");
 
@@ -1214,6 +1224,15 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 }
 
 void RenderFrame() {
+    if (g_frameLatencyWaitableObject) {
+        // NVTX range for frame latency wait
+        {
+            // Use the same NVTX style you already use in this file.
+            nvtx3::scoped_range_in<d3d12_domain> frame_latency_wait{"FrameLatency(Wait)"};
+            // Prefer alertable wait to keep message pump responsive on some platforms.
+            WaitForSingleObjectEx(g_frameLatencyWaitableObject, INFINITE, /*bAlertable=*/TRUE);
+        }
+    }
     nvtx3::scoped_range_in<d3d12_domain> frame_r("Frame");
     nvtx3::scoped_range_in<d3d12_domain> r("D3D12Present");
     // Use existing fence and queue types; keep comments and layout intact.
@@ -1379,7 +1398,7 @@ void RenderFrame() {
                     } else {
                         // Bounded wait keeps pipeline responsive; still measured in the existing logging
                         const DWORD timeoutMs = 5; // short, non-infinite
-                        nvtx3::scoped_range_in<d3d12_domain> wait_r{"WaitForGPU(bounded)"};
+                        nvtx3::scoped_range_in<d3d12_domain> fence_wait{"Fence(Wait bounded)"};
                         WaitForSingleObjectEx(g_fenceEvent, timeoutMs, FALSE);
                     }
                 }
