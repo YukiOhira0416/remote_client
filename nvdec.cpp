@@ -303,7 +303,7 @@ void FrameDecoder::Decode(const H264Frame& frame) {
         }
 
         // 4) Hand the pinned clone to NVDEC.
-        packet.payload = pinnedClone;
+        packet.payload = static_cast<const unsigned char*>(pinnedClone);
         packet.payload_size = static_cast<unsigned long>(srcSize);
 
         // NVDEC API 呼び出し前後をロック（公式の方法）
