@@ -1226,16 +1226,34 @@ void RenderFrame() {
     const bool shouldPresent = frameWasRendered || forcePresent;
 
     if (shouldPresent) {
-        nvtxRangePushA("Present");
-        // Present (VSync=0, tearing depends on support)
-        hr = g_swapChain->Present(0, g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
-        nvtxRangePop();
-        if (FAILED(hr)) {
-            if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
-                DebugLog(L"RenderFrame (D3D12): Device removed/reset on Present. HR: " + HResultToHexWString(hr));
+        // NVTX scoped range strictly around Present call
+        HRESULT hrPresent = S_OK;
+        {
+            char label[128];
+            int bbIndex = static_cast<int>(g_currentFrameBufferIndex);
+
+            // Use stream frame number if a frame was rendered, otherwise use a counter.
+            if (frameWasRendered) {
+                uint32_t streamNo = renderedFrameData.streamFrameNumber;
+                snprintf(label, sizeof(label), "Present [stream #%u] bbIndex=%d", streamNo, bbIndex);
+            } else {
+                static std::atomic<uint64_t> s_presentCounter{0};
+                uint64_t presentNo = ++s_presentCounter;
+                snprintf(label, sizeof(label), "Present [#%llu] bbIndex=%d", static_cast<unsigned long long>(presentNo), bbIndex);
+            }
+
+            nvtx3::scoped_range _nvtx_present_range(label);
+
+            // Present (VSync=0, tearing depends on support)
+            hrPresent = g_swapChain->Present(0, g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
+        }
+
+        if (FAILED(hrPresent)) {
+            if (hrPresent == DXGI_ERROR_DEVICE_REMOVED || hrPresent == DXGI_ERROR_DEVICE_RESET) {
+                DebugLog(L"RenderFrame (D3D12): Device removed/reset on Present. HR: " + HResultToHexWString(hrPresent));
                 // TODO: Handle device loss (e.g., re-initialize)
             } else {
-                DebugLog(L"RenderFrame (D3D12): Present failed. HR: " + HResultToHexWString(hr));
+                DebugLog(L"RenderFrame (D3D12): Present failed. HR: " + HResultToHexWString(hrPresent));
             }
         }
 
