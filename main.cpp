@@ -52,6 +52,7 @@ using namespace DebugLogAsync;
 #include <sstream>
 #include "concurrentqueue/concurrentqueue.h"
 #include <enet/enet.h>
+#include <nvtx3/nvtx3.hpp>
 #include "Globals.h"
 #include "nvdec.h"
 #include "AppShutdown.h"
@@ -59,7 +60,6 @@ using namespace DebugLogAsync;
 #include <cuda_runtime_api.h>
 #include <d3dx12.h>
 #include <d3d12.h>
-#include <nvtx3/nvtx3.hpp>
 
 // === 新規：ネットワーク準備・解像度ペンディング管理 ===
 std::atomic<bool> g_networkReady{false};
