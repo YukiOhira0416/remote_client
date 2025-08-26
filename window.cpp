@@ -231,7 +231,7 @@ UINT g_rtvDescriptorSize;
 UINT g_currentFrameBufferIndex; // Current back buffer index
 UINT64 g_fenceValue;
 HANDLE g_fenceEvent;
-UINT64 g_renderFenceValues[2]; // Fence values for each frame in flight for rendering
+// The g_renderFenceValues array is no longer used; replaced by a single monotonic g_fenceValue.
 
 // D3D11 specific globals (to be removed or replaced)
 #define CLIENT_PORT_FEC 8080// FEC用ポート番号
@@ -1067,6 +1067,23 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             s_lastUV = outFrameToRender.hw_decoded_texture_UV.Get();
         }
 
+        // Transition Y/UV textures to PIXEL_SHADER_RESOURCE state for safety.
+        if (outFrameToRender.hw_decoded_texture_Y && outFrameToRender.hw_decoded_texture_UV) {
+            D3D12_RESOURCE_BARRIER barriers[2] = {};
+            for (int i = 0; i < 2; ++i) {
+                auto* res = (i == 0)
+                    ? outFrameToRender.hw_decoded_texture_Y.Get()
+                    : outFrameToRender.hw_decoded_texture_UV.Get();
+                barriers[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barriers[i].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                barriers[i].Transition.pResource   = res;
+                barriers[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                barriers[i].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+                barriers[i].Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            }
+            g_commandList->ResourceBarrier(2, barriers);
+        }
+
         // Set descriptor heap for SRVs
         ID3D12DescriptorHeap* ppHeaps[] = { g_srvHeap.Get() };
         g_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
@@ -1164,12 +1181,6 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     }
     DebugLog(L"RenderThread: RTVs recreated after resize.");
 
-    // After ResizeBuffers, any old fence targets are invalid for the new back buffers.
-    // This reset prevents waiting on never-signaled values.
-    const UINT64 completed = g_fence->GetCompletedValue();
-    for (UINT i = 0; i < 2; ++i) {
-        g_renderFenceValues[i] = completed + 1;
-    }
     // Refresh the current index, as it might have changed.
     g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
 
@@ -1212,6 +1223,20 @@ void RenderFrame() {
     ID3D12CommandList* ppCommandLists[] = { g_commandList.Get() };
     g_d3d12CommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
 
+    // If a frame was rendered, signal the fence and add it to the in-flight queue.
+    // This is done after execute and before present.
+    if (frameWasRendered) {
+        UINT64 fenceToSignal = ++g_fenceValue;
+        hr = g_d3d12CommandQueue->Signal(g_fence.Get(), fenceToSignal);
+        if (SUCCEEDED(hr)) {
+            std::lock_guard<std::mutex> lk(g_inFlightFramesMutex);
+            // Use a copy, not a move, to keep renderedFrameData valid for logging below.
+            g_inFlightFrames.push({ renderedFrameData, fenceToSignal });
+        } else {
+            DebugLog(L"RenderFrame: Failed to signal fence. HR: " + HResultToHexWString(hr));
+        }
+    }
+
     const bool forcePresent = g_forcePresentOnce.exchange(false, std::memory_order_acq_rel);
     const bool shouldPresent = frameWasRendered || forcePresent;
 
@@ -1227,59 +1252,8 @@ void RenderFrame() {
             }
         }
 
-        if (frameWasRendered) {
-            // ---- Standard path for a rendered frame ----
-            // Fence: Track this frame's completion
-            const UINT64 currentFenceVal = g_renderFenceValues[g_currentFrameBufferIndex];
-            hr = g_d3d12CommandQueue->Signal(g_fence.Get(), currentFenceVal);
-            if (FAILED(hr)) {
-                DebugLog(L"RenderFrame: Failed to signal fence. HR: " + HResultToHexWString(hr));
-            }
-
-            // GPUに投入したフレームのリソースを、完了まで破棄しないようにキューへ移動
-            {
-                std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
-                g_inFlightFrames.push({std::move(renderedFrameData), currentFenceVal});
-            }
-
-            // Update back buffer index for the next frame
-            g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
-
-            // Wait only if we risk getting too far ahead of the GPU (bounded backlog)
-            bool shouldWait = false;
-            {
-                std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
-                // Keep at most 2 frames in flight for this back buffer index
-                // (Adjust threshold carefully if you observe pipe underflow/overflow)
-                shouldWait = (g_inFlightFrames.size() >= 2);
-            }
-
-            if (shouldWait) {
-                if (g_fence->GetCompletedValue() < g_renderFenceValues[g_currentFrameBufferIndex]) {
-                    hr = g_fence->SetEventOnCompletion(g_renderFenceValues[g_currentFrameBufferIndex], g_fenceEvent);
-                    if (FAILED(hr)) {
-                        DebugLog(L"RenderFrame: Failed to set event on completion. HR: " + HResultToHexWString(hr));
-                    } else {
-                        // Bounded wait keeps pipeline responsive; still measured in the existing logging
-                        const DWORD timeoutMs = 5; // short, non-infinite
-                        WaitForSingleObjectEx(g_fenceEvent, timeoutMs, FALSE);
-                    }
-                }
-            }
-
-            // Increment fence value for the next use of this RTV
-            g_renderFenceValues[g_currentFrameBufferIndex] = currentFenceVal + 1;
-        } else {
-            // ---- Forced present path (no new frame rendered) ----
-            // Don't perform fence waits or signals that assume a rendered frame.
-            // Just refresh the back buffer index so the next real frame uses the correct RTV.
-            g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
-
-            // To be extra safe, align the fence value for this buffer index to what's known to be completed.
-            // This prevents a future wait on a stale, never-to-be-signaled value.
-            const UINT64 completed = g_fence->GetCompletedValue();
-            g_renderFenceValues[g_currentFrameBufferIndex] = completed + 1;
-        }
+        // After present, just update the back buffer index for the next frame.
+        g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
     }
 
     // ---- Logging (only if a new frame was actually rendered) ----
