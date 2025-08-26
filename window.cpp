@@ -220,11 +220,12 @@ static inline void SetViewportScissorToBackbuffer(
 }
 
 // D3D12 Global Variables
+static constexpr UINT kSwapChainBufferCount = 3; // was 2
 Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;
 Microsoft::WRL::ComPtr<ID3D12CommandQueue> g_d3d12CommandQueue;
 Microsoft::WRL::ComPtr<IDXGISwapChain3> g_swapChain; // Use IDXGISwapChain3 or 4
 Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_rtvHeap;
-Microsoft::WRL::ComPtr<ID3D12Resource> g_renderTargets[2]; // Double buffering
+Microsoft::WRL::ComPtr<ID3D12Resource> g_renderTargets[kSwapChainBufferCount]; // Triple buffering
 Microsoft::WRL::ComPtr<ID3D12CommandAllocator> g_commandAllocator;
 Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> g_commandList;
 Microsoft::WRL::ComPtr<ID3D12Fence> g_fence;
@@ -232,7 +233,7 @@ UINT g_rtvDescriptorSize;
 UINT g_currentFrameBufferIndex; // Current back buffer index
 UINT64 g_fenceValue;
 HANDLE g_fenceEvent;
-UINT64 g_renderFenceValues[2]; // Fence values for each frame in flight for rendering
+UINT64 g_renderFenceValues[kSwapChainBufferCount]; // Fence values for each frame in flight for rendering
 
 // D3D11 specific globals (to be removed or replaced)
 #define CLIENT_PORT_FEC 8080// FEC用ポート番号
@@ -615,7 +616,7 @@ bool InitD3D() {
     if (g_fence) g_fence.Reset();
     if (g_commandList) g_commandList.Reset();
     if (g_commandAllocator) g_commandAllocator.Reset();
-    for (UINT i = 0; i < 2; ++i) {
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
         if (g_renderTargets[i]) g_renderTargets[i].Reset();
     }
     if (g_rtvHeap) g_rtvHeap.Reset();
@@ -699,7 +700,7 @@ bool InitD3D() {
 
     // 3. Create Swap Chain
     DXGI_SWAP_CHAIN_DESC1 scd1 = {};
-    scd1.BufferCount = 2; // Double buffering
+    scd1.BufferCount = kSwapChainBufferCount; // Triple buffering
     RECT rcClient;
     GetClientRect(g_hWnd, &rcClient);
     scd1.Width = (rcClient.right - rcClient.left > 0) ? (rcClient.right - rcClient.left) : 1;
@@ -730,7 +731,7 @@ bool InitD3D() {
 
     // 4. Create RTV Descriptor Heap
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = 2; // For double buffering
+    rtvHeapDesc.NumDescriptors = kSwapChainBufferCount; // For triple buffering
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     hr = g_d3d12Device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&g_rtvHeap));
@@ -743,7 +744,7 @@ bool InitD3D() {
 
     // 5. Create Render Target Views
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-    for (UINT i = 0; i < 2; ++i) {
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
         hr = g_swapChain->GetBuffer(i, IID_PPV_ARGS(&g_renderTargets[i]));
         if (FAILED(hr)) {
             DebugLog(L"InitD3D (D3D12): Failed to get swap chain buffer " + std::to_wstring(i) + L". HRESULT: " + HResultToHexWString(hr));
@@ -1138,15 +1139,15 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 
     WaitForGpuWithTimeout(500); // keep pumping; don’t freeze
 
-    for (UINT i = 0; i < 2; ++i) g_renderTargets[i].Reset();
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) g_renderTargets[i].Reset();
 
     HRESULT hr = g_swapChain->ResizeBuffers(
-        2, newW, newH, DXGI_FORMAT_R8G8B8A8_UNORM,
+        kSwapChainBufferCount, newW, newH, DXGI_FORMAT_R8G8B8A8_UNORM,
         g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
     if (FAILED(hr)) {
         DebugLog(L"RenderThread: ResizeBuffers failed. HR: " + HResultToHexWString(hr));
         // As a fallback, try automatic size:
-        hr = g_swapChain->ResizeBuffers(2, 0, 0, DXGI_FORMAT_R8G8B8A8_UNORM,
+        hr = g_swapChain->ResizeBuffers(kSwapChainBufferCount, 0, 0, DXGI_FORMAT_R8G8B8A8_UNORM,
                                         g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
         if (FAILED(hr)) {
             DebugLog(L"RenderThread: ResizeBuffers(0,0) also failed. HR: " + HResultToHexWString(hr));
@@ -1157,7 +1158,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
 
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-    for (UINT i = 0; i < 2; ++i) {
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
         hr = g_swapChain->GetBuffer(i, IID_PPV_ARGS(&g_renderTargets[i]));
         if (FAILED(hr)) {
             DebugLog(L"RenderThread: GetBuffer(" + std::to_wstring(i) + L") failed. HR: " + HResultToHexWString(hr));
@@ -1171,7 +1172,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     // After ResizeBuffers, any old fence targets are invalid for the new back buffers.
     // This reset prevents waiting on never-signaled values.
     const UINT64 completed = g_fence->GetCompletedValue();
-    for (UINT i = 0; i < 2; ++i) {
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
         g_renderFenceValues[i] = completed + 1;
     }
     // Refresh the current index, as it might have changed.
@@ -1184,17 +1185,19 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 void RenderFrame() {
     nvtx3::scoped_range frame_r("Frame");
     nvtx3::scoped_range r("D3D12Present");
-    // ---- [Release completed frame resources - BEGIN] ----
-    // GPUがどこまで処理を終えたかを確認
-    const UINT64 completedFenceValue = g_fence->GetCompletedValue();
+    // Use existing fence and queue types; keep comments and layout intact.
     {
-        std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
-        // キューの先頭から、完了済みのフレームを解放
-        while (!g_inFlightFrames.empty() && g_inFlightFrames.front().fenceValue <= completedFenceValue) {
-            g_inFlightFrames.pop(); // Dequeue and destroy the frame object, releasing its resources.
+        std::lock_guard<std::mutex> lk(g_inFlightFramesMutex);
+        while (!g_inFlightFrames.empty()) {
+            const auto& front = g_inFlightFrames.front();
+            if (g_fence->GetCompletedValue() >= front.fenceValue) {
+                // Resource lifetime tied to frameData; let it go out of scope here.
+                g_inFlightFrames.pop();
+            } else {
+                break;
+            }
         }
     }
-    // ---- [Release completed frame resources - END] ----
 
     // Pick up pending resize, if any
     if (g_pendingResize.has.load(std::memory_order_acquire)) {
@@ -1222,27 +1225,14 @@ void RenderFrame() {
     const bool shouldPresent = frameWasRendered || forcePresent;
 
     if (shouldPresent) {
-        // NVTX scoped range strictly around Present call
+        // Immediately before Present:
+        const UINT presentFlags = g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
         HRESULT hrPresent = S_OK;
         {
-            nvtx3::scoped_range nvtx_present{"Present"};
-            char label[128];
-            int bbIndex = static_cast<int>(g_currentFrameBufferIndex);
-
-            // Use stream frame number if a frame was rendered, otherwise use a counter.
-            if (frameWasRendered) {
-                uint32_t streamNo = renderedFrameData.streamFrameNumber;
-                snprintf(label, sizeof(label), "Present [stream #%u] bbIndex=%d", streamNo, bbIndex);
-            } else {
-                static std::atomic<uint64_t> s_presentCounter{0};
-                uint64_t presentNo = ++s_presentCounter;
-                snprintf(label, sizeof(label), "Present [#%llu] bbIndex=%d", static_cast<unsigned long long>(presentNo), bbIndex);
-            }
-
-            nvtx3::scoped_range _nvtx_present_range(label);
-
-            // Present (VSync=0, tearing depends on support)
-            hrPresent = g_swapChain->Present(0, g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
+            nvtx3::scoped_range _nvtx_present("Present");
+            // Keep the current vsync interval (looks like 0); only flags change:
+            hrPresent = g_swapChain->Present(0, presentFlags);
+            // Keep existing error handling/logging if present.
         }
 
         if (FAILED(hrPresent)) {
