@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN // winsock.h の含まれる量を減らす
 #define NOMINMAX
+#include <nvtx3/nvtx3.hpp>
 #include <d3dcompiler.h> // For shader compilation
 #include <DirectXColors.h> // For DirectX::Colors
 #include <windows.h>
@@ -31,7 +32,6 @@
 #include "Globals.h"
 #include "AppShutdown.h"
 #include "main.h" // For RequestIDRNow
-#include <nvtx3/nvtx3.hpp>
 
 // ==== [Multi-monitor helpers - BEGIN] ====
 #ifndef _USE_MATH_DEFINES
