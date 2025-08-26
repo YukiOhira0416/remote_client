@@ -974,7 +974,6 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
     // 2) N と N+1 がそろったら N を描画。なければ短い待ち or 圧迫で妥協
     {
-        nvtx3::scoped_range r("PopulateCommandList::ReorderBuffer");
         std::lock_guard<std::mutex> rlock(g_reorderMutex);
         auto now = std::chrono::steady_clock::now();
 
@@ -1229,7 +1228,6 @@ void RenderFrame() {
         const UINT presentFlags = g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
         HRESULT hrPresent = S_OK;
         {
-            nvtx3::scoped_range _nvtx_present("Present");
             // Keep the current vsync interval (looks like 0); only flags change:
             hrPresent = g_swapChain->Present(0, presentFlags);
             // Keep existing error handling/logging if present.
