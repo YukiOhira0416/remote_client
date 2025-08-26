@@ -28,7 +28,7 @@ struct NvtxRange {
       : range{
             nvtx3::message{name},
             nvtx3::category{static_cast<uint32_t>(cat)},
-            nvtx3::color{nvtx3::argb{colorARGB}},
+            nvtx3::color{colorARGB},
             nvtx3::payload{(uint64_t)0}
         }
     {}
@@ -38,7 +38,7 @@ struct NvtxRange {
     : range{
         nvtx3::message{name},
         nvtx3::category{static_cast<uint32_t>(cat)},
-        nvtx3::color{nvtx3::argb{colorARGB}},
+        nvtx3::color{colorARGB},
         nvtx3::payload{payload}
     }
     {}
@@ -50,7 +50,7 @@ inline void NvtxMark(const char* name, uint64_t payload, NvtxCategory cat = Nvtx
     nvtx3::mark_in<remote_client_domain>(
         nvtx3::message{name},
         nvtx3::category{static_cast<uint32_t>(cat)},
-        nvtx3::color{nvtx3::argb{colorARGB}},
+        nvtx3::color{colorARGB},
         nvtx3::payload{payload}
     );
 }
