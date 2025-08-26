@@ -997,6 +997,8 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
     // 2) N と N+1 がそろったら N を描画。なければ短い待ち or 圧迫で妥協
     {
+        static nvtx3::domain g_nvtx_reorder{"REORDER"};
+        nvtx3::scoped_range_in<g_nvtx_reorder> r{"Reorder(decide)"};
         std::lock_guard<std::mutex> rlock(g_reorderMutex);
         auto now = std::chrono::steady_clock::now();
 
@@ -1224,13 +1226,37 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 }
 
 void RenderFrame() {
-    if (g_frameLatencyWaitableObject) {
-        // NVTX range for frame latency wait
-        {
-            // Use the same NVTX style you already use in this file.
-            nvtx3::scoped_range_in<d3d12_domain> frame_latency_wait{"FrameLatency(Wait)"};
-            // Prefer alertable wait to keep message pump responsive on some platforms.
-            WaitForSingleObjectEx(g_frameLatencyWaitableObject, INFINITE, /*bAlertable=*/TRUE);
+    // NVTX range for frame latency wait
+    {
+        nvtx3::scoped_range_in<d3d12_domain> frame_latency_wait{"FrameLatency(Wait)"};
+        if (g_frameLatencyWaitableObject) {
+            // Wait on frame-latency object but remain responsive to window messages.
+            HANDLE handles[1] = { g_frameLatencyWaitableObject };
+            for (;;) {
+                DWORD r = MsgWaitForMultipleObjectsEx(
+                    1,
+                    handles,
+                    INFINITE,
+                    QS_ALLINPUT,
+                    MWMO_INPUTAVAILABLE | MWMO_ALERTABLE
+                );
+                if (r == WAIT_OBJECT_0) {
+                    // frame-latency object signaled -> proceed to next frame
+                    break;
+                } else if (r == WAIT_OBJECT_0 + 1) {
+                    // pump messages; preserve layout and existing logging if present
+                    MSG msg;
+                    while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                        TranslateMessage(&msg);
+                        DispatchMessage(&msg);
+                    }
+                    // loop and wait again
+                    continue;
+                } else {
+                    // Unexpected; if you already have logging, reuse it.
+                    break;
+                }
+            }
         }
     }
     nvtx3::scoped_range_in<d3d12_domain> frame_r("Frame");
@@ -1387,7 +1413,7 @@ void RenderFrame() {
                 std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
                 // Keep at most 2 frames in flight for this back buffer index
                 // (Adjust threshold carefully if you observe pipe underflow/overflow)
-                shouldWait = (g_inFlightFrames.size() >= 2);
+                shouldWait = (g_inFlightFrames.size() >= 3);
             }
 
             if (shouldWait) {
@@ -1408,6 +1434,7 @@ void RenderFrame() {
             g_renderFenceValues[g_currentFrameBufferIndex] = currentFenceVal + 1;
         } else {
             // ---- Forced present path (no new frame rendered) ----
+            nvtx3::scoped_range_in<d3d12_domain> r_forced{"Present(Forced)"};
             // Don't perform fence waits or signals that assume a rendered frame.
             // Just refresh the back buffer index so the next real frame uses the correct RTV.
             g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();

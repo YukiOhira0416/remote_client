@@ -798,9 +798,10 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
     while (receive_raw_packet_Running) {
         
         // Service ENet events with a timeout (e.g., 10ms)
+        static nvtx3::domain g_nvtx_net{"NET"};
         int service_result;
         {
-            nvtx3::scoped_range r("WaitRecv");
+            nvtx3::scoped_range_in<g_nvtx_net> r{"Net/WaitRecv"};
             service_result = enet_host_service(server_host, &event, 10);
         }
 
