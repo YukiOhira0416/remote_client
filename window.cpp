@@ -417,21 +417,29 @@ static void FinalizeResize(HWND hWnd, bool forceAnnounce = false)
     // Adjust *outer* window so that client becomes padded size
     RECT wr{0, 0, paddedClientW, paddedClientH};
     DWORD style = GetWindowLong(hWnd, GWL_STYLE);
-    DWORD ex    = GetWindowLong(hWnd, GWL_EXSTYLE);
-    AdjustWindowRectEx(&wr, style, GetMenu(hWnd)!=NULL, ex);
-    const int ww = wr.right - wr.left, wh = wr.bottom - wr.top;
+    if (style & WS_MAXIMIZE) {
+        // If maximized, don't try to resize the window.
+        // The swap chain will be resized to the current (maximized) client area.
+        g_pendingResize.w.store(cw, std::memory_order_relaxed);
+        g_pendingResize.h.store(ch, std::memory_order_relaxed);
+    } else {
+        DWORD ex    = GetWindowLong(hWnd, GWL_EXSTYLE);
+        AdjustWindowRectEx(&wr, style, GetMenu(hWnd)!=NULL, ex);
+        const int ww = wr.right - wr.left, wh = wr.bottom - wr.top;
 
-    RECT wrNow{}; GetWindowRect(hWnd, &wrNow);
-    if ((wrNow.right - wrNow.left) != ww || (wrNow.bottom - wrNow.top) != wh) {
-        SetWindowPos(hWnd, nullptr, 0, 0, ww, wh,
-                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        RECT wrNow{}; GetWindowRect(hWnd, &wrNow);
+        if ((wrNow.right - wrNow.left) != ww || (wrNow.bottom - wrNow.top) != wh) {
+            SetWindowPos(hWnd, nullptr, 0, 0, ww, wh,
+                         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        // Enqueue swap-chain resize to *padded client size*.
+        g_pendingResize.w.store(paddedClientW, std::memory_order_relaxed);
+        g_pendingResize.h.store(paddedClientH, std::memory_order_relaxed);
     }
 
     // Enqueue swap-chain resize to *padded client size*.
     // This might be redundant if SetWindowPos triggers a WM_SIZE that is handled,
     // but it's important to ensure the resize is correctly queued.
-    g_pendingResize.w.store(paddedClientW, std::memory_order_relaxed);
-    g_pendingResize.h.store(paddedClientH, std::memory_order_relaxed);
     g_pendingResize.has.store(true, std::memory_order_release);
 
     // Notify server (single gate) with the *video* resolution ONLY
@@ -533,11 +541,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 return 0;
             }
 
-            // This will now only run for programmatic resizes or the final resize
-            // triggered after a drag operation.
-            g_pendingResize.w.store(width, std::memory_order_relaxed);
-            g_pendingResize.h.store(height, std::memory_order_relaxed);
-            g_pendingResize.has.store(true, std::memory_order_release);
+            // For any non-sizing resize (maximize, restore, programmatic), we need
+            // to update the video resolution target and trigger a swap-chain resize.
+            // Using FinalizeResize handles the logic consistently.
+            // The 'forceAnnounce' is set to false as this is not an explicit user action
+            // like finishing a drag, but we still need to process the resize.
+            FinalizeResize(hWnd, false);
 
             return 0;
         }
