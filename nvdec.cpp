@@ -1,4 +1,3 @@
-#include <nvtx3/nvtx3.hpp>
 #include "nvdec.h"
 #include "Globals.h"
 #include <stdexcept>

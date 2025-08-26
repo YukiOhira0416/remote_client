@@ -1,5 +1,6 @@
 #pragma once
 
+#include <nvtx3/nvtx3.hpp>
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <vector>
