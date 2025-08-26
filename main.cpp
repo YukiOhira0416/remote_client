@@ -1026,6 +1026,7 @@ void FecWorkerThread(int threadId) {
         }
 
         if (g_parsedShardQueue.try_dequeue(parsedInfo)) {
+            nvtx3::scoped_range r("FecWorkerThread::ProcessShard");
             uint64_t packetTimestamp = parsedInfo.wgcCaptureTimestamp;
             int frameNumber = parsedInfo.frameNumber; // Already host order
             int shardIndex = parsedInfo.shardIndex;   // Already host order
@@ -1342,6 +1343,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             Sleep(16); // Sleep for roughly one frame to avoid busy-waiting.
         }
         else if (timeSinceLastRender >= TARGET_FRAME_DURATION) {
+            nvtx3::scoped_range r("RenderFrame_Outer");
             RenderFrame();
             lastFrameRenderTime = currentTime;
         } else {
