@@ -134,6 +134,15 @@ void FrameDecoder::releaseDecoderResources() {
     }
 
     for (auto& resource : m_frameResources) {
+        if (resource.copyStream) {
+            cuStreamDestroy(resource.copyStream);
+            resource.copyStream = nullptr;
+        }
+        if (resource.copyDone) {
+            cuEventDestroy(resource.copyDone);
+            resource.copyDone = nullptr;
+        }
+
         resource.pCudaArrayY = nullptr;
         resource.pCudaArrayUV = nullptr;
         resource.pMipmappedArrayY = nullptr;
@@ -507,6 +516,10 @@ bool FrameDecoder::allocateFrameBuffers() {
         // Get Level 0
         CUDA_CHECK(cuMipmappedArrayGetLevel(&m_frameResources[i].pCudaArrayY,  m_frameResources[i].pMipmappedArrayY,  0));
         CUDA_CHECK(cuMipmappedArrayGetLevel(&m_frameResources[i].pCudaArrayUV, m_frameResources[i].pMipmappedArrayUV, 0));
+
+        // NEW: Create async copy resources
+        CUDA_CHECK(cuStreamCreate(&m_frameResources[i].copyStream, CU_STREAM_NON_BLOCKING));
+        CUDA_CHECK(cuEventCreate(&m_frameResources[i].copyDone, CU_EVENT_DISABLE_TIMING));
     }
 
     DebugLog(L"Allocated D3D12/CUDA frame buffers (Committed/Dedicated).");
@@ -633,61 +646,35 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     const size_t srcHeightRows_UV = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulHeight / 2);
 
 
-    CUresult cr;
+    // Async copy on a per-surface stream; do not change formatting around here.
+    CUstream s = fr.copyStream; // per-surface stream you added/keep
     {
-        nvtx3::scoped_range r("HandlePictureDisplay::cuMemcpy2D");
-        CUDA_MEMCPY2D cpyY = {};
-        cpyY.srcMemoryType = CU_MEMORYTYPE_DEVICE;
-        cpyY.srcDevice     = pDecodedFrame;
-        cpyY.srcPitch      = nDecodedPitch;
-        cpyY.dstMemoryType = CU_MEMORYTYPE_ARRAY;
-        cpyY.dstArray      = fr.pCudaArrayY;
-        cpyY.WidthInBytes  = srcWidthBytes_Y;
-        cpyY.Height        = srcHeightRows_Y;
-
-        cr = cuMemcpy2D(&cpyY);
-        if (cr != CUDA_SUCCESS) {
-            const char* es = nullptr; cuGetErrorString(cr, &es);
-            std::wstring msg = L"cuMemcpy2D(Y) failed: ";
-            if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
-            DebugLog(msg);
-            cuCtxPopCurrent(NULL);
-            return 0;
-        }
-
-        const CUdeviceptr pSrcUV = pDecodedFrame + (size_t)srcHeightRows_Y * nDecodedPitch;
-        CUDA_MEMCPY2D cpyUV = {};
-        cpyUV.srcMemoryType = CU_MEMORYTYPE_DEVICE;
-        cpyUV.srcDevice     = pSrcUV;
-        cpyUV.srcPitch      = nDecodedPitch;
-        cpyUV.dstMemoryType = CU_MEMORYTYPE_ARRAY;
-        cpyUV.dstArray      = fr.pCudaArrayUV;
-        cpyUV.WidthInBytes  = srcWidthBytes_UV;
-        cpyUV.Height        = srcHeightRows_UV;
-
-        cr = cuMemcpy2D(&cpyUV);
-        if (cr != CUDA_SUCCESS) {
-            const char* es = nullptr; cuGetErrorString(cr, &es);
-            std::wstring msg = L"cuMemcpy2D(UV) failed: ";
-            if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
-            DebugLog(msg);
-            cuCtxPopCurrent(NULL);
-            return 0;
-        }
+        nvtx3::scoped_range r("NVDEC::cuMemcpy2DAsync(Y)");
+        CUDA_MEMCPY2D y = {};
+        y.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+        y.srcDevice     = pDecodedFrame;
+        y.srcPitch      = nDecodedPitch;
+        y.dstMemoryType = CU_MEMORYTYPE_ARRAY;
+        y.dstArray      = fr.pCudaArrayY;
+        y.WidthInBytes  = srcWidthBytes_Y;
+        y.Height        = srcHeightRows_Y;
+        CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&y, s));
     }
-
     {
-        nvtx3::scoped_range r("HandlePictureDisplay::cuCtxSynchronize");
-        cr = cuCtxSynchronize();
+        nvtx3::scoped_range r("NVDEC::cuMemcpy2DAsync(UV)");
+        CUDA_MEMCPY2D uv = {};
+        uv.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+        uv.srcDevice     = pDecodedFrame + (size_t)srcHeightRows_Y * nDecodedPitch;
+        uv.srcPitch      = nDecodedPitch;
+        uv.dstMemoryType = CU_MEMORYTYPE_ARRAY;
+        uv.dstArray      = fr.pCudaArrayUV;
+        uv.WidthInBytes  = srcWidthBytes_UV;
+        uv.Height        = srcHeightRows_UV;
+        CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&uv, s));
     }
-    if (cr != CUDA_SUCCESS) {
-        const char* es = nullptr; cuGetErrorString(cr, &es);
-        std::wstring msg = L"cuCtxSynchronize failed: ";
-        if (es) { std::string s(es); msg += std::wstring(s.begin(), s.end()); }
-        DebugLog(msg);
-        cuCtxPopCurrent(NULL);
-        return 0;
-    }
+
+    // Record copy-done event; keep layout unchanged around this region.
+    CUDA_CHECK_CALLBACK(cuEventRecord(fr.copyDone, s));
 
     // If we get here, all CUDA operations were successful.
     // The destructors for mappedFrame and ctxLocker will automatically clean up.
@@ -700,6 +687,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     readyFrame.id                    = readyFrame.originalFrameNumber;
     readyFrame.width                 = self->m_frameWidth;
     readyFrame.height                = self->m_frameHeight;
+    readyFrame.copyDone              = fr.copyDone; // NEW
 
     // --- Client-side timing (steady clock) ---
     FrameTimings timings;

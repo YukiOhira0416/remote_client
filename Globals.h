@@ -18,6 +18,9 @@
 #include <unordered_map>
 #include "concurrentqueue/concurrentqueue.h"
 
+// CUDA includes
+#include <cuda.h>
+
 #define SIZE_PACKET_SIZE 258
 
 const double TARGET_FPS = 60.0;
@@ -95,6 +98,7 @@ struct ReadyGpuFrame {
     uint64_t submit_ms = 0;        // Client steady clock: right after ExecuteCommandLists
     uint64_t present_ms = 0;       // Client steady clock: right after Present returns
     uint64_t fence_done_ms = 0;    // Client steady clock: after per-frame fence wait (if any)
+    CUevent copyDone = nullptr; // NEW: signaled when NVDEC->CUDA copy has finished
 };
 
 // H264 Frame Data for decoder queue
