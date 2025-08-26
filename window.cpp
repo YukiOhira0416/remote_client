@@ -350,7 +350,7 @@ void ClearReorderState()
 
 // 調整パラメータ
 static constexpr size_t REORDER_MAX_BUFFER = 8; // これを超えたら妥協して前進
-static constexpr int    REORDER_WAIT_MS    = 3; // N+1 を待つ最大時間（ms）
+static constexpr int    REORDER_WAIT_MS    = 1; // N+1 を待つ最大時間（ms） (from 3ms)
 static std::chrono::steady_clock::time_point g_lastReorderDecision = std::chrono::steady_clock::now();
 
 // Rendering specific D3D12 globals
@@ -1034,26 +1034,38 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             SetLetterboxViewport(g_commandList.Get(), bbDesc, videoW, videoH);
         }
 
-        // Create SRVs for Y and UV textures
+        // Create SRVs for Y and UV textures (only if resource changed)
+        static ID3D12Resource* s_lastY = nullptr;
+        static ID3D12Resource* s_lastUV = nullptr;
+
         CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleCpu(g_srvHeap->GetCPUDescriptorHandleForHeapStart());
-        
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDescY = {};
-        srvDescY.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDescY.Format = DXGI_FORMAT_R8_UNORM; // Y plane
-        if (!outFrameToRender.hw_decoded_texture_Y) { DebugLog(L"PopulateCommandList: frameToRender.hw_decoded_texture_Y is NULL."); return false; }
-        srvDescY.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDescY.Texture2D.MipLevels = 1;
-        g_d3d12Device->CreateShaderResourceView(outFrameToRender.hw_decoded_texture_Y.Get(), &srvDescY, srvHandleCpu);
 
-        srvHandleCpu.Offset(1, g_srvDescriptorSize); // Move to next descriptor for UV
+        if (outFrameToRender.hw_decoded_texture_Y.Get() != s_lastY) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDescY = {};
+            srvDescY.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDescY.Format = DXGI_FORMAT_R8_UNORM; // Y plane
+            if (!outFrameToRender.hw_decoded_texture_Y) { DebugLog(L"PopulateCommandList: frameToRender.hw_decoded_texture_Y is NULL."); return false; }
+            srvDescY.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srvDescY.Texture2D.MipLevels = 1;
+            g_d3d12Device->CreateShaderResourceView(
+                outFrameToRender.hw_decoded_texture_Y.Get(), &srvDescY, srvHandleCpu);
+            s_lastY = outFrameToRender.hw_decoded_texture_Y.Get();
+        }
 
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDescUV = {};
-        srvDescUV.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDescUV.Format = DXGI_FORMAT_R8G8_UNORM; // UV plane (NV12)
-        if (!outFrameToRender.hw_decoded_texture_UV) { DebugLog(L"PopulateCommandList: frameToRender.hw_decoded_texture_UV is NULL."); return false; }
-        srvDescUV.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDescUV.Texture2D.MipLevels = 1;
-        g_d3d12Device->CreateShaderResourceView(outFrameToRender.hw_decoded_texture_UV.Get(), &srvDescUV, srvHandleCpu);
+        // Advance handle to UV and repeat only on change
+        srvHandleCpu.Offset(1, g_srvDescriptorSize); // (match existing offset logic)
+
+        if (outFrameToRender.hw_decoded_texture_UV.Get() != s_lastUV) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDescUV = {};
+            srvDescUV.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDescUV.Format = DXGI_FORMAT_R8G8_UNORM; // UV plane (NV12)
+            if (!outFrameToRender.hw_decoded_texture_UV) { DebugLog(L"PopulateCommandList: frameToRender.hw_decoded_texture_UV is NULL."); return false; }
+            srvDescUV.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srvDescUV.Texture2D.MipLevels = 1;
+            g_d3d12Device->CreateShaderResourceView(
+                outFrameToRender.hw_decoded_texture_UV.Get(), &srvDescUV, srvHandleCpu);
+            s_lastUV = outFrameToRender.hw_decoded_texture_UV.Get();
+        }
 
         // Set descriptor heap for SRVs
         ID3D12DescriptorHeap* ppHeaps[] = { g_srvHeap.Get() };
@@ -1233,13 +1245,25 @@ void RenderFrame() {
             // Update back buffer index for the next frame
             g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
 
-            // Wait for the next frame's fence to complete, so we don't get too far ahead of the GPU
-            if (g_fence->GetCompletedValue() < g_renderFenceValues[g_currentFrameBufferIndex]) {
-                hr = g_fence->SetEventOnCompletion(g_renderFenceValues[g_currentFrameBufferIndex], g_fenceEvent);
-                if (FAILED(hr)) {
-                    DebugLog(L"RenderFrame: Failed to set event on completion. HR: " + HResultToHexWString(hr));
-                } else {
-                    WaitForSingleObjectEx(g_fenceEvent, INFINITE, FALSE);
+            // Wait only if we risk getting too far ahead of the GPU (bounded backlog)
+            bool shouldWait = false;
+            {
+                std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
+                // Keep at most 2 frames in flight for this back buffer index
+                // (Adjust threshold carefully if you observe pipe underflow/overflow)
+                shouldWait = (g_inFlightFrames.size() >= 2);
+            }
+
+            if (shouldWait) {
+                if (g_fence->GetCompletedValue() < g_renderFenceValues[g_currentFrameBufferIndex]) {
+                    hr = g_fence->SetEventOnCompletion(g_renderFenceValues[g_currentFrameBufferIndex], g_fenceEvent);
+                    if (FAILED(hr)) {
+                        DebugLog(L"RenderFrame: Failed to set event on completion. HR: " + HResultToHexWString(hr));
+                    } else {
+                        // Bounded wait keeps pipeline responsive; still measured in the existing logging
+                        const DWORD timeoutMs = 5; // short, non-infinite
+                        WaitForSingleObjectEx(g_fenceEvent, timeoutMs, FALSE);
+                    }
                 }
             }
 
