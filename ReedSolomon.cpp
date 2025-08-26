@@ -121,7 +121,7 @@ bool DecodeFEC_Jerasure(
     // ※ jerasure_bitmatrix_decode を使用 ※
     // The last two arguments are data_ptrs and coding_ptrs. Erasures must come before them.
     // The 'row_k_ones' parameter is not used in this decoding mode, set to 0.
-    int ret = jerasure_bitmatrix_decode(k, m, 8, const_cast<int*>(bitmatrix), 0, erasures.data(), data_ptrs.data(), coding_ptrs.data(), static_cast<int>(shard_len));
+    int ret = jerasure_bitmatrix_decode(k, m, 8, const_cast<int*>(bitmatrix), 0, erasures.data(), data_ptrs.data(), coding_ptrs.data(), static_cast<int>(shard_len), static_cast<int>(shard_len / 8));
     if (ret != 0) { // Jerasure returns 0 on success, -1 on failure.
         DebugLog(L"DecodeFEC_Jerasure Error: jerasure_bitmatrix_decode failed. Return code: " + std::to_wstring(ret));
         return false; // デコード失敗

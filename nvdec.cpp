@@ -295,7 +295,7 @@ int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoForm
             // Target display size is a renderer concern; decoder operates at coded size.
 
             if (needsReconfig) {
-                nvtxMarkU64("DecoderReconfig", (uint64_t)pVideoFormat->coded_width << 16 | pVideoFormat->coded_height, 0xFFFFFF00);
+                NvtxMark("DecoderReconfig", (uint64_t)pVideoFormat->coded_width << 16 | pVideoFormat->coded_height, NvtxCategory::Decode, 0xFFFFFF00);
                 if (!self->reconfigureDecoder(pVideoFormat)) {
                     DebugLog(L"HandleVideoSequence: Failed to reconfigure decoder.");
                     result = 0; // Stop processing
