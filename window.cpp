@@ -31,6 +31,7 @@
 #include "Globals.h"
 #include "AppShutdown.h"
 #include "main.h" // For RequestIDRNow
+#include <nvtx3/nvtx3.hpp>
 
 // ==== [Multi-monitor helpers - BEGIN] ====
 #ifndef _USE_MATH_DEFINES
@@ -1178,6 +1179,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 }
 
 void RenderFrame() {
+    nvtx3::scoped_range r("D3D12Present");
     // ---- [Release completed frame resources - BEGIN] ----
     // GPUがどこまで処理を終えたかを確認
     const UINT64 completedFenceValue = g_fence->GetCompletedValue();
