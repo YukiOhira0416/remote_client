@@ -131,7 +131,6 @@ void ReleaseAllResources(const AppThreads& threads) {
         try {
             enet_deinitialize();
             FinalWSACleanup(); // Centralized WSA cleanup.
-            timeEndPeriod(1);
         } catch (...) {
             DebugLog(L"ReleaseAllResources: exception during network/timer cleanup (ignored).");
         }
