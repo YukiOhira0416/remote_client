@@ -767,15 +767,20 @@ void NvdecThread(int threadId) {
         return;
     }
 
-    while (g_decode_worker_Running) { // Use the same global running flag
+    while (g_decode_worker_Running) {
         H264Frame frame;
         if (g_h264FrameQueue.try_dequeue(frame)) {
+            // Process frame if dequeued successfully
             nvtx3::scoped_range r("CUDA Decode");
             frame.decode_start_ms = SteadyNowMs();
             g_frameDecoder->Decode(frame);
-            if(DecoderCount++ % 200 == 0)DebugLog(L"NvdecThread: Dequeue Size " + std::to_wstring(g_h264FrameQueue.size_approx()));
+            if(DecoderCount++ % 200 == 0) DebugLog(L"NvdecThread: Dequeue Size " + std::to_wstring(g_h264FrameQueue.size_approx()));
         } else {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            // Queue is empty, wait for notification
+            std::unique_lock<std::mutex> lock(g_h264FrameQueueMutex);
+            if (g_decode_worker_Running) { // Re-check running flag before waiting
+                g_h264FrameQueueCV.wait_for(lock, std::chrono::milliseconds(5)); // Use a timeout to prevent deadlocks on shutdown
+            }
         }
     }
     DebugLog(L"NvdecThread [" + std::to_wstring(threadId) + L"] stopped.");

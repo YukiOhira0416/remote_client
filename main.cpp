@@ -51,6 +51,7 @@ using namespace DebugLogAsync;
 #include <cauchy.h>
 #include <sstream>
 #include "concurrentqueue/concurrentqueue.h"
+#include "blocking_queue.h"
 #include <enet/enet.h>
 #include <nvtx3/nvtx3.hpp>
 #include "Globals.h"
@@ -441,44 +442,7 @@ struct ParsedShardInfoComparator {
     }
 };
 
-template<typename T,
-         typename Container = std::vector<T>,
-         typename Compare = std::less<typename Container::value_type>>
-class ThreadSafePriorityQueue {
-public:
-    ThreadSafePriorityQueue() = default;
-    ~ThreadSafePriorityQueue() = default;
-
-    // Disable copy and assignment
-    ThreadSafePriorityQueue(const ThreadSafePriorityQueue&) = delete;
-    ThreadSafePriorityQueue& operator=(const ThreadSafePriorityQueue&) = delete;
-
-    void enqueue(T item) {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        m_pq.push(std::move(item)); // item is moved into the priority queue
-    }
-
-    bool try_dequeue(T& item_out) {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (m_pq.empty()) {
-            return false;
-        }
-        item_out = m_pq.top(); // This is a copy operation from const T&
-        m_pq.pop();
-        return true;
-    }
-
-    size_t size_approx() const { // Keep the same method name for minimal changes
-        std::lock_guard<std::mutex> lock(m_mutex);
-        return m_pq.size();
-    }
-
-private:
-    mutable std::mutex m_mutex;
-    std::priority_queue<T, Container, Compare> m_pq;
-};
-
-ThreadSafePriorityQueue<ParsedShardInfo, std::vector<ParsedShardInfo>, ParsedShardInfoComparator> g_parsedShardQueue;
+BlockingPriorityQueue<ParsedShardInfo, std::vector<ParsedShardInfo>, ParsedShardInfoComparator> g_parsedShardQueue;
 
 // フレーム受信時に I フレームのみを送信するかどうか
 bool sendIFrameOnly = true; // This seems like a debug/test flag, consider removing or making configurable
@@ -1038,17 +1002,11 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
 void FecWorkerThread(int threadId) {
     DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"] started.");
     UINT64 count = 0;
-    const std::chrono::milliseconds EMPTY_QUEUE_WAIT_MS(1);
 
-    while (g_fec_worker_Running || g_parsedShardQueue.size_approx() > 0) { // Process remaining items after flag is false
+    while (g_fec_worker_Running) {
         ParsedShardInfo parsedInfo;
-
-        if(g_parsedShardQueue.size_approx() == 0){
-            std::this_thread::sleep_for(EMPTY_QUEUE_WAIT_MS);
-            continue;
-        }
-
-        if (g_parsedShardQueue.try_dequeue(parsedInfo)) {
+        if (g_parsedShardQueue.wait_and_dequeue(parsedInfo)) {
+            // After this point, parsedInfo is valid and we can process it.
             nvtx3::scoped_range r("FecWorkerThread::ProcessShard");
             uint64_t packetTimestamp = parsedInfo.wgcCaptureTimestamp;
             int frameNumber = parsedInfo.frameNumber; // Already host order
@@ -1072,9 +1030,9 @@ void FecWorkerThread(int threadId) {
                     // Parameter check (totalDataShards and totalParityShards from parsedInfo vs RS_K/RS_M)
                     if (parsedInfo.totalDataShards != RS_K || parsedInfo.totalParityShards != RS_M) {
                         DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: Mismatch in FEC parameters! Packet K/M: " +
-                                 std::to_wstring(parsedInfo.totalDataShards) + L"/" + std::to_wstring(parsedInfo.totalParityShards) +
-                                 L", Client K/M: " + std::to_wstring(RS_K) + L"/" + std::to_wstring(RS_M) +
-                                 L". Frame: " + std::to_wstring(frameNumber) + L", Shard: " + std::to_wstring(shardIndex));
+                                    std::to_wstring(parsedInfo.totalDataShards) + L"/" + std::to_wstring(parsedInfo.totalParityShards) +
+                                    L", Client K/M: " + std::to_wstring(RS_K) + L"/" + std::to_wstring(RS_M) +
+                                    L". Frame: " + std::to_wstring(frameNumber) + L", Shard: " + std::to_wstring(shardIndex));
                         continue; // Skip this shard
                     }
                 }
@@ -1138,6 +1096,7 @@ void FecWorkerThread(int threadId) {
                     }
 
                     g_h264FrameQueue.enqueue(std::move(frame_to_decode));
+                    g_h264FrameQueueCV.notify_one();
                     
                     // 追加のデバッグログ
                     auto fec_worker_thread_end = std::chrono::system_clock::now();
@@ -1150,13 +1109,14 @@ void FecWorkerThread(int threadId) {
             }
             count++;
         } else {
-            // Queue was empty
-            if (!g_fec_worker_Running && g_parsedShardQueue.size_approx() == 0) { // Exit if flag is false AND queue is empty
+            // This will only happen on shutdown when the queue is empty
+            if (!g_fec_worker_Running) {
                 break;
             }
-            std::this_thread::sleep_for(EMPTY_QUEUE_WAIT_MS);
         }
     }
+    // After the loop, ensure any waiting threads are unblocked
+    g_parsedShardQueue.stop();
     DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"] stopped.");
 }
 
