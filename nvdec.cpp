@@ -3,7 +3,7 @@
 #include <nvtx3/nvtx3.hpp>
 #include <stdexcept>
 
-static nvtx3::domain g_nvtx_nvdec{"NVDEC"};
+static nvtx3::domain g_nvtx_nvdec("NVDEC");
 #include <fstream>
 #include <vector>
 #include <algorithm>
@@ -657,7 +657,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
 
     // Y plane
     {
-        nvtx3::scoped_range_in<g_nvtx_nvdec> r{"CopyAsync(Y)"};
+        nvtx3::scoped_range_in r(g_nvtx_nvdec, "CopyAsync(Y)");
         CUDA_MEMCPY2D y = {};
         y.srcMemoryType = CU_MEMORYTYPE_DEVICE;
         y.srcDevice     = pDecodedFrame;
@@ -671,7 +671,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
 
     // UV plane
     {
-        nvtx3::scoped_range_in<g_nvtx_nvdec> r{"CopyAsync(UV)"};
+        nvtx3::scoped_range_in r(g_nvtx_nvdec, "CopyAsync(UV)");
         CUDA_MEMCPY2D uv = {};
         uv.srcMemoryType = CU_MEMORYTYPE_DEVICE;
         uv.srcDevice     = pDecodedFrame + (size_t)srcHeightRows_Y * nDecodedPitch;
@@ -685,7 +685,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
 
     // Record completion event for this frame
     {
-        nvtx3::scoped_range_in<g_nvtx_nvdec> r{"EventRecord(copyDone)"};
+        nvtx3::scoped_range_in r(g_nvtx_nvdec, "EventRecord(copyDone)");
         CUDA_CHECK_CALLBACK(cuEventRecord(fr.copyDone, s));
     }
 
