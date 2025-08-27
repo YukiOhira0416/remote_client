@@ -1406,25 +1406,16 @@ void RenderFrame() {
             g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
 
             // Wait only if we risk getting too far ahead of the GPU (bounded backlog)
-            bool shouldWait = false;
-            {
-                std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
-                // Keep at most 2 frames in flight for this back buffer index
-                // (Adjust threshold carefully if you observe pipe underflow/overflow)
-                shouldWait = (g_inFlightFrames.size() >= 2);
-            }
+            const bool shouldWait = (g_inFlightFrames.size() >= 2);
+            const DWORD timeoutMs = 2;
 
-            if (shouldWait) {
-                if (g_fence->GetCompletedValue() < g_renderFenceValues[g_currentFrameBufferIndex]) {
-                    hr = g_fence->SetEventOnCompletion(g_renderFenceValues[g_currentFrameBufferIndex], g_fenceEvent);
-                    if (FAILED(hr)) {
-                        DebugLog(L"RenderFrame: Failed to set event on completion. HR: " + HResultToHexWString(hr));
-                    } else {
-                        // Bounded wait keeps pipeline responsive; still measured in the existing logging
-                        const DWORD timeoutMs = 2; // short, non-infinite
-                        nvtx3::scoped_range_in<d3d12_domain> fence_wait{"Fence(Wait bounded)"};
-                        WaitForSingleObjectEx(g_fenceEvent, timeoutMs, FALSE);
-                    }
+            if (shouldWait && (g_fence->GetCompletedValue() < g_renderFenceValues[g_currentFrameBufferIndex])) {
+                hr = g_fence->SetEventOnCompletion(g_renderFenceValues[g_currentFrameBufferIndex], g_fenceEvent);
+                if (SUCCEEDED(hr)) {
+                    nvtx3::scoped_range_in<d3d12_domain> fence_wait{"Fence(Wait bounded)"};
+                    WaitForSingleObjectEx(g_fenceEvent, timeoutMs, FALSE);
+                } else {
+                    DebugLog(L"RenderFrame: Failed to set event on completion. HR: " + HResultToHexWString(hr));
                 }
             }
 

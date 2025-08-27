@@ -811,7 +811,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
         // Service ENet events with a timeout (e.g., 10ms)
         int service_result;
         {
-            nvtx3::scoped_range_in<my_nvtx_domains::net> r("Net/WaitRecv(enet_service)");
+            nvtx3::scoped_range_in<my_nvtx_domains::net> r("WaitRecv");
             service_result = enet_host_service(server_host, &event, NET_POLL_TIMEOUT_MS);
         }
 
