@@ -768,7 +768,11 @@ void CountBandW() {
 }
 
 
-static nvtx3::domain g_nvtx_net("NET");
+namespace my_nvtx_domains {
+    struct net {
+        static constexpr char const* name = "NET";
+    };
+}
 
 void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsThread would be clearer
     DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"] started.");
@@ -805,7 +809,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
         // Service ENet events with a timeout (e.g., 10ms)
         int service_result;
         {
-            nvtx3::scoped_range_in r(g_nvtx_net, "Net/WaitRecv(enet_service)");
+            nvtx3::scoped_range_in<my_nvtx_domains::net> r("Net/WaitRecv(enet_service)");
             service_result = enet_host_service(server_host, &event, NET_POLL_TIMEOUT_MS);
         }
 
