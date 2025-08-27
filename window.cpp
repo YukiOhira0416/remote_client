@@ -230,14 +230,14 @@ Microsoft::WRL::ComPtr<ID3D12CommandQueue> g_d3d12CommandQueue;
 Microsoft::WRL::ComPtr<IDXGISwapChain3> g_swapChain; // Use IDXGISwapChain3 or 4
 Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_rtvHeap;
 Microsoft::WRL::ComPtr<ID3D12Resource> g_renderTargets[kSwapChainBufferCount]; // Triple buffering
-Microsoft::WRL::ComPtr<ID3D12CommandAllocator> g_commandAllocator;
+Microsoft::WRL::ComPtr<ID3D12CommandAllocator> g_commandAllocators[kSwapChainBufferCount];
 Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> g_commandList;
 Microsoft::WRL::ComPtr<ID3D12Fence> g_fence;
 UINT g_rtvDescriptorSize;
 UINT g_currentFrameBufferIndex; // Current back buffer index
 UINT64 g_fenceValue;
 HANDLE g_fenceEvent;
-UINT64 g_renderFenceValues[kSwapChainBufferCount]; // Fence values for each frame in flight for rendering
+UINT64 g_frameFenceValues[kSwapChainBufferCount] = {}; // Fence values for each frame in flight for rendering
 
 // D3D11 specific globals (to be removed or replaced)
 #define CLIENT_PORT_FEC 8080// FEC用ポート番号
@@ -355,8 +355,8 @@ void ClearReorderState()
 }
 
 // 調整パラメータ
-static constexpr size_t REORDER_MAX_BUFFER = 8; // これを超えたら妥協して前進
-static constexpr int    REORDER_WAIT_MS    = 3; // N+1 を待つ最大時間（ms） (from 3ms)
+static constexpr size_t REORDER_MAX_BUFFER = 4; // これを超えたら妥協して前進
+static constexpr int    REORDER_WAIT_MS    = 1; // N+1 を待つ最大時間（ms） (from 3ms)
 static std::chrono::steady_clock::time_point g_lastReorderDecision = std::chrono::steady_clock::now();
 
 // Rendering specific D3D12 globals
@@ -620,7 +620,9 @@ bool InitD3D() {
         // Release existing D3D12 resources if re-initializing
     if (g_fence) g_fence.Reset();
     if (g_commandList) g_commandList.Reset();
-    if (g_commandAllocator) g_commandAllocator.Reset();
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+        if (g_commandAllocators[i]) g_commandAllocators[i].Reset();
+    }
     for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
         if (g_renderTargets[i]) g_renderTargets[i].Reset();
     }
@@ -736,7 +738,7 @@ bool InitD3D() {
         Microsoft::WRL::ComPtr<IDXGISwapChain2> sc2;
         HRESULT hr_sc2 = g_swapChain.As(&sc2);
         if (SUCCEEDED(hr_sc2) && sc2) {
-            sc2->SetMaximumFrameLatency(2);
+            sc2->SetMaximumFrameLatency(1);
             g_frameLatencyWaitableObject = sc2->GetFrameLatencyWaitableObject();
         }
     }
@@ -770,16 +772,18 @@ bool InitD3D() {
     }
     DebugLog(L"InitD3D (D3D12): Render Target Views created.");
 
-    // 6. Create Command Allocator
-    hr = g_d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_commandAllocator));
-    if (FAILED(hr)) {
-        DebugLog(L"InitD3D (D3D12): Failed to create command allocator. HRESULT: " + HResultToHexWString(hr));
-        return false;
+    // 6. Create Command Allocators
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+        hr = g_d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_commandAllocators[i]));
+        if (FAILED(hr)) {
+            DebugLog(L"InitD3D (D3D12): Failed to create command allocator " + std::to_wstring(i) + L". HRESULT: " + HResultToHexWString(hr));
+            return false;
+        }
     }
-    DebugLog(L"InitD3D (D3D12): Command Allocator created.");
+    DebugLog(L"InitD3D (D3D12): Command Allocators created.");
 
     // 7. Create Command List
-    hr = g_d3d12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_commandAllocator.Get(), nullptr, IID_PPV_ARGS(&g_commandList));
+    hr = g_d3d12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_commandAllocators[0].Get(), nullptr, IID_PPV_ARGS(&g_commandList));
     if (FAILED(hr)) {
         DebugLog(L"InitD3D (D3D12): Failed to create command list. HRESULT: " + HResultToHexWString(hr));
         return false;
@@ -932,10 +936,11 @@ UINT64 PopulateCommandListCount = 0;
 struct reorder_domain { static constexpr char const* name = "REORDER"; };
 bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass ReadyGpuFrame by reference
     nvtx3::scoped_range_in<d3d12_domain> nvtx_populate_cmdlist{"PopulateCommandList"};
-    // Reset command allocator and command list
-    HRESULT hr = g_commandAllocator->Reset();
+    // Reset command allocator and command list for the current frame
+    ID3D12CommandAllocator* currentAllocator = g_commandAllocators[g_currentFrameBufferIndex].Get();
+    HRESULT hr = currentAllocator->Reset();
     if (FAILED(hr)) { DebugLog(L"PopulateCommandList: Failed to reset command allocator. HR: " + HResultToHexWString(hr)); return false; }
-    hr = g_commandList->Reset(g_commandAllocator.Get(), nullptr); // No initial PSO for clear
+    hr = g_commandList->Reset(currentAllocator, nullptr); // No initial PSO for clear
     if (FAILED(hr)) { DebugLog(L"PopulateCommandList: Failed to reset command list. HR: " + HResultToHexWString(hr)); return false; }
 
     // Transition the current back buffer from PRESENT to RENDER_TARGET.
@@ -1214,8 +1219,10 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     // This reset prevents waiting on never-signaled values.
     const UINT64 completed = g_fence->GetCompletedValue();
     for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
-        g_renderFenceValues[i] = completed + 1;
+        g_frameFenceValues[i] = completed;
     }
+    g_fenceValue = completed + 1;
+
     // Refresh the current index, as it might have changed.
     g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
 
@@ -1287,7 +1294,17 @@ void RenderFrame() {
         return;
     }
 
-    HRESULT hr; // for error checks
+    // Wait for the GPU to be done with the resources for the current frame.
+    if (g_fence->GetCompletedValue() < g_frameFenceValues[g_currentFrameBufferIndex]) {
+        HRESULT hr = g_fence->SetEventOnCompletion(g_frameFenceValues[g_currentFrameBufferIndex], g_fenceEvent);
+        if (SUCCEEDED(hr)) {
+            nvtx3::scoped_range_in<d3d12_domain> fence_wait{"Fence(Wait)"};
+            WaitForSingleObjectEx(g_fenceEvent, INFINITE, FALSE);
+        } else {
+             DebugLog(L"RenderFrame: Failed to set event on completion for allocator wait. HR: " + HResultToHexWString(hr));
+        }
+    }
+
     ReadyGpuFrame renderedFrameData{}; // 描画したフレームのメタ（ログ用）
     const bool frameWasRendered = PopulateCommandList(renderedFrameData); // 今回のフレームで実描画コマンドを記録したか？
 
@@ -1302,14 +1319,12 @@ void RenderFrame() {
     const bool shouldPresent = frameWasRendered || forcePresent;
 
     if (shouldPresent) {
-        // Immediately before Present:
-        const UINT presentFlags = g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
+        const UINT syncInterval = 1; // Lock to VSync
+        const UINT presentFlags = 0; // Tearing is not allowed with VSync
         HRESULT hrPresent = S_OK;
         {
             nvtx3::scoped_range_in<d3d12_domain> present_r{"Present(Submit)"};
-            // Keep the current vsync interval (looks like 0); only flags change:
-            hrPresent = g_swapChain->Present(0, presentFlags);
-            // Keep existing error handling/logging if present.
+            hrPresent = g_swapChain->Present(syncInterval, presentFlags);
         }
 
         if (FAILED(hrPresent)) {
@@ -1320,129 +1335,95 @@ void RenderFrame() {
                 DebugLog(L"RenderFrame (D3D12): Present failed. HR: " + HResultToHexWString(hrPresent));
             }
         }
-
-        if (frameWasRendered) {
-            // ---- Standard path for a rendered frame ----
-            // Fence: Track this frame's completion
-            const UINT64 currentFenceVal = g_renderFenceValues[g_currentFrameBufferIndex];
-            hr = g_d3d12CommandQueue->Signal(g_fence.Get(), currentFenceVal);
-            if (FAILED(hr)) {
-                DebugLog(L"RenderFrame: Failed to signal fence. HR: " + HResultToHexWString(hr));
-            }
-
-            // NEW: Extract data for logging BEFORE the move
-            const auto log_render_start_ms = renderedFrameData.render_start_ms;
-            const auto log_stream_frame_no = renderedFrameData.streamFrameNumber;
-            const auto log_original_frame_no = renderedFrameData.originalFrameNumber;
-            const auto log_id = renderedFrameData.id;
-
-            // ---- Logging (moved here to be in scope) ----
-            const uint64_t render_end_ms = SteadyNowMs();
-
-            // Render totals (steady)
-            const uint64_t render_total_ms = (render_end_ms >= log_render_start_ms)
-                ? (render_end_ms - log_render_start_ms)
-                : 0;
-
-            // Client FEC End->RenderEnd (steady) using per-frame mapping
-            uint64_t client_e2e_ms = 0;
-            {
-                std::lock_guard<std::mutex> lk(g_fecEndTimeMutex);
-                auto it = g_fecEndTimeByStreamFrame.find(log_stream_frame_no);
-                if (it != g_fecEndTimeByStreamFrame.end()) {
-                    const uint64_t fec_end_ms = it->second;
-                    client_e2e_ms = (render_end_ms >= fec_end_ms) ? (render_end_ms - fec_end_ms) : 0;
-                    // cleanup: we used it for this frame
-                    g_fecEndTimeByStreamFrame.erase(it);
-                }
-            }
-
-            // Logging cadence preserved
-            if (RenderCount++ % 60 == 0) {
-                DebugLog(L"RenderFrame Total (wall): " + std::to_wstring(render_total_ms) + L" ms.");
-                DebugLog(L"Client FEC End->RenderEnd: " + std::to_wstring(client_e2e_ms) + L" ms.");
-                // NOTE: NVDEC End->RenderEnd log removed per spec
-            }
-
-            // Keep the existing cross-machine log, but compute from per-frame map (unsynced clocks).
-            int64_t wgc_to_renderend_ms = 0;
-            {
-                // server WGC timestamp (ms since epoch, system_clock at server)
-                uint64_t wgc_ts_ms = 0;
-                {
-                    std::lock_guard<std::mutex> lk(g_wgcTsMutex);
-                    auto it = g_wgcCaptureTimestampByStreamFrame.find(log_stream_frame_no);
-                    if (it != g_wgcCaptureTimestampByStreamFrame.end()) {
-                        wgc_ts_ms = it->second;
-                        g_wgcCaptureTimestampByStreamFrame.erase(it); // consume once
-                    }
-                }
-                if (wgc_ts_ms != 0) {
-                    auto frameEndSys   = std::chrono::system_clock::now();
-                    uint64_t frameEndMs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
-                    wgc_to_renderend_ms = static_cast<int64_t>(frameEndMs) - static_cast<int64_t>(wgc_ts_ms);
-                } else {
-                    // No timestamp found (e.g., rare drop/miss). Keep 0; still log as unsynced.
-                    wgc_to_renderend_ms = 0;
-                }
-            }
-
-            if (RenderCount % 60 == 0) {
-                DebugLog(L"RenderFrame Latency (unsynced clocks): StreamFrame #"
-                    + std::to_wstring(log_stream_frame_no)
-                    + L", OriginalFrame #" + std::to_wstring(log_original_frame_no)
-                    + L" (ID: " + std::to_wstring(log_id) + L")"
-                    + L" - WGC to RenderEnd: " + std::to_wstring(wgc_to_renderend_ms) + L" ms.");
-            }
-            // ---- End of moved logging block ----
-
-            // GPUに投入したフレームのリソースを、完了まで破棄しないようにキューへ移動
-            {
-                std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
-                g_inFlightFrames.push({std::move(renderedFrameData), currentFenceVal});
-            }
-
-            // Update back buffer index for the next frame
-            g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
-
-            // Wait only if we risk getting too far ahead of the GPU (bounded backlog)
-            bool shouldWait = false;
-            {
-                std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
-                // Keep at most 2 frames in flight for this back buffer index
-                // (Adjust threshold carefully if you observe pipe underflow/overflow)
-                shouldWait = (g_inFlightFrames.size() >= 2);
-            }
-
-            if (shouldWait) {
-                if (g_fence->GetCompletedValue() < g_renderFenceValues[g_currentFrameBufferIndex]) {
-                    hr = g_fence->SetEventOnCompletion(g_renderFenceValues[g_currentFrameBufferIndex], g_fenceEvent);
-                    if (FAILED(hr)) {
-                        DebugLog(L"RenderFrame: Failed to set event on completion. HR: " + HResultToHexWString(hr));
-                    } else {
-                        // Bounded wait keeps pipeline responsive; still measured in the existing logging
-                        const DWORD timeoutMs = 2; // short, non-infinite
-                        nvtx3::scoped_range_in<d3d12_domain> fence_wait{"Fence(Wait bounded)"};
-                        WaitForSingleObjectEx(g_fenceEvent, timeoutMs, FALSE);
-                    }
-                }
-            }
-
-            // Increment fence value for the next use of this RTV
-            g_renderFenceValues[g_currentFrameBufferIndex] = currentFenceVal + 1;
-        } else {
-            // ---- Forced present path (no new frame rendered) ----
-            nvtx3::scoped_range_in<d3d12_domain> r_forced{"Present(Forced)"};
-            // Don't perform fence waits or signals that assume a rendered frame.
-            // Just refresh the back buffer index so the next real frame uses the correct RTV.
-            g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
-
-            // To be extra safe, align the fence value for this buffer index to what's known to be completed.
-            // This prevents a future wait on a stale, never-to-be-signaled value.
-            const UINT64 completed = g_fence->GetCompletedValue();
-            g_renderFenceValues[g_currentFrameBufferIndex] = completed + 1;
-        }
     }
+
+    // If we actually submitted a new frame to the GPU, signal the fence.
+    if (frameWasRendered) {
+        const UINT64 currentFenceValue = g_fenceValue;
+        HRESULT hr = g_d3d12CommandQueue->Signal(g_fence.Get(), currentFenceValue);
+        if (FAILED(hr)) {
+            DebugLog(L"RenderFrame: Failed to signal fence. HR: " + HResultToHexWString(hr));
+        }
+
+        g_frameFenceValues[g_currentFrameBufferIndex] = currentFenceValue;
+
+        // NEW: Extract data for logging BEFORE the move
+        const auto log_render_start_ms = renderedFrameData.render_start_ms;
+        const auto log_stream_frame_no = renderedFrameData.streamFrameNumber;
+        const auto log_original_frame_no = renderedFrameData.originalFrameNumber;
+        const auto log_id = renderedFrameData.id;
+
+        // ---- Logging (moved here to be in scope) ----
+        const uint64_t render_end_ms = SteadyNowMs();
+
+        // Render totals (steady)
+        const uint64_t render_total_ms = (render_end_ms >= log_render_start_ms)
+            ? (render_end_ms - log_render_start_ms)
+            : 0;
+
+        // Client FEC End->RenderEnd (steady) using per-frame mapping
+        uint64_t client_e2e_ms = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_fecEndTimeMutex);
+            auto it = g_fecEndTimeByStreamFrame.find(log_stream_frame_no);
+            if (it != g_fecEndTimeByStreamFrame.end()) {
+                const uint64_t fec_end_ms = it->second;
+                client_e2e_ms = (render_end_ms >= fec_end_ms) ? (render_end_ms - fec_end_ms) : 0;
+                // cleanup: we used it for this frame
+                g_fecEndTimeByStreamFrame.erase(it);
+            }
+        }
+
+        // Logging cadence preserved
+        if (RenderCount++ % 60 == 0) {
+            DebugLog(L"RenderFrame Total (wall): " + std::to_wstring(render_total_ms) + L" ms.");
+            DebugLog(L"Client FEC End->RenderEnd: " + std::to_wstring(client_e2e_ms) + L" ms.");
+            // NOTE: NVDEC End->RenderEnd log removed per spec
+        }
+
+        // Keep the existing cross-machine log, but compute from per-frame map (unsynced clocks).
+        int64_t wgc_to_renderend_ms = 0;
+        {
+            // server WGC timestamp (ms since epoch, system_clock at server)
+            uint64_t wgc_ts_ms = 0;
+            {
+                std::lock_guard<std::mutex> lk(g_wgcTsMutex);
+                auto it = g_wgcCaptureTimestampByStreamFrame.find(log_stream_frame_no);
+                if (it != g_wgcCaptureTimestampByStreamFrame.end()) {
+                    wgc_ts_ms = it->second;
+                    g_wgcCaptureTimestampByStreamFrame.erase(it); // consume once
+                }
+            }
+            if (wgc_ts_ms != 0) {
+                auto frameEndSys   = std::chrono::system_clock::now();
+                uint64_t frameEndMs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
+                wgc_to_renderend_ms = static_cast<int64_t>(frameEndMs) - static_cast<int64_t>(wgc_ts_ms);
+            } else {
+                // No timestamp found (e.g., rare drop/miss). Keep 0; still log as unsynced.
+                wgc_to_renderend_ms = 0;
+            }
+        }
+
+        if (RenderCount % 60 == 0) {
+            DebugLog(L"RenderFrame Latency (unsynced clocks): StreamFrame #"
+                + std::to_wstring(log_stream_frame_no)
+                + L", OriginalFrame #" + std::to_wstring(log_original_frame_no)
+                + L" (ID: " + std::to_wstring(log_id) + L")"
+                + L" - WGC to RenderEnd: " + std::to_wstring(wgc_to_renderend_ms) + L" ms.");
+        }
+        // ---- End of moved logging block ----
+
+        // GPUに投入したフレームのリソースを、完了まで破棄しないようにキューへ移動
+        {
+            std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
+            g_inFlightFrames.push({std::move(renderedFrameData), currentFenceValue});
+        }
+
+        g_fenceValue++;
+    }
+
+    // Update back buffer index for the next frame.
+    g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
 }
 
 // Minimal blocking wait, only for shutdown.
@@ -1472,8 +1453,10 @@ void CleanupD3DRenderResources() {
     }
     if (g_fence) g_fence.Reset();
     if (g_commandList) g_commandList.Reset();
-    if (g_commandAllocator) g_commandAllocator.Reset();
-    for (UINT i = 0; i < 2; ++i) {
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+        if (g_commandAllocators[i]) g_commandAllocators[i].Reset();
+    }
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
         if (g_renderTargets[i]) g_renderTargets[i].Reset();
     }
     if (g_rtvHeap) g_rtvHeap.Reset();

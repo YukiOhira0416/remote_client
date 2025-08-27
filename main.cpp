@@ -1201,11 +1201,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         return 1;
     }
 
-    timeBeginPeriod(1);
+    const bool useTearingMode = false; // VSync is the default, tearing/immediate is opt-in
+    if (useTearingMode) {
+        timeBeginPeriod(1);
+    }
 
     // Initialize window and DirectX
     if (!InitWindow(hInstance, nCmdShow)) {
-        timeEndPeriod(1);
+        if (useTearingMode) {
+            timeEndPeriod(1);
+        }
         WSACleanup();
         enet_deinitialize();
         return -1;
@@ -1268,8 +1273,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     // The windowSenderThread is removed as it's part of the old logic.
 
     // Main render loop
-    auto lastFrameRenderTime = std::chrono::high_resolution_clock::now();
-
     MSG msg = {};
     while (msg.message != WM_QUIT) {
         // Process all pending messages in the queue first.
@@ -1285,34 +1288,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
             break;
         }
 
-        // BEFORE computing timeSinceLastRender:
-        if (g_lastFrameRenderTimeForKick.time_since_epoch().count() != 0) {
-            lastFrameRenderTime = g_lastFrameRenderTimeForKick;
-            g_lastFrameRenderTimeForKick = {};
-        }
-
-        // After processing messages, render a frame, respecting the frame rate.
-        // This ensures rendering continues even during a message-heavy event like resizing.
-        auto currentTime = std::chrono::high_resolution_clock::now();
-        auto timeSinceLastRender = currentTime - lastFrameRenderTime;
-
-        if (g_isSizing) {
-            // We are resizing, so just yield the CPU. When we resume, the large
-            // timeSinceLastRender will trigger an immediate frame.
-            Sleep(16); // Sleep for roughly one frame to avoid busy-waiting.
-        }
-        else if (timeSinceLastRender >= TARGET_FRAME_DURATION) {
-            nvtx3::scoped_range r("RenderFrame_Outer");
-            RenderFrame();
-            lastFrameRenderTime = currentTime;
-        } else {
-            // Yield CPU time if we are ahead of schedule to avoid spinning.
-            auto timeToWait = TARGET_FRAME_DURATION - timeSinceLastRender;
-            long long msToWait = std::chrono::duration_cast<std::chrono::milliseconds>(timeToWait).count();
-            if (msToWait > 1) {
-                Sleep(static_cast<DWORD>(msToWait - 1));
-            }
-        }
+        // With VSync enabled in the renderer, the outer pacer loop is no longer needed.
+        // We just render as fast as possible, and Present(1,0) will handle pacing.
+        nvtx3::scoped_range r("RenderFrame_Outer");
+        RenderFrame();
     }
 
     // Centralized Cleanup
@@ -1327,6 +1306,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
     // This single call handles joining all threads and releasing all resources idempotently.
     ReleaseAllResources(appThreads);
+
+    if (useTearingMode) {
+        timeEndPeriod(1);
+    }
     
     DebugLog(L"Cleanup complete. Exiting wWinMain.");
 
