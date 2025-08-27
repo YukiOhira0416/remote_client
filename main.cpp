@@ -334,8 +334,9 @@ static bool EnforceGpuPolicyOrExit() {
 #define DATA_PACKET_SIZE 1400 // UDPパケットサイズ
 #define WSARECV_BUFFER_SIZE 65000
 
-// Keep layout/comments around this block.
-static constexpr unsigned NET_POLL_TIMEOUT_MS = 2; // was ~10; finer granularity
+// With a single network thread, we can use a longer, more efficient timeout.
+// ENet will return immediately when a packet arrives.
+static constexpr unsigned NET_POLL_TIMEOUT_MS = 15;
 
 // FEC worker threads and control variables
 std::atomic<bool> send_bandw_Running = true;
@@ -750,7 +751,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
     ENetAddress address;
 
     address.host = ENET_HOST_ANY; // Listen on all available interfaces
-    address.port = static_cast<enet_uint16>(SERVER_PORT_DATA + threadId); // Each thread listens on a different port
+    address.port = static_cast<enet_uint16>(SERVER_PORT_DATA); // Listen on the single, primary data port.
 
     server_host = enet_host_create(&address /* the address to bind the server host to */,
                                    32      /* allow up to 32 clients and/or outgoing connections */,
@@ -1124,7 +1125,8 @@ void FecWorkerThread(int threadId) {
 ThreadConfig getOptimalThreadConfig(){
     ThreadConfig config;
 
-    config.receiver = 5;
+    // Reduce receiver threads to 1 to fix CPU-bound polling issue.
+    config.receiver = 1;
     config.fec = 4;
     config.decoder = 1;
     config.render = 1;
@@ -1290,51 +1292,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     // The app_running_atomic is now a global atomic defined in Globals.cpp
     // The windowSenderThread is removed as it's part of the old logic.
 
-    // Main render loop
-    auto lastFrameRenderTime = std::chrono::high_resolution_clock::now();
-
+    // Simplified Main Loop
     MSG msg = {};
     while (msg.message != WM_QUIT) {
-        // Process all pending messages in the queue first.
-        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_QUIT) {
-                break;
-            }
+        // Process all available window messages.
+        if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         }
-
-        if (msg.message == WM_QUIT) {
-            break;
-        }
-
-        // BEFORE computing timeSinceLastRender:
-        if (g_lastFrameRenderTimeForKick.time_since_epoch().count() != 0) {
-            lastFrameRenderTime = g_lastFrameRenderTimeForKick;
-            g_lastFrameRenderTimeForKick = {};
-        }
-
-        // After processing messages, render a frame, respecting the frame rate.
-        // This ensures rendering continues even during a message-heavy event like resizing.
-        auto currentTime = std::chrono::high_resolution_clock::now();
-        auto timeSinceLastRender = currentTime - lastFrameRenderTime;
-
-        if (g_isSizing) {
-            // We are resizing, so just yield the CPU. When we resume, the large
-            // timeSinceLastRender will trigger an immediate frame.
-            Sleep(16); // Sleep for roughly one frame to avoid busy-waiting.
-        }
-        else if (timeSinceLastRender >= TARGET_FRAME_DURATION) {
+        else {
+            // If no messages, proceed to render a frame.
+            // Frame pacing is now handled entirely within RenderFrame()
+            // by its GPU synchronization logic, which is more precise.
             nvtx3::scoped_range r("RenderFrame_Outer");
             RenderFrame();
-            lastFrameRenderTime = currentTime;
-        } else {
-            // Yield CPU time if we are ahead of schedule to avoid spinning.
-            auto timeToWait = TARGET_FRAME_DURATION - timeSinceLastRender;
-            long long msToWait = std::chrono::duration_cast<std::chrono::milliseconds>(timeToWait).count();
-            if (msToWait > 1) {
-                Sleep(static_cast<DWORD>(msToWait - 1));
-            }
         }
     }
 
