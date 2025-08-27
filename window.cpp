@@ -1017,33 +1017,29 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         }
 
         const bool haveExpected = g_reorderBuffer.count(g_expectedStreamFrame) != 0;
-        const bool haveNext     = g_reorderBuffer.count(g_expectedStreamFrame + 1) != 0;
         const bool bufferTooBig = g_reorderBuffer.size() > REORDER_MAX_BUFFER;
-        const bool waitedLong   = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastReorderDecision).count() > REORDER_WAIT_MS;
 
-        if (haveExpected && haveNext) {
-            // 理想：N と N+1 がそろった
+        if (haveExpected) {
+            // Priority 1: The expected frame is here. Render it immediately.
             outFrameToRender = std::move(g_reorderBuffer[g_expectedStreamFrame]);
-            outFrameToRender.render_start_ms = SteadyNowMs(); // steady clock start
+            outFrameToRender.render_start_ms = SteadyNowMs();
             g_reorderBuffer.erase(g_expectedStreamFrame);
             g_expectedStreamFrame++;
             hasFrameToRender = true;
             g_lastReorderDecision = now;
-        } else if (bufferTooBig || waitedLong) {
-            // 妥協：溜まりすぎor待ちすぎ → 最小キーを描画
+        } else if (bufferTooBig) {
+            // Priority 2: The expected frame is missing, but the buffer is too full.
+            // Render the oldest available frame to avoid an indefinite stall and release memory.
             if (!g_reorderBuffer.empty()) {
                 auto it = g_reorderBuffer.begin();
                 outFrameToRender = std::move(it->second);
-                outFrameToRender.render_start_ms = SteadyNowMs(); // steady clock start
+                outFrameToRender.render_start_ms = SteadyNowMs();
                 uint32_t drawn = it->first;
                 g_reorderBuffer.erase(it);
-                g_expectedStreamFrame = drawn + 1;
+                g_expectedStreamFrame = drawn + 1; // Jump ahead to the next expected frame
                 hasFrameToRender = true;
                 g_lastReorderDecision = now;
-
-                if (!(haveExpected && haveNext)) {
-                    if(PopulateCommandListCount++ % 60 == 0)DebugLog(L"[REORDER] fallback draw, key=" + std::to_wstring(drawn));
-                }
+                DebugLog(L"[REORDER] fallback draw due to large buffer, key=" + std::to_wstring(drawn));
             }
         }
     }

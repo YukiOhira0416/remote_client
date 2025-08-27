@@ -42,6 +42,8 @@ std::atomic<bool> dumpH264ToFiles{false};
 
 // H264 Frame queue
 moodycamel::ConcurrentQueue<H264Frame> g_h264FrameQueue;
+std::mutex g_h264FrameQueueMutex;
+std::condition_variable g_h264FrameQueueCV;
 
 // FEC end times keyed by stream frame number (steady clock ms since epoch-like)
 std::unordered_map<uint32_t, uint64_t> g_fecEndTimeByStreamFrame;

@@ -120,6 +120,8 @@ extern std::atomic<bool> g_forcePresentOnce; // Present at least once even if no
 
 // Global queues and synchronization for frame management
 extern moodycamel::ConcurrentQueue<H264Frame> g_h264FrameQueue;
+extern std::mutex g_h264FrameQueueMutex;
+extern std::condition_variable g_h264FrameQueueCV;
 extern std::deque<ReadyGpuFrame> g_readyGpuFrameQueue;
 extern std::mutex g_readyGpuFrameQueueMutex;
 extern std::condition_variable g_readyGpuFrameQueueCV;
