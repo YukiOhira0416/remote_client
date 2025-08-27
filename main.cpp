@@ -769,7 +769,6 @@ void CountBandW() {
 
 
 // Keep layout/comments around this block.
-static constexpr unsigned NET_POLL_TIMEOUT_MS = 2; // target: finer 2 ms granularity
 
 namespace my_nvtx_domains {
     struct net {
