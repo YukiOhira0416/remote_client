@@ -1018,29 +1018,46 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
         const bool haveExpected = g_reorderBuffer.count(g_expectedStreamFrame) != 0;
         const bool bufferTooBig = g_reorderBuffer.size() > REORDER_MAX_BUFFER;
+        const auto timeSinceLastDecision = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastReorderDecision);
+        const bool waitTimedOut = timeSinceLastDecision.count() > REORDER_WAIT_MS;
+
+        bool triggerFallback = false;
+        std::wstring fallbackReason;
 
         if (haveExpected) {
             // Priority 1: The expected frame is here. Render it immediately.
-            outFrameToRender = std::move(g_reorderBuffer[g_expectedStreamFrame]);
-            outFrameToRender.render_start_ms = SteadyNowMs();
+            outFrameToRender = std::move(g_reorderBuffer.at(g_expectedStreamFrame));
             g_reorderBuffer.erase(g_expectedStreamFrame);
             g_expectedStreamFrame++;
             hasFrameToRender = true;
-            g_lastReorderDecision = now;
-        } else if (bufferTooBig) {
-            // Priority 2: The expected frame is missing, but the buffer is too full.
-            // Render the oldest available frame to avoid an indefinite stall and release memory.
-            if (!g_reorderBuffer.empty()) {
-                auto it = g_reorderBuffer.begin();
-                outFrameToRender = std::move(it->second);
-                outFrameToRender.render_start_ms = SteadyNowMs();
-                uint32_t drawn = it->first;
-                g_reorderBuffer.erase(it);
-                g_expectedStreamFrame = drawn + 1; // Jump ahead to the next expected frame
-                hasFrameToRender = true;
-                g_lastReorderDecision = now;
-                DebugLog(L"[REORDER] fallback draw due to large buffer, key=" + std::to_wstring(drawn));
+        } else if (!g_reorderBuffer.empty()) {
+            // Expected frame is missing. Check fallback conditions.
+            if (bufferTooBig) {
+                triggerFallback = true;
+                fallbackReason = L"large buffer";
+            } else if (waitTimedOut) {
+                triggerFallback = true;
+                fallbackReason = L"wait timeout";
             }
+        }
+
+        if (triggerFallback) {
+            // Fallback: Render the oldest available frame to un-stick the pipeline.
+            auto it = g_reorderBuffer.begin();
+            outFrameToRender = std::move(it->second);
+            uint32_t drawnFrameNum = it->first;
+            g_reorderBuffer.erase(it);
+
+            // Jump ahead to the next expected frame to re-sync.
+            g_expectedStreamFrame = drawnFrameNum + 1;
+            hasFrameToRender = true;
+            DebugLog(L"[REORDER] Fallback draw due to " + fallbackReason + L". Drew #" + std::to_wstring(drawnFrameNum) + L", next expected is #" + std::to_wstring(g_expectedStreamFrame));
+        }
+
+        if (hasFrameToRender) {
+            // Set timestamps only when we are about to render.
+            outFrameToRender.render_start_ms = SteadyNowMs();
+            g_lastReorderDecision = now;
         }
     }
 
