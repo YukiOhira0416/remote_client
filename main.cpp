@@ -333,6 +333,9 @@ static bool EnforceGpuPolicyOrExit() {
 #define DATA_PACKET_SIZE 1400 // UDPパケットサイズ
 #define WSARECV_BUFFER_SIZE 65000
 
+// Keep layout/comments around this block.
+static constexpr unsigned NET_POLL_TIMEOUT_MS = 2; // was ~10; finer granularity
+
 // FEC worker threads and control variables
 std::atomic<bool> send_bandw_Running = true;
 std::atomic<bool> receive_resend_Running = true;
@@ -765,7 +768,7 @@ void CountBandW() {
 }
 
 
-struct nvtx_domain_net { static constexpr char const* name = "NET"; };
+static nvtx3::domain g_nvtx_net{"NET"};
 
 void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsThread would be clearer
     DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"] started.");
@@ -802,8 +805,8 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
         // Service ENet events with a timeout (e.g., 10ms)
         int service_result;
         {
-            nvtx3::scoped_range_in<nvtx_domain_net> r{"Net/WaitRecv"};
-            service_result = enet_host_service(server_host, &event, 10);
+            nvtx3::scoped_range_in<g_nvtx_net> r{"Net/WaitRecv(enet_service)"};
+            service_result = enet_host_service(server_host, &event, NET_POLL_TIMEOUT_MS);
         }
 
         if (service_result > 0) {

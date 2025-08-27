@@ -85,7 +85,6 @@ void WorkerLoop() {
 
     auto lastFlush = Clock::now();
     size_t buffered = 0;
-    size_t pendingDropNote = 0;
 
     while (g_running.load(std::memory_order_acquire) || g_qSize.load(std::memory_order_relaxed) > 0) {
         LogMsg msg;
