@@ -10,4 +10,5 @@ void RenderFrame();
 void SendWindowSize();
 void CleanupD3DRenderResources();
 void WaitForGpu();
+void FlushRenderPipeline();
 void SnapToKnownResolution(int srcW, int srcH, int& outW, int& outH);

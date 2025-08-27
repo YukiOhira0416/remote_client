@@ -30,6 +30,9 @@ static inline uint64_t SteadyNowMs() noexcept {
 // Forward declaration from window.cpp
 extern void ClearReorderState();
 
+// Forward-declare the new function if not in a header
+extern void FlushRenderPipeline();
+
 // CUDA API error checking
 #define CUDA_RUNTIME_CHECK(call)                                                                    \
     do {                                                                                            \
@@ -263,6 +266,9 @@ void FrameDecoder::Decode(const H264Frame& frame) {
 
 bool FrameDecoder::reconfigureDecoder(CUVIDEOFORMAT* pVideoFormat) {
     DebugLog(L"Reconfiguring decoder for new video format or resolution.");
+
+    // IMPORTANT: Wait for the render thread to finish using old resources BEFORE releasing them.
+    FlushRenderPipeline();
 
     // Clean up existing decoder and resources
     releaseDecoderResources();

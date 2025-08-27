@@ -1466,6 +1466,48 @@ void WaitForGpu() {
     g_fenceValue++;
 }
 
+// Add this new function to window.cpp
+void FlushRenderPipeline() {
+    nvtx3::scoped_range_in<d3d12_domain> r("FlushRenderPipeline");
+    DebugLog(L"FlushRenderPipeline: Starting GPU flush for decoder reconfiguration.");
+
+    if (!g_d3d12CommandQueue || !g_fence || !g_fenceEvent) {
+        DebugLog(L"FlushRenderPipeline: D3D12 components not ready, cannot flush.");
+        return;
+    }
+
+    // Signal the command queue with a new fence value. This marker ensures we can
+    // wait for all previously submitted commands to complete.
+    const UINT64 fenceToSignal = g_fenceValue++;
+    HRESULT hr = g_d3d12CommandQueue->Signal(g_fence.Get(), fenceToSignal);
+    if (FAILED(hr)) {
+        DebugLog(L"FlushRenderPipeline: Failed to signal fence. HR: " + HResultToHexWString(hr));
+        return; // Cannot proceed safely
+    }
+
+    // Wait until the GPU has processed everything up to our signal.
+    if (g_fence->GetCompletedValue() < fenceToSignal) {
+        hr = g_fence->SetEventOnCompletion(fenceToSignal, g_fenceEvent);
+        if (SUCCEEDED(hr)) {
+            // Use a long timeout to avoid deadlocks, but this should be fast.
+            WaitForSingleObject(g_fenceEvent, 500);
+        }
+    }
+
+    // Now that the GPU is idle, it is safe to clear all software queues that
+    // might contain ComPtrs to the resources that are about to be destroyed.
+    {
+        std::lock_guard<std::mutex> qlock(g_readyGpuFrameQueueMutex);
+        g_readyGpuFrameQueue.clear();
+    }
+    {
+        std::lock_guard<std::mutex> inflightLock(g_inFlightFramesMutex);
+        while(!g_inFlightFrames.empty()) g_inFlightFrames.pop();
+    }
+    ClearReorderState(); // This clears g_reorderBuffer and resets expectations
+
+    DebugLog(L"FlushRenderPipeline: GPU is idle and software queues are cleared.");
+}
 
 void CleanupD3DRenderResources() {
     WaitForGpu(); // Ensure GPU is idle before releasing resources
