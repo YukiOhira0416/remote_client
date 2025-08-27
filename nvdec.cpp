@@ -1,6 +1,9 @@
 #include "nvdec.h"
 #include "Globals.h"
+#include <nvtx3/nvtx3.hpp>
 #include <stdexcept>
+
+static nvtx3::domain g_nvtx_nvdec{"NVDEC"};
 #include <fstream>
 #include <vector>
 #include <algorithm>
@@ -326,14 +329,14 @@ int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoForm
 bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
     // Get the target display resolution from global variables.
     // This resolution is determined by the window size and sent to the server.
-    int targetWidth = ::currentResolutionWidth.load();
-    int targetHeight = ::currentResolutionHeight.load();
+    // int targetWidth = ::currentResolutionWidth.load();
+    // int targetHeight = ::currentResolutionHeight.load();
 
     // If the target resolution hasn't been set yet, default to the stream's coded size.
-    if (targetWidth == 0 || targetHeight == 0) {
-        targetWidth = pVideoFormat->coded_width;
-        targetHeight = pVideoFormat->coded_height;
-    }
+    // if (targetWidth == 0 || targetHeight == 0) {
+        // targetWidth = pVideoFormat->coded_width;
+        // targetHeight = pVideoFormat->coded_height;
+    // }
 
     // Set the class members to the actual coded size of the video stream.
     // This is the intrinsic resolution of the video, which is needed for correct
@@ -654,7 +657,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
 
     // Y plane
     {
-        nvtx3::scoped_range r("NVDEC::cuMemcpy2DAsync(Y)");
+        nvtx3::scoped_range_in<g_nvtx_nvdec> r{"CopyAsync(Y)"};
         CUDA_MEMCPY2D y = {};
         y.srcMemoryType = CU_MEMORYTYPE_DEVICE;
         y.srcDevice     = pDecodedFrame;
@@ -668,7 +671,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
 
     // UV plane
     {
-        nvtx3::scoped_range r("NVDEC::cuMemcpy2DAsync(UV)");
+        nvtx3::scoped_range_in<g_nvtx_nvdec> r{"CopyAsync(UV)"};
         CUDA_MEMCPY2D uv = {};
         uv.srcMemoryType = CU_MEMORYTYPE_DEVICE;
         uv.srcDevice     = pDecodedFrame + (size_t)srcHeightRows_Y * nDecodedPitch;
@@ -681,7 +684,10 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     }
 
     // Record completion event for this frame
-    CUDA_CHECK_CALLBACK(cuEventRecord(fr.copyDone, s));
+    {
+        nvtx3::scoped_range_in<g_nvtx_nvdec> r{"EventRecord(copyDone)"};
+        CUDA_CHECK_CALLBACK(cuEventRecord(fr.copyDone, s));
+    }
 
     // If we get here, all CUDA operations were successful.
     // The destructors for mappedFrame and ctxLocker will automatically clean up.

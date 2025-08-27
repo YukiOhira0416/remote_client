@@ -20,7 +20,7 @@ bool EncodeFEC_Jerasure(
     int* matrix,                   // jerasure_matrix_encode で生成した行列
     size_t shard_len)              // シャード長
 {
-    if (!data || !matrix || k <= 0 || m <= 0 || shard_len <= 0 || padded_data_len != k * shard_len) {
+    if (!data || !matrix || k <= 0 || m <= 0 || shard_len == 0 || padded_data_len != k * shard_len) {
         DebugLog(L"EncodeFEC_Jerasure: Invalid arguments.");
         return false;
     }
