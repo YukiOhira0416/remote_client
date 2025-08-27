@@ -224,7 +224,7 @@ static inline void SetViewportScissorToBackbuffer(
 }
 
 // D3D12 Global Variables
-struct d3d12_domain { static constexpr char const* name = "D3D12"; };
+static nvtx3::domain g_nvtx_d3d12{"D3D12"};
 struct cuda_domain { static constexpr char const* name = "CUDA"; };
 static constexpr UINT kSwapChainBufferCount = 3; // was 2
 Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;
@@ -933,7 +933,7 @@ bool InitD3D() {
 UINT64 PopulateCommandListCount = 0;
 struct reorder_domain { static constexpr char const* name = "REORDER"; };
 bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass ReadyGpuFrame by reference
-    nvtx3::scoped_range_in<d3d12_domain> nvtx_populate_cmdlist{"PopulateCommandList"};
+    nvtx3::scoped_range_in<g_nvtx_d3d12> nvtx_populate_cmdlist{"PopulateCommandList"};
     // Reset command allocator and command list
     HRESULT hr = g_commandAllocator->Reset();
     if (FAILED(hr)) { DebugLog(L"PopulateCommandList: Failed to reset command allocator. HR: " + HResultToHexWString(hr)); return false; }
@@ -1130,7 +1130,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 }
 
 static void ResizeSwapChainOnRenderThread(int newW, int newH) {
-    nvtx3::scoped_range_in<d3d12_domain> r("ResizeSwapChain");
+    nvtx3::scoped_range_in<g_nvtx_d3d12> r("ResizeSwapChain");
     if (!g_swapChain || !g_d3d12Device || !g_d3d12CommandQueue) return;
 
     // Get existing desc; skip if already correct
@@ -1228,7 +1228,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 void RenderFrame() {
     // NVTX range for frame latency wait
     {
-        nvtx3::scoped_range_in<d3d12_domain> frame_latency_wait{"FrameLatency(Wait)"};
+        nvtx3::scoped_range_in<g_nvtx_d3d12> frame_latency_wait{"FrameLatency(Wait)"};
         if (g_frameLatencyWaitableObject) {
             // Wait on frame-latency object but remain responsive to window messages.
             HANDLE handles[1] = { g_frameLatencyWaitableObject };
@@ -1259,8 +1259,8 @@ void RenderFrame() {
             }
         }
     }
-    nvtx3::scoped_range_in<d3d12_domain> frame_r("Frame");
-    nvtx3::scoped_range_in<d3d12_domain> r("D3D12Present");
+    nvtx3::scoped_range_in<g_nvtx_d3d12> frame_r("Frame");
+    nvtx3::scoped_range_in<g_nvtx_d3d12> r("D3D12Present");
     // Use existing fence and queue types; keep comments and layout intact.
     {
         std::lock_guard<std::mutex> lk(g_inFlightFramesMutex);
@@ -1295,7 +1295,7 @@ void RenderFrame() {
 
     // Command list is populated (at least with a clear). Now execute and present.
     {
-        nvtx3::scoped_range_in<d3d12_domain> exec_r("ExecuteCommandLists");
+        nvtx3::scoped_range_in<g_nvtx_d3d12> exec_r("ExecuteCommandLists");
         ID3D12CommandList* ppCommandLists[] = { g_commandList.Get() };
         g_d3d12CommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
     }
@@ -1308,7 +1308,7 @@ void RenderFrame() {
         const UINT presentFlags = g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
         HRESULT hrPresent = S_OK;
         {
-            nvtx3::scoped_range_in<d3d12_domain> present_r{"Present(Submit)"};
+            nvtx3::scoped_range_in<g_nvtx_d3d12> present_r{"Present(Submit)"};
             // Keep the current vsync interval (looks like 0); only flags change:
             hrPresent = g_swapChain->Present(0, presentFlags);
             // Keep existing error handling/logging if present.
@@ -1413,7 +1413,7 @@ void RenderFrame() {
                 std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
                 // Keep at most 2 frames in flight for this back buffer index
                 // (Adjust threshold carefully if you observe pipe underflow/overflow)
-                shouldWait = (g_inFlightFrames.size() >= 3);
+                shouldWait = (g_inFlightFrames.size() >= 2);
             }
 
             if (shouldWait) {
@@ -1423,8 +1423,8 @@ void RenderFrame() {
                         DebugLog(L"RenderFrame: Failed to set event on completion. HR: " + HResultToHexWString(hr));
                     } else {
                         // Bounded wait keeps pipeline responsive; still measured in the existing logging
-                        const DWORD timeoutMs = 5; // short, non-infinite
-                        nvtx3::scoped_range_in<d3d12_domain> fence_wait{"Fence(Wait bounded)"};
+                        const DWORD timeoutMs = 2; // short, non-infinite
+                        nvtx3::scoped_range_in<g_nvtx_d3d12> fence_wait{"Fence(Wait bounded)"};
                         WaitForSingleObjectEx(g_fenceEvent, timeoutMs, FALSE);
                     }
                 }
@@ -1434,7 +1434,7 @@ void RenderFrame() {
             g_renderFenceValues[g_currentFrameBufferIndex] = currentFenceVal + 1;
         } else {
             // ---- Forced present path (no new frame rendered) ----
-            nvtx3::scoped_range_in<d3d12_domain> r_forced{"Present(Forced)"};
+            nvtx3::scoped_range_in<g_nvtx_d3d12> r_forced{"Present(Forced)"};
             // Don't perform fence waits or signals that assume a rendered frame.
             // Just refresh the back buffer index so the next real frame uses the correct RTV.
             g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
