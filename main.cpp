@@ -545,69 +545,6 @@ int getNALType(const uint8_t* data, size_t size) {
     return data[0] & 0x1F;
 }
 
-// エンコード済みバッファから I フレームのみを抽出する関数（Iフレーム: NAL type 5）
-std::vector<uint8_t> filterIFrameAndParameterSets(const std::vector<uint8_t>& encodedBuffer) {
-    std::vector<uint8_t> output;
-    bool hasIDR = false;
-    bool hasSPS = false;
-    bool hasPPS = false;
-
-    size_t i = 0;
-    while (i + 4 < encodedBuffer.size()) {
-        if (encodedBuffer[i] == 0x00 &&
-            encodedBuffer[i + 1] == 0x00 &&
-            encodedBuffer[i + 2] == 0x00 &&
-            encodedBuffer[i + 3] == 0x01) {
-
-            size_t nalStart = i + 4;
-            size_t nalEnd = encodedBuffer.size();
-
-            for (size_t j = nalStart; j + 4 < encodedBuffer.size(); ++j) {
-                if (encodedBuffer[j] == 0x00 &&
-                    encodedBuffer[j + 1] == 0x00 &&
-                    encodedBuffer[j + 2] == 0x00 &&
-                    encodedBuffer[j + 3] == 0x01) {
-                    nalEnd = j;
-                    break;
-                }
-            }
-
-            int nalType = getNALType(&encodedBuffer[nalStart], nalEnd - nalStart);
-
-            if (nalType == 5) hasIDR = true;
-            if (nalType == 7) hasSPS = true;
-            if (nalType == 8) hasPPS = true;
-
-            if (nalType == 5 || nalType == 7 || nalType == 8) {
-                output.insert(output.end(), encodedBuffer.begin() + i, encodedBuffer.begin() + nalEnd);
-            }
-
-            i = nalEnd;
-        }
-        else {
-            ++i;
-        }
-    }
-
-    if (hasIDR && hasSPS && hasPPS) {
-        return output;
-    }
-    else {
-        return {}; // 0バイト
-    }
-}
-
-
-// 送信前の準備（呼び出し側で処理済み）
-std::vector<uint8_t> prepareFrameForSending(const std::vector<uint8_t>& encodedBuffer) {
-    if (sendIFrameOnly) {
-        return filterIFrameAndParameterSets(encodedBuffer);
-    }
-    else {
-        return encodedBuffer; // そのまま送信
-    }
-}
-
 void InitializeRSMatrix() {
     std::call_once(g_matrix_init_flag, []() {
         // 1. 従来の Vandermonde ベースのエンコード行列を生成
@@ -1164,8 +1101,8 @@ void FecWorkerThread(int threadId) {
 ThreadConfig getOptimalThreadConfig(){
     ThreadConfig config;
 
-    config.receiver = 5;
-    config.fec = 4;
+    config.receiver = 1;
+    config.fec = 2;
     config.decoder = 1;
     config.render = 1;
     config.RS_K = 8;
