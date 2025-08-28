@@ -22,6 +22,27 @@
 // CUDA includes
 #include <cuda.h>
 
+// Use a single monotonic clock for all latency metrics.
+static inline uint64_t SteadyNowMs() noexcept {
+    using clock = std::chrono::steady_clock;
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            clock::now().time_since_epoch()
+        ).count()
+    );
+}
+
+// Generation/epoch to invalidate pre-resize data.
+extern std::atomic<uint64_t> g_streamGeneration;
+extern std::atomic<uint64_t> g_latencyEpochMs;
+extern std::atomic<uint64_t> g_lastIdrMs;
+
+inline void BumpStreamGeneration() {
+    g_streamGeneration.fetch_add(1, std::memory_order_acq_rel);
+    g_latencyEpochMs.store(SteadyNowMs(), std::memory_order_release);
+}
+
+
 // Global once:
 static nvtxDomainHandle_t g_frameDomain = nvtxDomainCreateA("FRAME");
 

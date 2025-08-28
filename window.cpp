@@ -46,16 +46,6 @@ void RequestIDRNow(); // defined in main.cpp; used to re-sync stream after devic
 #include <ShellScalingApi.h> // AdjustWindowRectExForDpi 等
 #pragma comment(lib, "Shcore.lib")
 
-// Use a single monotonic clock for all latency metrics.
-static inline uint64_t SteadyNowMs() noexcept {
-    using clock = std::chrono::steady_clock;
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            clock::now().time_since_epoch()
-        ).count()
-    );
-}
-
 UINT64 RenderCount = 0;
 
 static UINT GetDpiForMonitorOrDefault(HMONITOR hMon) {
@@ -655,6 +645,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             FinalizeResize(hWnd, /*forceAnnounce=*/true);
 
             // 2) Resume the streaming pipeline even if the snapped size didn’t change.
+            BumpStreamGeneration();
             ClearReorderState();
             RequestIDRNow();
 
