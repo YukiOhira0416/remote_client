@@ -358,18 +358,27 @@ void ClearReorderState()
         if (pair.second.nvtx_range_id) {
             nvtxDomainRangeEnd(g_frameDomain, pair.second.nvtx_range_id);
         }
-        // Assuming ReadyGpuFrame dtor does NOT destroy the event, we do it here.
+        // NEW: ensure CUDA async copies finished before releasing resources
         if (pair.second.copyDone) {
+            if (cuEventQuery(pair.second.copyDone) == CUDA_ERROR_NOT_READY) {
+                // Keep timing/logging behavior elsewhere; do not add sleeps.
+                cuEventSynchronize(pair.second.copyDone);
+            }
             cuEventDestroy(pair.second.copyDone);
+            // Do not alter other fields or layout
         }
     }
     g_reorderBuffer.clear();
 
-    // Also destroy the event in the last-drawn-frame cache.
+    // Also for the last-drawn-frame cache
     if (g_lastDrawnFrame.copyDone) {
+        if (cuEventQuery(g_lastDrawnFrame.copyDone) == CUDA_ERROR_NOT_READY) {
+            cuEventSynchronize(g_lastDrawnFrame.copyDone);
+        }
         cuEventDestroy(g_lastDrawnFrame.copyDone);
+        g_lastDrawnFrame.copyDone = nullptr; // be explicit; layout unchanged
     }
-    g_lastDrawnFrame = {}; // クラッシュ回避のため、キャッシュされたフレームもクリア
+    g_lastDrawnFrame = {}; // keep existing line
 
     g_expectedInitialized = false;
     g_expectedStreamFrame = 0;
