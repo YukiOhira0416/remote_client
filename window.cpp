@@ -544,21 +544,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             const int width  = LOWORD(lParam);
             const int height = HIWORD(lParam);
 
-            // Do not queue resizes while the user is actively dragging the window.
-            // This prevents a storm of resize requests. The final resize is handled
-            // by the logic in WM_EXITSIZEMOVE.
-            if (g_isSizing) {
-                return 0;
-            }
-
+            // Skip only when minimized/zero; still accept sizes during sizing to enable live resize.
             if (wParam == SIZE_MINIMIZED || width == 0 || height == 0) {
                 DebugLog(L"WM_SIZE: minimized or zero. skip.");
                 return 0;
             }
 
-            // This will now only run for programmatic resizes or the final resize
-            // triggered after a drag operation.
-            g_pendingResize.w.store(width, std::memory_order_relaxed);
+            // Enqueue a *local* swap-chain resize (render thread will pick this up).
+            // The server-side resolution announce continues to be handled in WM_EXITSIZEMOVE via FinalizeResize.
+            g_pendingResize.w.store(width,  std::memory_order_relaxed);
             g_pendingResize.h.store(height, std::memory_order_relaxed);
             g_pendingResize.has.store(true, std::memory_order_release);
 
