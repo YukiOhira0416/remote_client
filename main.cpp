@@ -1268,6 +1268,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     // The windowSenderThread is removed as it's part of the old logic.
 
     // Main render loop
+    // Verified: The following loop correctly handles rendering during live-resize
+    // by calling RenderFrame() unconditionally. No functional change was needed.
     auto lastFrameRenderTime = std::chrono::high_resolution_clock::now();
 
     MSG msg = {};
