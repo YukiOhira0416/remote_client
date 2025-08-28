@@ -1296,10 +1296,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         auto currentTime = std::chrono::high_resolution_clock::now();
         auto timeSinceLastRender = currentTime - lastFrameRenderTime;
 
-        if (g_isSizing) {
-            // While user is dragging the window, avoid busy spin.
-            Sleep(16);
-        } else {
+        // Render even while sizing; RenderFrame internally waits on the frame-latency object
+        // and pumps messages, so this won't busy-spin.
+        {
             nvtx3::scoped_range r("RenderFrame_Outer");
             RenderFrame(); // pacing handled by DXGI frame-latency waitable on the render side
             lastFrameRenderTime = currentTime;
