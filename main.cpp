@@ -1106,7 +1106,7 @@ ThreadConfig getOptimalThreadConfig(){
     config.decoder = 1;
     config.render = 1;
     config.RS_K = 6;
-    config.RS_M = 5;
+    config.RS_M = 2;
 
     return config;
 }
