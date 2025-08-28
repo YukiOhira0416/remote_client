@@ -250,6 +250,11 @@ UINT64 g_renderFenceValues[kSwapChainBufferCount]; // Fence values for each fram
 
 bool g_allowTearing = false; // ティアリングを許可するかどうか
 
+// Forward declarations for recovery helper
+void WaitForGpu();
+void ClearReorderState();
+bool InitD3D();
+
 // ---- Device-loss recovery (no goto, preserve layout/comments) ----
 static std::atomic<bool> g_deviceResetInProgress{false};
 
