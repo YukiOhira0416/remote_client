@@ -17,16 +17,6 @@ namespace my_nvtx_domains {
 #include <atomic>
 #include <chrono>
 
-// Use a single monotonic clock for all latency metrics.
-static inline uint64_t SteadyNowMs() noexcept {
-    using clock = std::chrono::steady_clock;
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            clock::now().time_since_epoch()
-        ).count()
-    );
-}
-
 // Forward declaration from window.cpp
 extern void ClearReorderState();
 
