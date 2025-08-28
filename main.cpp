@@ -1297,21 +1297,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         auto timeSinceLastRender = currentTime - lastFrameRenderTime;
 
         if (g_isSizing) {
-            // We are resizing, so just yield the CPU. When we resume, the large
-            // timeSinceLastRender will trigger an immediate frame.
-            Sleep(16); // Sleep for roughly one frame to avoid busy-waiting.
-        }
-        else if (timeSinceLastRender >= TARGET_FRAME_DURATION) {
-            nvtx3::scoped_range r("RenderFrame_Outer");
-            RenderFrame();
-            lastFrameRenderTime = currentTime;
+            // While user is dragging the window, avoid busy spin.
+            Sleep(16);
         } else {
-            // Yield CPU time if we are ahead of schedule to avoid spinning.
-            auto timeToWait = TARGET_FRAME_DURATION - timeSinceLastRender;
-            long long msToWait = std::chrono::duration_cast<std::chrono::milliseconds>(timeToWait).count();
-            if (msToWait > 1) {
-                Sleep(static_cast<DWORD>(msToWait - 1));
-            }
+            nvtx3::scoped_range r("RenderFrame_Outer");
+            RenderFrame(); // pacing handled by DXGI frame-latency waitable on the render side
+            lastFrameRenderTime = currentTime;
         }
     }
 

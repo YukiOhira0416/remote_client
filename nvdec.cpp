@@ -750,6 +750,19 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
                 << L" Queueing Duration Time " << readyFrame.client_fec_end_to_render_end_time_ms << " ms";
             DebugLog(wss.str());
         }
+        // Start a cross-thread NVTX range for this streamFrameNumber
+        {
+            nvtxEventAttributes_t a{};
+            a.version = NVTX_VERSION;
+            a.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;
+            a.messageType = NVTX_MESSAGE_TYPE_ASCII;
+
+            char label[128];
+            sprintf(label, "Frame #%u", readyFrame.streamFrameNumber);
+            a.message.ascii = label;
+
+            readyFrame.nvtx_range_id = nvtxDomainRangeStartEx(g_frameDomain, &a);
+        }
         g_readyGpuFrameQueue.push_back(std::move(readyFrame));
     }
     g_readyGpuFrameQueueCV.notify_one();

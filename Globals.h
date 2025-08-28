@@ -17,9 +17,13 @@
 #include <condition_variable>
 #include <unordered_map>
 #include "concurrentqueue/concurrentqueue.h"
+#include <nvtx3/nvtx3.hpp>
 
 // CUDA includes
 #include <cuda.h>
+
+// Global once:
+static nvtxDomainHandle_t g_frameDomain = nvtxDomainCreateA("FRAME");
 
 #define SIZE_PACKET_SIZE 258
 
@@ -100,6 +104,7 @@ struct ReadyGpuFrame {
     uint64_t present_ms = 0;       // Client steady clock: right after Present returns
     uint64_t fence_done_ms = 0;    // Client steady clock: after per-frame fence wait (if any)
     CUevent copyDone = nullptr; // NEW: signaled when NVDEC->CUDA copy has finished
+    nvtxRangeId_t nvtx_range_id = 0;
 };
 
 // H264 Frame Data for decoder queue
