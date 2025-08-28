@@ -360,6 +360,14 @@ static UINT64 SignalFenceNow() noexcept {
 // Drain any retired resources whose CUDA event and fence are complete.
 // Maintains timing/logging and NVTX; no sleeps; no reformatting.
 static void DrainRetireBin() {
+    // NEW: bail out if sync primitives or device are not in a trustworthy state.
+    if (g_deviceResetInProgress.load(std::memory_order_acquire)) {
+        return; // device/pipeline is being reset; defer releasing GPU resources
+    }
+    if (!g_d3d12CommandQueue || !g_fence /*|| !g_d3d12Device*/) {
+        return; // NEW: do not assume completion when fence/queue are unavailable
+    }
+
     std::lock_guard<std::mutex> g(g_retireBinMutex);
     const UINT64 completed = g_fence ? g_fence->GetCompletedValue() : ~0ULL;
 
