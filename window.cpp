@@ -414,9 +414,10 @@ void ClearReorderState()
     WaitForGpu(); // ← insert this single line
 
     std::lock_guard<std::mutex> lk(g_reorderMutex);
-    for (const auto& pair : g_reorderBuffer) {
+    for (auto& pair : g_reorderBuffer) {
         if (pair.second.nvtx_range_id) {
             nvtxDomainRangeEnd(g_frameDomain, pair.second.nvtx_range_id);
+            pair.second.nvtx_range_id = 0;
         }
         // NEW: ensure CUDA async copies finished before releasing resources
         if (pair.second.copyDone) {
@@ -425,12 +426,20 @@ void ClearReorderState()
                 cuEventSynchronize(pair.second.copyDone);
             }
             cuEventDestroy(pair.second.copyDone);
-            // Do not alter other fields or layout
+            pair.second.copyDone = nullptr;
         }
+        // === ADDED: explicit resource resets (safe & idempotent) ===
+        if (pair.second.hw_decoded_texture_Y) { pair.second.hw_decoded_texture_Y.Reset(); }
+        if (pair.second.hw_decoded_texture_UV) { pair.second.hw_decoded_texture_UV.Reset(); }
     }
     g_reorderBuffer.clear();
 
     // Also for the last-drawn-frame cache
+    // Explicit, idempotent teardown of cached frame (no move-assign)
+    if (g_lastDrawnFrame.nvtx_range_id) {
+        nvtxDomainRangeEnd(g_frameDomain, g_lastDrawnFrame.nvtx_range_id);
+        g_lastDrawnFrame.nvtx_range_id = 0;
+    }
     if (g_lastDrawnFrame.copyDone) {
         if (cuEventQuery(g_lastDrawnFrame.copyDone) == CUDA_ERROR_NOT_READY) {
             cuEventSynchronize(g_lastDrawnFrame.copyDone);
@@ -438,7 +447,9 @@ void ClearReorderState()
         cuEventDestroy(g_lastDrawnFrame.copyDone);
         g_lastDrawnFrame.copyDone = nullptr; // be explicit; layout unchanged
     }
-    g_lastDrawnFrame = {}; // keep existing line
+    if (g_lastDrawnFrame.hw_decoded_texture_Y) { g_lastDrawnFrame.hw_decoded_texture_Y.Reset(); }
+    if (g_lastDrawnFrame.hw_decoded_texture_UV) { g_lastDrawnFrame.hw_decoded_texture_UV.Reset(); }
+    // Do NOT alter timing/logging fields; leave non-resource fields as-is unless they must be zero.
 
     g_expectedInitialized = false;
     g_expectedStreamFrame = 0;
