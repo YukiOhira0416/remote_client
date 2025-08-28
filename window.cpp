@@ -356,6 +356,7 @@ void ClearReorderState()
         }
     }
     g_reorderBuffer.clear();
+    g_lastDrawnFrame = {}; // クラッシュ回避のため、キャッシュされたフレームもクリア
     g_expectedInitialized = false;
     g_expectedStreamFrame = 0;
     DebugLog(L"ClearReorderState: reorder state cleared.");
