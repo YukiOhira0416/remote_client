@@ -354,9 +354,19 @@ void ClearReorderState()
         if (pair.second.nvtx_range_id) {
             nvtxDomainRangeEnd(g_frameDomain, pair.second.nvtx_range_id);
         }
+        // Assuming ReadyGpuFrame dtor does NOT destroy the event, we do it here.
+        if (pair.second.copyDone) {
+            cuEventDestroy(pair.second.copyDone);
+        }
     }
     g_reorderBuffer.clear();
+
+    // Also destroy the event in the last-drawn-frame cache.
+    if (g_lastDrawnFrame.copyDone) {
+        cuEventDestroy(g_lastDrawnFrame.copyDone);
+    }
     g_lastDrawnFrame = {}; // クラッシュ回避のため、キャッシュされたフレームもクリア
+
     g_expectedInitialized = false;
     g_expectedStreamFrame = 0;
     DebugLog(L"ClearReorderState: reorder state cleared.");
@@ -973,8 +983,6 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
     // Transition the current back buffer from PRESENT to RENDER_TARGET.
     if (!g_renderTargets[g_currentFrameBufferIndex]) {
-        // This can happen during a resize when the swap chain is being recreated.
-        // We close the command list and return, skipping rendering for this frame.
         g_commandList->Close();
         return false;
     }
@@ -991,138 +999,113 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     }
 
     // Set RTV
-    // Set PSO and Root Signature
     g_commandList->SetPipelineState(g_pipelineState.Get());
     g_commandList->SetGraphicsRootSignature(g_rootSignature.Get());
-
-    // Set RTV
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart(), g_currentFrameBufferIndex, g_rtvDescriptorSize);
     {
         nvtx3::scoped_range_in<d3d12_domain> r{ "SetRT" };
         g_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
     }
 
-    // >>> NEW: Ensure viewport/scissor initially cover the full backbuffer <<<
     if (g_renderTargets[g_currentFrameBufferIndex]) {
         SetViewportScissorToBackbuffer(g_commandList.Get(), g_renderTargets[g_currentFrameBufferIndex].Get());
     }
 
-    // Optional: clear to black so gutters are black (no blue flicker around the content)
     const float clearColor[4] = {0.f, 0.f, 0.f, 1.f};
     g_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 
-    // --- Flicker Fix ---
+    // --- Crash and Flicker Fix ---
     bool isNewFrame = false;
     ReadyGpuFrame frameToDraw;
 
-    // 1) NVDEC からの準備完了キューを全部吸い込み、番号で並べる
+    // 1. Pull all new frames into the reorder buffer.
     {
         std::unique_lock<std::mutex> qlock(g_readyGpuFrameQueueMutex);
         while (!g_readyGpuFrameQueue.empty()) {
             ReadyGpuFrame f = std::move(g_readyGpuFrameQueue.back());
             g_readyGpuFrameQueue.pop_back();
-
             std::lock_guard<std::mutex> rlock(g_reorderMutex);
             auto it = g_reorderBuffer.find(f.streamFrameNumber);
-            if (it == g_reorderBuffer.end()) {
-                g_reorderBuffer.emplace(f.streamFrameNumber, std::move(f));
-            } else {
+            if (it != g_reorderBuffer.end()) {
+                if (it->second.copyDone) cuEventDestroy(it->second.copyDone);
                 it->second = std::move(f);
-                DebugLog(L"[REORDER] duplicate streamFrameNumber, replaced: " + std::to_wstring(it->first));
+            } else {
+                g_reorderBuffer.emplace(f.streamFrameNumber, std::move(f));
             }
         }
     }
 
-    // 2) N と N+1 がそろったら N を描画。なければ短い待ち or 圧迫で妥協
+    // 2. Decide which frame to draw (new or cached) and manage event ownership.
     {
-        nvtx3::scoped_range_in<reorder_domain> r{"Reorder(decide)"};
         std::lock_guard<std::mutex> rlock(g_reorderMutex);
-        auto now = std::chrono::steady_clock::now();
-
-        if (!g_expectedInitialized) {
-            for (auto it = g_reorderBuffer.begin(); it != g_reorderBuffer.end(); ++it) {
-                uint32_t k = it->first;
-                if (g_reorderBuffer.find(k + 1) != g_reorderBuffer.end()) {
-                    g_expectedStreamFrame = k;
-                    g_expectedInitialized = true;
-                    break;
-                }
-            }
-            if (!g_expectedInitialized && !g_reorderBuffer.empty()) {
-                g_expectedStreamFrame = g_reorderBuffer.begin()->first;
-                g_expectedInitialized = true;
-            }
-        }
-
-        const bool haveExpected = g_reorderBuffer.count(g_expectedStreamFrame) != 0;
-        const bool haveNext     = g_reorderBuffer.count(g_expectedStreamFrame + 1) != 0;
-        const bool bufferTooBig = g_reorderBuffer.size() > REORDER_MAX_BUFFER;
-        const int dynamicWait = GetReorderWaitMsForDepth(g_reorderBuffer.size());
-        const bool waitedLong = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastReorderDecision).count() > dynamicWait;
 
         ReadyGpuFrame newFrameFromReorder;
         bool hasNewFrame = false;
 
-        if (haveExpected && haveNext) {
-            newFrameFromReorder = std::move(g_reorderBuffer[g_expectedStreamFrame]);
-            g_reorderBuffer.erase(g_expectedStreamFrame);
-            g_expectedStreamFrame++;
-            hasNewFrame = true;
-            g_lastReorderDecision = now;
-        } else if (bufferTooBig || waitedLong) {
+        // --- Reorder logic to find a new frame ---
+        auto now = std::chrono::steady_clock::now();
+        if (!g_expectedInitialized) {
+            // Initialization logic
             if (!g_reorderBuffer.empty()) {
-                auto it = g_reorderBuffer.begin();
-                newFrameFromReorder = std::move(it->second);
-                uint32_t drawn = it->first;
-                g_reorderBuffer.erase(it);
-                g_expectedStreamFrame = drawn + 1;
-                hasNewFrame = true;
-                g_lastReorderDecision = now;
-
-                if (!(haveExpected && haveNext)) {
-                    if(PopulateCommandListCount++ % 60 == 0)DebugLog(L"[REORDER] fallback draw, key=" + std::to_wstring(drawn));
-                }
+                g_expectedStreamFrame = g_reorderBuffer.begin()->first;
+                g_expectedInitialized = true;
             }
         }
+        const bool haveExpected = g_reorderBuffer.count(g_expectedStreamFrame) != 0;
+        const bool waitedLong = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastReorderDecision).count() > GetReorderWaitMsForDepth(g_reorderBuffer.size());
+
+        if (haveExpected || (!g_reorderBuffer.empty() && waitedLong)) {
+            auto it = g_reorderBuffer.find(g_expectedStreamFrame);
+            if (it == g_reorderBuffer.end()) {
+                it = g_reorderBuffer.begin();
+            }
+            newFrameFromReorder = std::move(it->second);
+            g_expectedStreamFrame = it->first + 1;
+            g_reorderBuffer.erase(it);
+            hasNewFrame = true;
+            g_lastReorderDecision = now;
+        }
+        // --- End reorder logic ---
 
         if (hasNewFrame) {
-            frameToDraw = std::move(newFrameFromReorder);
             isNewFrame = true;
+            if (g_lastDrawnFrame.copyDone) {
+                cuEventDestroy(g_lastDrawnFrame.copyDone);
+            }
+            g_lastDrawnFrame = newFrameFromReorder;
+            newFrameFromReorder.copyDone = nullptr; // Ownership transferred to cache
+        }
+
+        if (g_lastDrawnFrame.hw_decoded_texture_Y) {
+            frameToDraw = g_lastDrawnFrame;
+            frameToDraw.copyDone = nullptr;
         }
     }
 
-    // 3) 新しいフレームがない場合は、最後に描画したフレームを再利用
-    if (!isNewFrame && g_lastDrawnFrame.hw_decoded_texture_Y) {
-        frameToDraw = g_lastDrawnFrame;
-    }
-
-    // 4) 描画対象のフレームがあれば描画コマンドを生成
+    // 3. Draw the selected frame.
     if (frameToDraw.hw_decoded_texture_Y && frameToDraw.hw_decoded_texture_UV) {
         if (isNewFrame) {
             frameToDraw.render_start_ms = SteadyNowMs();
-        }
-
-        if (frameToDraw.copyDone) {
-            if (cuEventQuery(frameToDraw.copyDone) == CUDA_ERROR_NOT_READY) {
-                nvtx3::scoped_range_in<cuda_domain> r("Wait(copyDone)");
-                cuEventSynchronize(frameToDraw.copyDone);
+            // We must wait on the event from the master copy in the cache.
+            std::lock_guard<std::mutex> rlock(g_reorderMutex);
+            if (g_lastDrawnFrame.copyDone) {
+                if (cuEventQuery(g_lastDrawnFrame.copyDone) == CUDA_ERROR_NOT_READY) {
+                    nvtx3::scoped_range_in<cuda_domain> r("Wait(copyDone)");
+                    cuEventSynchronize(g_lastDrawnFrame.copyDone);
+                }
             }
         }
 
         const int videoW = currentResolutionWidth.load();
         const int videoH = currentResolutionHeight.load();
-
         ID3D12Resource* backbuffer = g_renderTargets[g_currentFrameBufferIndex].Get();
         if (backbuffer) {
-            const D3D12_RESOURCE_DESC bbDesc = backbuffer->GetDesc();
-            SetLetterboxViewport(g_commandList.Get(), bbDesc, videoW, videoH);
+            SetLetterboxViewport(g_commandList.Get(), backbuffer->GetDesc(), videoW, videoH);
         }
 
         static ID3D12Resource* s_lastY = nullptr;
         static ID3D12Resource* s_lastUV = nullptr;
-
         CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleCpu(g_srvHeap->GetCPUDescriptorHandleForHeapStart());
-
         if (frameToDraw.hw_decoded_texture_Y.Get() != s_lastY) {
             D3D12_SHADER_RESOURCE_VIEW_DESC srvDescY = {};
             srvDescY.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -1132,9 +1115,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_Y.Get(), &srvDescY, srvHandleCpu);
             s_lastY = frameToDraw.hw_decoded_texture_Y.Get();
         }
-
         srvHandleCpu.Offset(1, g_srvDescriptorSize);
-
         if (frameToDraw.hw_decoded_texture_UV.Get() != s_lastUV) {
             D3D12_SHADER_RESOURCE_VIEW_DESC srvDescUV = {};
             srvDescUV.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -1148,7 +1129,6 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         ID3D12DescriptorHeap* ppHeaps[] = { g_srvHeap.Get() };
         g_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
         g_commandList->SetGraphicsRootDescriptorTable(0, g_srvHeap->GetGPUDescriptorHandleForHeapStart());
-
         g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         {
             nvtx3::scoped_range_in<d3d12_domain> r{ "Draw" };
@@ -1156,13 +1136,10 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         }
     }
 
-    // 5) 新しいフレームを描画した場合、それをキャッシュする
     if (isNewFrame) {
-        g_lastDrawnFrame = frameToDraw;
-        outFrameToRender = frameToDraw; // ログ用にメタデータを渡す
+        std::lock_guard<std::mutex> rlock(g_reorderMutex);
+        outFrameToRender = g_lastDrawnFrame;
     }
-
-    // --- End Flicker Fix ---
 
     // Transition the current back buffer from RENDER_TARGET to PRESENT.
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -1174,7 +1151,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
     hr = g_commandList->Close();
     if (FAILED(hr)) { DebugLog(L"PopulateCommandList: Failed to close command list. HR: " + HResultToHexWString(hr)); return false; }
-    return isNewFrame; // Return whether a *new* frame was actually prepared for rendering
+    return isNewFrame;
 }
 
 static void ResizeSwapChainOnRenderThread(int newW, int newH) {
