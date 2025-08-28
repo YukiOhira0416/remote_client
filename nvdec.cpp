@@ -183,12 +183,15 @@ void FrameDecoder::releaseDecoderResources() {
 FrameDecoder::~FrameDecoder() {
     cuCtxPushCurrent(m_cuContext);
 
-    releaseDecoderResources();
-
+    // Destroying the parser will flush any pending callbacks.
+    // This must be done BEFORE releasing the resources that the callbacks use.
     if (m_hParser) {
         cuvidDestroyVideoParser(m_hParser);
         m_hParser = nullptr;
     }
+
+    // Now it's safe to release resources.
+    releaseDecoderResources();
 
     if (m_ctxLock) {
         cuvidCtxLockDestroy(m_ctxLock);
