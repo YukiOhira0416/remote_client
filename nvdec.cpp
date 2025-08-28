@@ -17,6 +17,11 @@ namespace my_nvtx_domains {
 #include <atomic>
 #include <chrono>
 
+// add with other externs/forwards
+extern std::atomic<bool> g_isSizing; // do not modify its definition or layout elsewhere
+extern void RequestIDRNow(); // forward-declare; do not move existing declarations
+
+
 // Forward declaration from window.cpp
 extern void ClearReorderState();
 
@@ -318,6 +323,7 @@ bool FrameDecoder::reconfigureDecoder(CUVIDEOFORMAT* pVideoFormat) {
     bool ok = createDecoder(pVideoFormat);
     if (ok) {
         ClearReorderState(); // ★ 追加
+        RequestIDRNow(); // ask server for a fresh IDR to shorten re-sync after reconfig
     }
     return ok;
 }
@@ -607,6 +613,13 @@ int FrameDecoder::HandlePictureDecode(void* pUserData, CUVIDPICPARAMS* pPicParam
 
 UINT64 HandlePictureDisplayCount = 0;
 int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDispInfo) {
+    // Before any heavy work (e.g., before cuvidMapVideoFrame / cuMemcpy2D)
+    if (g_isSizing.load(std::memory_order_acquire)) {
+        // Keep timing/logging elsewhere intact; we simply skip display queuing.
+        // No comment removal; do not alter surrounding formatting.
+        return 0; // or the existing success code path that skips queueing
+    }
+
     FrameDecoder* const self = static_cast<FrameDecoder*>(pUserData);
     cuCtxPushCurrent(self->m_cuContext);
     nvtx3::scoped_range r_decode_copy("DecodeCopy");
