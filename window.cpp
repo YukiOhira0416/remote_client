@@ -1423,7 +1423,25 @@ void WaitForGpu() {
     if (g_fence->GetCompletedValue() < fenceValueToSignal) {
         hr = g_fence->SetEventOnCompletion(fenceValueToSignal, g_fenceEvent);
         if (FAILED(hr)) { return; }
-        WaitForSingleObject(g_fenceEvent, INFINITE);
+
+        while (true) {
+            DWORD waitResult = MsgWaitForMultipleObjects(1, &g_fenceEvent, FALSE, INFINITE, QS_ALLINPUT);
+            if (waitResult == WAIT_OBJECT_0) {
+                // The fence was signaled.
+                break;
+            }
+            if (waitResult == WAIT_OBJECT_0 + 1) {
+                // A message is available. Pump the message queue.
+                MSG msg;
+                while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&msg);
+                    DispatchMessage(&msg);
+                }
+            } else {
+                // An error or unexpected result occurred.
+                break;
+            }
+        }
     }
     g_fenceValue++;
 }
