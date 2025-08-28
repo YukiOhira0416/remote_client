@@ -1161,36 +1161,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     g_swapChain->GetDesc1(&desc);
     if (desc.Width == (UINT)newW && desc.Height == (UINT)newH) return;
 
-    // Bounded wait so we never hard-freeze the pipeline
-    auto WaitForGpuWithTimeout = [](DWORD totalTimeoutMs)->bool {
-        // Signal
-        UINT64 fenceValueToSignal = g_fenceValue;
-        HRESULT hr = g_d3d12CommandQueue->Signal(g_fence.Get(), fenceValueToSignal);
-        if (FAILED(hr)) { DebugLog(L"WaitForGpuWithTimeout: Signal failed. HR: " + HResultToHexWString(hr)); return false; }
-
-        const DWORD step = 50; // ms
-        DWORD waited = 0;
-        while (g_fence->GetCompletedValue() < fenceValueToSignal) {
-            hr = g_fence->SetEventOnCompletion(fenceValueToSignal, g_fenceEvent);
-            if (FAILED(hr)) { DebugLog(L"WaitForGpuWithTimeout: SetEventOnCompletion failed. HR: " + HResultToHexWString(hr)); return false; }
-            DWORD r = MsgWaitForMultipleObjects(1, &g_fenceEvent, FALSE, step, QS_ALLINPUT);
-            if (r == WAIT_OBJECT_0) break; // fence signaled
-            // pump messages to keep app responsive
-            MSG msg;
-            while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-                TranslateMessage(&msg);
-                DispatchMessage(&msg);
-            }
-            waited += step;
-            if (waited >= totalTimeoutMs) {
-                DebugLog(L"WaitForGpuWithTimeout: timed out; proceeding cautiously.");
-                break;
-            }
-        }
-        g_fenceValue++;
-        return true;
-    };
-    WaitForGpuWithTimeout(500); // keep pumping; don’t freeze
+    WaitForGpu(); // or WaitForGpuWithTimeout(…); use your existing helper
 
     // Clear any buffered frames, as their underlying resources might be invalid
     // after a resize. This prevents using stale D3D resources from the decoder.
