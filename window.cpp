@@ -531,13 +531,13 @@ void ClearReorderState()
 }
 
 // 調整パラメータ
-static constexpr size_t REORDER_MAX_BUFFER = 8; // これを超えたら妥協して前進
-static constexpr int    REORDER_WAIT_MS    = 3; // N+1 を待つ最大時間（ms） (from 3ms)
+static constexpr size_t REORDER_MAX_BUFFER = 4; // tighten to reduce in-buffer latency
+static constexpr int    REORDER_WAIT_MS    = 2; // base wait smaller
 
 static inline int GetReorderWaitMsForDepth(size_t depth) {
-    if (depth <= 1) return 8;     // very shallow → wait a little longer
-    if (depth == 2) return 5;     // moderate
-    return 3;                     // deep enough → be aggressive
+    if (depth <= 1) return 6;
+    if (depth == 2) return 4;
+    return 2;
 }
 
 static std::chrono::steady_clock::time_point g_lastReorderDecision = std::chrono::steady_clock::now();
@@ -1575,7 +1575,19 @@ void RenderFrame() {
     const UINT64 valueToWait = g_renderFenceValues[nextIndex];
     if (valueToWait != 0 && g_fence->GetCompletedValue() < valueToWait) {
         g_fence->SetEventOnCompletion(valueToWait, g_fenceEvent);
-        WaitForSingleObject(g_fenceEvent, INFINITE);
+        while (true) {
+            DWORD wr = MsgWaitForMultipleObjects(1, &g_fenceEvent, FALSE, INFINITE, QS_ALLINPUT);
+            if (wr == WAIT_OBJECT_0) break; // fence signaled
+            if (wr == WAIT_OBJECT_0 + 1) {
+                MSG msg;
+                while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&msg);
+                    DispatchMessage(&msg);
+                }
+            } else {
+                break; // unexpected result; fail open
+            }
+        }
     }
     g_currentFrameBufferIndex = nextIndex;
 }
