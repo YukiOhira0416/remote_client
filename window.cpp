@@ -1283,7 +1283,7 @@ void RenderFrame() {
                 DWORD r = MsgWaitForMultipleObjectsEx(
                     1,
                     handles,
-                    INFINITE,
+                    100, // タイムアウトを100msに設定してフリーズを回避
                     QS_ALLINPUT,
                     MWMO_INPUTAVAILABLE | MWMO_ALERTABLE
                 );
@@ -1294,12 +1294,20 @@ void RenderFrame() {
                     // pump messages; preserve layout and existing logging if present
                     MSG msg;
                     while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                        if (msg.message == WM_QUIT) {
+                            PostQuitMessage((int)msg.wParam);
+                            return; // メインループに終了を任せるため、即時復帰
+                        }
                         TranslateMessage(&msg);
                         DispatchMessage(&msg);
                     }
                     // loop and wait again
                     continue;
-                } else {
+                } else if (r == WAIT_TIMEOUT) {
+                    // タイムアウトは想定内の動作。ループを抜けて処理を続ける
+                    break;
+                }
+                else {
                     // Unexpected; if you already have logging, reuse it.
                     break;
                 }
