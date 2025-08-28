@@ -330,6 +330,7 @@ extern std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKi
 // 送信フレーム番号で並べる小さなバッファ
 static std::map<uint32_t, ReadyGpuFrame> g_reorderBuffer;
 static std::mutex g_reorderMutex;
+static ReadyGpuFrame g_lastDrawnFrame; // 最後に描画されたフレームをキャッシュ
 
 // ==== [In-flight Frame Management - BEGIN] ====
 // GPUがまだ使用中の可能性のあるフレームのリソースを管理するための構造体 (REMOVED with new fence logic)
@@ -1009,8 +1010,9 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     const float clearColor[4] = {0.f, 0.f, 0.f, 1.f};
     g_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 
-    // --- Render the decoded frame ---
-    bool hasFrameToRender = false;
+    // --- Flicker Fix ---
+    bool isNewFrame = false;
+    ReadyGpuFrame frameToDraw;
 
     // 1) NVDEC からの準備完了キューを全部吸い込み、番号で並べる
     {
@@ -1024,7 +1026,6 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             if (it == g_reorderBuffer.end()) {
                 g_reorderBuffer.emplace(f.streamFrameNumber, std::move(f));
             } else {
-                // 同じ番号が2枚来たら後着で上書き
                 it->second = std::move(f);
                 DebugLog(L"[REORDER] duplicate streamFrameNumber, replaced: " + std::to_wstring(it->first));
             }
@@ -1037,7 +1038,6 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         std::lock_guard<std::mutex> rlock(g_reorderMutex);
         auto now = std::chrono::steady_clock::now();
 
-        // 初期化：隣接ペアの最小キーを expected にする
         if (!g_expectedInitialized) {
             for (auto it = g_reorderBuffer.begin(); it != g_reorderBuffer.end(); ++it) {
                 uint32_t k = it->first;
@@ -1059,24 +1059,23 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         const int dynamicWait = GetReorderWaitMsForDepth(g_reorderBuffer.size());
         const bool waitedLong = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastReorderDecision).count() > dynamicWait;
 
+        ReadyGpuFrame newFrameFromReorder;
+        bool hasNewFrame = false;
+
         if (haveExpected && haveNext) {
-            // 理想：N と N+1 がそろった
-            outFrameToRender = std::move(g_reorderBuffer[g_expectedStreamFrame]);
-            outFrameToRender.render_start_ms = SteadyNowMs(); // steady clock start
+            newFrameFromReorder = std::move(g_reorderBuffer[g_expectedStreamFrame]);
             g_reorderBuffer.erase(g_expectedStreamFrame);
             g_expectedStreamFrame++;
-            hasFrameToRender = true;
+            hasNewFrame = true;
             g_lastReorderDecision = now;
         } else if (bufferTooBig || waitedLong) {
-            // 妥協：溜まりすぎor待ちすぎ → 最小キーを描画
             if (!g_reorderBuffer.empty()) {
                 auto it = g_reorderBuffer.begin();
-                outFrameToRender = std::move(it->second);
-                outFrameToRender.render_start_ms = SteadyNowMs(); // steady clock start
+                newFrameFromReorder = std::move(it->second);
                 uint32_t drawn = it->first;
                 g_reorderBuffer.erase(it);
                 g_expectedStreamFrame = drawn + 1;
-                hasFrameToRender = true;
+                hasNewFrame = true;
                 g_lastReorderDecision = now;
 
                 if (!(haveExpected && haveNext)) {
@@ -1084,79 +1083,85 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
                 }
             }
         }
+
+        if (hasNewFrame) {
+            frameToDraw = std::move(newFrameFromReorder);
+            isNewFrame = true;
+        }
     }
 
-    if (hasFrameToRender && outFrameToRender.hw_decoded_texture_Y && outFrameToRender.hw_decoded_texture_UV) {
-        // NEW: Wait for async CUDA copy to complete
-        if (outFrameToRender.copyDone) {
-            // Fast path: query first
-            if (cuEventQuery(outFrameToRender.copyDone) == CUDA_ERROR_NOT_READY) {
+    // 3) 新しいフレームがない場合は、最後に描画したフレームを再利用
+    if (!isNewFrame && g_lastDrawnFrame.hw_decoded_texture_Y) {
+        frameToDraw = g_lastDrawnFrame;
+    }
+
+    // 4) 描画対象のフレームがあれば描画コマンドを生成
+    if (frameToDraw.hw_decoded_texture_Y && frameToDraw.hw_decoded_texture_UV) {
+        if (isNewFrame) {
+            frameToDraw.render_start_ms = SteadyNowMs();
+        }
+
+        if (frameToDraw.copyDone) {
+            if (cuEventQuery(frameToDraw.copyDone) == CUDA_ERROR_NOT_READY) {
                 nvtx3::scoped_range_in<cuda_domain> r("Wait(copyDone)");
-                cuEventSynchronize(outFrameToRender.copyDone); // bounded (usually ~0ms)
+                cuEventSynchronize(frameToDraw.copyDone);
             }
         }
 
-        // Use the *video* size for centering (what the server encodes)
         const int videoW = currentResolutionWidth.load();
         const int videoH = currentResolutionHeight.load();
 
-        // Center the draw region inside the (possibly larger) backbuffer
         ID3D12Resource* backbuffer = g_renderTargets[g_currentFrameBufferIndex].Get();
         if (backbuffer) {
             const D3D12_RESOURCE_DESC bbDesc = backbuffer->GetDesc();
             SetLetterboxViewport(g_commandList.Get(), bbDesc, videoW, videoH);
         }
 
-        // Create SRVs for Y and UV textures (only if resource changed)
         static ID3D12Resource* s_lastY = nullptr;
         static ID3D12Resource* s_lastUV = nullptr;
 
         CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleCpu(g_srvHeap->GetCPUDescriptorHandleForHeapStart());
 
-        if (outFrameToRender.hw_decoded_texture_Y.Get() != s_lastY) {
+        if (frameToDraw.hw_decoded_texture_Y.Get() != s_lastY) {
             D3D12_SHADER_RESOURCE_VIEW_DESC srvDescY = {};
             srvDescY.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            srvDescY.Format = DXGI_FORMAT_R8_UNORM; // Y plane
-            if (!outFrameToRender.hw_decoded_texture_Y) { DebugLog(L"PopulateCommandList: frameToRender.hw_decoded_texture_Y is NULL."); return false; }
+            srvDescY.Format = DXGI_FORMAT_R8_UNORM;
             srvDescY.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
             srvDescY.Texture2D.MipLevels = 1;
-            g_d3d12Device->CreateShaderResourceView(
-                outFrameToRender.hw_decoded_texture_Y.Get(), &srvDescY, srvHandleCpu);
-            s_lastY = outFrameToRender.hw_decoded_texture_Y.Get();
+            g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_Y.Get(), &srvDescY, srvHandleCpu);
+            s_lastY = frameToDraw.hw_decoded_texture_Y.Get();
         }
 
-        // Advance handle to UV and repeat only on change
-        srvHandleCpu.Offset(1, g_srvDescriptorSize); // (match existing offset logic)
+        srvHandleCpu.Offset(1, g_srvDescriptorSize);
 
-        if (outFrameToRender.hw_decoded_texture_UV.Get() != s_lastUV) {
+        if (frameToDraw.hw_decoded_texture_UV.Get() != s_lastUV) {
             D3D12_SHADER_RESOURCE_VIEW_DESC srvDescUV = {};
             srvDescUV.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            srvDescUV.Format = DXGI_FORMAT_R8G8_UNORM; // UV plane (NV12)
-            if (!outFrameToRender.hw_decoded_texture_UV) { DebugLog(L"PopulateCommandList: frameToRender.hw_decoded_texture_UV is NULL."); return false; }
+            srvDescUV.Format = DXGI_FORMAT_R8G8_UNORM;
             srvDescUV.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
             srvDescUV.Texture2D.MipLevels = 1;
-            g_d3d12Device->CreateShaderResourceView(
-                outFrameToRender.hw_decoded_texture_UV.Get(), &srvDescUV, srvHandleCpu);
-            s_lastUV = outFrameToRender.hw_decoded_texture_UV.Get();
+            g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_UV.Get(), &srvDescUV, srvHandleCpu);
+            s_lastUV = frameToDraw.hw_decoded_texture_UV.Get();
         }
 
-        // Set descriptor heap for SRVs
         ID3D12DescriptorHeap* ppHeaps[] = { g_srvHeap.Get() };
         g_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
         g_commandList->SetGraphicsRootDescriptorTable(0, g_srvHeap->GetGPUDescriptorHandleForHeapStart());
 
-        // フルスクリーンクアッド（TRIANGLESTRIP で 4 頂点）
         g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         {
             nvtx3::scoped_range_in<d3d12_domain> r{ "Draw" };
             g_commandList->DrawInstanced(4, 1, 0, 0);
         }
-
-        // Release the ComPtrs now that they are submitted for rendering
-        // The resources themselves are managed by the decoder's pool
-        // frameToRender.hw_decoded_texture_Y.Reset(); // ComPtr will auto-release
-        // frameToRender.hw_decoded_texture_UV.Reset();
     }
+
+    // 5) 新しいフレームを描画した場合、それをキャッシュする
+    if (isNewFrame) {
+        g_lastDrawnFrame = frameToDraw;
+        outFrameToRender = frameToDraw; // ログ用にメタデータを渡す
+    }
+
+    // --- End Flicker Fix ---
 
     // Transition the current back buffer from RENDER_TARGET to PRESENT.
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -1168,7 +1173,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
     hr = g_commandList->Close();
     if (FAILED(hr)) { DebugLog(L"PopulateCommandList: Failed to close command list. HR: " + HResultToHexWString(hr)); return false; }
-    return hasFrameToRender; // Return whether a frame was actually prepared for rendering
+    return isNewFrame; // Return whether a *new* frame was actually prepared for rendering
 }
 
 static void ResizeSwapChainOnRenderThread(int newW, int newH) {
