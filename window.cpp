@@ -349,6 +349,10 @@ static bool     g_expectedInitialized = false;
 // 描画側の「期待フレーム番号」やバッファをクリアして“待ち”を防ぐ
 void ClearReorderState()
 {
+    // NEW: Ensure GPU is idle w.r.t. any in-flight use of decoded-frame resources
+    // This prevents releasing ID3D12Resource while still referenced by the GPU.
+    WaitForGpu(); // ← insert this single line
+
     std::lock_guard<std::mutex> lk(g_reorderMutex);
     for (const auto& pair : g_reorderBuffer) {
         if (pair.second.nvtx_range_id) {
@@ -1157,21 +1161,6 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     g_swapChain->GetDesc1(&desc);
     if (desc.Width == (UINT)newW && desc.Height == (UINT)newH) return;
 
-    // Clear any buffered frames, as their underlying resources might be invalid
-    // after a resize. This prevents using stale D3D resources from the decoder.
-    DebugLog(L"Resize detected. Clearing in-flight frame queues.");
-    {
-        std::lock_guard<std::mutex> qlock(g_readyGpuFrameQueueMutex);
-        for (const auto& frame : g_readyGpuFrameQueue) {
-            if (frame.nvtx_range_id) {
-                nvtxDomainRangeEnd(g_frameDomain, frame.nvtx_range_id);
-            }
-        }
-        // The ComPtrs in the deque will automatically be released.
-        g_readyGpuFrameQueue.clear();
-    }
-    ClearReorderState(); // This clears the reorder buffer and resets sequence.
-
     // Bounded wait so we never hard-freeze the pipeline
     auto WaitForGpuWithTimeout = [](DWORD totalTimeoutMs)->bool {
         // Signal
@@ -1201,10 +1190,24 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
         g_fenceValue++;
         return true;
     };
+    WaitForGpuWithTimeout(500); // keep pumping; don’t freeze
+
+    // Clear any buffered frames, as their underlying resources might be invalid
+    // after a resize. This prevents using stale D3D resources from the decoder.
+    DebugLog(L"Resize detected. Clearing in-flight frame queues.");
+    {
+        std::lock_guard<std::mutex> qlock(g_readyGpuFrameQueueMutex);
+        for (const auto& frame : g_readyGpuFrameQueue) {
+            if (frame.nvtx_range_id) {
+                nvtxDomainRangeEnd(g_frameDomain, frame.nvtx_range_id);
+            }
+        }
+        // The ComPtrs in the deque will automatically be released.
+        g_readyGpuFrameQueue.clear();
+    }
+    ClearReorderState(); // This clears the reorder buffer and resets sequence.
 
     DebugLog(L"RenderThread: resizing swap-chain to " + std::to_wstring(newW) + L"x" + std::to_wstring(newH));
-
-    WaitForGpuWithTimeout(500); // keep pumping; don’t freeze
 
     for (UINT i = 0; i < kSwapChainBufferCount; ++i) g_renderTargets[i].Reset();
 
