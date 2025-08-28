@@ -1231,39 +1231,6 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 }
 
 void RenderFrame() {
-    // NVTX range for frame latency wait
-    {
-        nvtx3::scoped_range_in<d3d12_domain> frame_latency_wait{"FrameLatency(Wait)"};
-        if (g_frameLatencyWaitableObject) {
-            // Wait on frame-latency object but remain responsive to window messages.
-            HANDLE handles[1] = { g_frameLatencyWaitableObject };
-            for (;;) {
-                DWORD r = MsgWaitForMultipleObjectsEx(
-                    1,
-                    handles,
-                    INFINITE,
-                    QS_ALLINPUT,
-                    MWMO_INPUTAVAILABLE | MWMO_ALERTABLE
-                );
-                if (r == WAIT_OBJECT_0) {
-                    // frame-latency object signaled -> proceed to next frame
-                    break;
-                } else if (r == WAIT_OBJECT_0 + 1) {
-                    // pump messages; preserve layout and existing logging if present
-                    MSG msg;
-                    while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-                        TranslateMessage(&msg);
-                        DispatchMessage(&msg);
-                    }
-                    // loop and wait again
-                    continue;
-                } else {
-                    // Unexpected; if you already have logging, reuse it.
-                    break;
-                }
-            }
-        }
-    }
     nvtx3::scoped_range_in<d3d12_domain> frame_r("Frame");
     nvtx3::scoped_range_in<d3d12_domain> r("D3D12Present");
     // Use existing fence and queue types; keep comments and layout intact.
