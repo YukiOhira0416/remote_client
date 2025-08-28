@@ -10,15 +10,6 @@
 #include <cstdint> // For uint64_t
 #include <chrono>
 
-// Use a single monotonic clock for all latency metrics.
-static inline uint64_t SteadyNowMs() noexcept {
-    using clock = std::chrono::steady_clock;
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            clock::now().time_since_epoch()
-        ).count()
-    );
-}
 #include <ws2tcpip.h>
 #include <mswsock.h> // Required for WSARecvMsg and WSASendMsg
 #include <windows.h>
@@ -89,6 +80,13 @@ extern std::atomic<int> currentResolutionHeight; // Assumed to be in window.cpp 
 // 失敗しても致命傷にしない（ベストエフォート）
 void RequestIDRNow()
 {
+    const uint64_t now = SteadyNowMs();
+    if (now - g_lastIdrMs.load(std::memory_order_acquire) < 200) {
+        DebugLog(L"RequestIDRNow: suppressed (throttle)");
+        return;
+    }
+    g_lastIdrMs.store(now, std::memory_order_release);
+
     SOCKET sock = INVALID_SOCKET;
     ADDRINFOA hints{};
     ADDRINFOA* result = nullptr;
@@ -361,6 +359,7 @@ std::map<uint64_t, size_t> g_accumulatedFragmentDataSize;
 struct FrameMetadata {
     uint64_t firstTimestamp = 0;
     uint32_t originalDataLen = 0;
+    uint64_t first_seen_time_ms = 0;
 };
 std::map<int, FrameMetadata> g_frameMetadata;
 std::mutex g_frameMetadataMutex;
@@ -425,6 +424,7 @@ struct ParsedShardInfo {
     uint32_t totalParityShards;  // Host byte order
     uint32_t originalDataLen;    // Host byte order
     std::vector<uint8_t> shardData;
+    uint64_t generation;
 };
 
 
@@ -808,7 +808,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                                     if (shardDataSize_parse > 0) {
                                         parsedInfoLocal.shardData.assign(current_ptr_parse, current_ptr_parse + shardDataSize_parse);
                                     }
-
+                                    parsedInfoLocal.generation = g_streamGeneration.load(std::memory_order_acquire);
                                     g_parsedShardQueue.enqueue(std::move(parsedInfoLocal));
 
                                 } else {
@@ -920,6 +920,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                                             if (shardDataSize_parse_frag > 0) {
                                                 parsedInfoLocalFrag.shardData.assign(current_ptr_parse_frag, current_ptr_parse_frag + shardDataSize_parse_frag);
                                             }
+                                            parsedInfoLocalFrag.generation = g_streamGeneration.load(std::memory_order_acquire);
                                             g_parsedShardQueue.enqueue(std::move(parsedInfoLocalFrag));
                                         }
                                         else {
@@ -986,6 +987,19 @@ void FecWorkerThread(int threadId) {
         }
 
         if (g_parsedShardQueue.try_dequeue(parsedInfo)) {
+            const uint64_t currentGeneration = g_streamGeneration.load(std::memory_order_acquire);
+            if (parsedInfo.generation != currentGeneration) {
+                DebugLog(L"FecWorkerThread: Discarding stale shard for frame " + std::to_wstring(parsedInfo.frameNumber) + L" (gen " + std::to_wstring(parsedInfo.generation) + L" != current " + std::to_wstring(currentGeneration) + L")");
+                continue;
+            }
+
+            const uint64_t latencyEpoch = g_latencyEpochMs.load(std::memory_order_acquire);
+            const uint64_t graceMs = 100;
+            if (latencyEpoch > graceMs && parsedInfo.wgcCaptureTimestamp < (latencyEpoch - graceMs)) {
+                DebugLog(L"FecWorkerThread: Discarding stale shard for frame " + std::to_wstring(parsedInfo.frameNumber) + L" (timestamp " + std::to_wstring(parsedInfo.wgcCaptureTimestamp) + L" < epoch " + std::to_wstring(latencyEpoch) + L")");
+                continue;
+            }
+
             nvtx3::scoped_range r("FecWorkerThread::ProcessShard");
             uint64_t packetTimestamp = parsedInfo.wgcCaptureTimestamp;
             int frameNumber = parsedInfo.frameNumber; // Already host order
@@ -1004,7 +1018,7 @@ void FecWorkerThread(int threadId) {
                 {
                     std::lock_guard<std::mutex> metaLock(g_frameMetadataMutex);
                     if (g_frameMetadata.find(frameNumber) == g_frameMetadata.end()) {
-                        g_frameMetadata[frameNumber] = {packetTimestamp, originalDataLenHost};
+                        g_frameMetadata[frameNumber] = {packetTimestamp, originalDataLenHost, SteadyNowMs()};
                     }
                     // Parameter check (totalDataShards and totalParityShards from parsedInfo vs RS_K/RS_M)
                     if (parsedInfo.totalDataShards != RS_K || parsedInfo.totalParityShards != RS_M) {
@@ -1041,7 +1055,27 @@ void FecWorkerThread(int threadId) {
                         g_frameBuffer.erase(frameNumber);
                     }
                 } else if (g_frameBuffer.count(frameNumber)) {
-                    if(count % 200 == 0)DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: F#" + std::to_wstring(frameNumber) + L" has " + std::to_wstring(g_frameBuffer[frameNumber].size()) + L" shards, (less than K=" + std::to_wstring(RS_K) + L") waiting for more.");
+                    bool is_expired = false;
+                    {
+                        std::lock_guard<std::mutex> metaLock(g_frameMetadataMutex);
+                        auto metaIt = g_frameMetadata.find(frameNumber);
+                        if (metaIt != g_frameMetadata.end()) {
+                            const uint64_t now = SteadyNowMs();
+                            const uint64_t time_since_first_shard = now - metaIt->second.first_seen_time_ms;
+                            const uint64_t assembly_timeout_ms = 300;
+
+                            if (time_since_first_shard > assembly_timeout_ms) {
+                                is_expired = true;
+                                DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: Pruning expired frame assembly for F#" + std::to_wstring(frameNumber) + L" after " + std::to_wstring(time_since_first_shard) + L"ms.");
+                                g_frameMetadata.erase(metaIt);
+                            }
+                        }
+                    }
+                    if (is_expired) {
+                        g_frameBuffer.erase(frameNumber);
+                    } else {
+                        if(count % 200 == 0)DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: F#" + std::to_wstring(frameNumber) + L" has " + std::to_wstring(g_frameBuffer[frameNumber].size()) + L" shards, (less than K=" + std::to_wstring(RS_K) + L") waiting for more.");
+                    }
                 }
             } // End Metadata and FrameBuffer scope
 
