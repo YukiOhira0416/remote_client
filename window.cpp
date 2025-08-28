@@ -244,6 +244,70 @@ UINT64 g_fenceValue;
 HANDLE g_fenceEvent;
 UINT64 g_renderFenceValues[kSwapChainBufferCount]; // Fence values for each frame in flight for rendering
 
+// ==== [Deferred resource retire - BEGIN] ====
+// Keep layout/comments as-is around this block.
+struct RetiredGpuResources {
+    Microsoft::WRL::ComPtr<ID3D12Resource> y;
+    Microsoft::WRL::ComPtr<ID3D12Resource> uv;
+    CUevent copyDone;         // may be nullptr
+    UINT64 fenceValue;        // render-queue fence that must be completed before release
+    RetiredGpuResources() : copyDone(nullptr), fenceValue(0) {}
+};
+
+static std::deque<RetiredGpuResources> g_retireBin;
+static std::mutex g_retireBinMutex;
+
+// Signal the render fence now and return the value; safe if device/queue/fence exist.
+static UINT64 SignalFenceNow() noexcept {
+    if (!g_d3d12CommandQueue || !g_fence) return 0;
+    const UINT64 v = ++g_fenceValue;
+    HRESULT hr = g_d3d12CommandQueue->Signal(g_fence.Get(), v);
+    if (FAILED(hr)) {
+        DebugLog(L"SignalFenceNow: Signal failed. HR: " + HResultToHexWString(hr));
+        return 0;
+    }
+    return v;
+}
+
+// Drain any retired resources whose CUDA event and fence are complete.
+// Maintains timing/logging and NVTX; no sleeps; no reformatting.
+static void DrainRetireBin() {
+    std::lock_guard<std::mutex> g(g_retireBinMutex);
+    const UINT64 completed = g_fence ? g_fence->GetCompletedValue() : ~0ULL;
+
+    size_t released = 0;
+    while (!g_retireBin.empty()) {
+        RetiredGpuResources &r = g_retireBin.front();
+        const bool cudaDone =
+            (r.copyDone == nullptr) || (cuEventQuery(r.copyDone) == CUDA_SUCCESS);
+        const bool fenceDone = (r.fenceValue == 0) || (completed >= r.fenceValue);
+
+        if (!cudaDone || !fenceDone) {
+            // Oldest not ready; later ones may not be ready either.
+            break;
+        }
+
+        if (r.copyDone) {
+            cuEventDestroy(r.copyDone);
+            r.copyDone = nullptr;
+        }
+
+        // Final release now that both queues are quiesced for this resource set.
+        r.y.Reset();
+        r.uv.Reset();
+
+        g_retireBin.pop_front();
+        ++released;
+    }
+
+    if (released) {
+        std::wstringstream wss;
+        wss << L"DrainRetireBin: released " << released << L" retired resource set(s).";
+        DebugLog(wss.str());
+    }
+}
+// ==== [Deferred resource retire - END] ====
+
 // D3D11 specific globals (to be removed or replaced)
 #define CLIENT_PORT_FEC 8080// FEC用ポート番号
 #define CLIENT_IP_FEC "127.0.0.1"// FEC用IPアドレス
@@ -409,51 +473,61 @@ static bool     g_expectedInitialized = false;
 // 描画側の「期待フレーム番号」やバッファをクリアして“待ち”を防ぐ
 void ClearReorderState()
 {
-    // NEW: Ensure GPU is idle w.r.t. any in-flight use of decoded-frame resources
-    // This prevents releasing ID3D12Resource while still referenced by the GPU.
-    WaitForGpu(); // ← insert this single line
+    // Keep this to preserve current behavior and logs:
+    WaitForGpu(); // drains graphics queue only (CUDA is handled per frame)  // (implementation references)
 
     std::lock_guard<std::mutex> lk(g_reorderMutex);
-    for (auto& pair : g_reorderBuffer) {
-        if (pair.second.nvtx_range_id) {
-            nvtxDomainRangeEnd(g_frameDomain, pair.second.nvtx_range_id);
-            pair.second.nvtx_range_id = 0;
-        }
-        // NEW: ensure CUDA async copies finished before releasing resources
-        if (pair.second.copyDone) {
-            if (cuEventQuery(pair.second.copyDone) == CUDA_ERROR_NOT_READY) {
-                // Keep timing/logging behavior elsewhere; do not add sleeps.
-                cuEventSynchronize(pair.second.copyDone);
-            }
-            cuEventDestroy(pair.second.copyDone);
-            pair.second.copyDone = nullptr;
-        }
-        // === ADDED: explicit resource resets (safe & idempotent) ===
-        if (pair.second.hw_decoded_texture_Y) { pair.second.hw_decoded_texture_Y.Reset(); }
-        if (pair.second.hw_decoded_texture_UV) { pair.second.hw_decoded_texture_UV.Reset(); }
-    }
-    g_reorderBuffer.clear();
 
-    // Also for the last-drawn-frame cache
-    // Explicit, idempotent teardown of cached frame (no move-assign)
-    if (g_lastDrawnFrame.nvtx_range_id) {
-        nvtxDomainRangeEnd(g_frameDomain, g_lastDrawnFrame.nvtx_range_id);
-        g_lastDrawnFrame.nvtx_range_id = 0;
-    }
-    if (g_lastDrawnFrame.copyDone) {
-        if (cuEventQuery(g_lastDrawnFrame.copyDone) == CUDA_ERROR_NOT_READY) {
-            cuEventSynchronize(g_lastDrawnFrame.copyDone);
+    // Record a fence point that future releases must pass
+    const UINT64 retireFence = SignalFenceNow();
+
+    // Move all frames' resources into the retire bin (no immediate Reset)
+    {
+        std::lock_guard<std::mutex> gb(g_retireBinMutex);
+        for (auto &pair : g_reorderBuffer) {
+            ReadyGpuFrame &rf = pair.second;
+
+            if (rf.nvtx_range_id) {
+                nvtxDomainRangeEnd(g_frameDomain, rf.nvtx_range_id);
+                rf.nvtx_range_id = 0;
+            }
+
+            RetiredGpuResources r;
+            r.y = std::move(rf.hw_decoded_texture_Y);
+            r.uv = std::move(rf.hw_decoded_texture_UV);
+            r.copyDone = rf.copyDone;      // hand the event to retire bin
+            r.fenceValue = retireFence;    // conservative: release after this fence
+
+            rf.copyDone = nullptr;         // ownership transferred
+
+            g_retireBin.emplace_back(std::move(r));
         }
-        cuEventDestroy(g_lastDrawnFrame.copyDone);
-        g_lastDrawnFrame.copyDone = nullptr; // be explicit; layout unchanged
+        g_reorderBuffer.clear();
     }
-    if (g_lastDrawnFrame.hw_decoded_texture_Y) { g_lastDrawnFrame.hw_decoded_texture_Y.Reset(); }
-    if (g_lastDrawnFrame.hw_decoded_texture_UV) { g_lastDrawnFrame.hw_decoded_texture_UV.Reset(); }
-    // Do NOT alter timing/logging fields; leave non-resource fields as-is unless they must be zero.
+
+    // Handle the cached last-drawn frame the same way
+    {
+        RetiredGpuResources r;
+        if (g_lastDrawnFrame.nvtx_range_id) {
+            nvtxDomainRangeEnd(g_frameDomain, g_lastDrawnFrame.nvtx_range_id);
+            g_lastDrawnFrame.nvtx_range_id = 0;
+        }
+        r.y = std::move(g_lastDrawnFrame.hw_decoded_texture_Y);
+        r.uv = std::move(g_lastDrawnFrame.hw_decoded_texture_UV);
+        r.copyDone = g_lastDrawnFrame.copyDone;
+        r.fenceValue = retireFence;
+        g_lastDrawnFrame.copyDone = nullptr;
+        g_lastDrawnFrame = {}; // keep existing layout/behavior
+
+        if (r.y || r.uv || r.copyDone) {
+            std::lock_guard<std::mutex> gb(g_retireBinMutex);
+            g_retireBin.emplace_back(std::move(r));
+        }
+    }
 
     g_expectedInitialized = false;
     g_expectedStreamFrame = 0;
-    DebugLog(L"ClearReorderState: reorder state cleared.");
+    DebugLog(L"ClearReorderState: reorder state moved to retire bin.");
 }
 
 // 調整パラメータ
@@ -1044,6 +1118,11 @@ UINT64 PopulateCommandListCount = 0;
 struct reorder_domain { static constexpr char const* name = "REORDER"; };
 bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass ReadyGpuFrame by reference
     nvtx3::scoped_range_in<d3d12_domain> nvtx_populate_cmdlist{"PopulateCommandList"};
+
+    { nvtx3::scoped_range_in<d3d12_domain> r{ "DrainRetireBin" };
+      DrainRetireBin(); // safe: runs on render thread, preserves timing/logging
+    }
+
     // Reset command allocator and command list
     ID3D12CommandAllocator* allocator = g_commandAllocator[g_currentFrameBufferIndex].Get();
     HRESULT hr;
