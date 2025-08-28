@@ -694,9 +694,11 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     }
 
     // Record completion event for this frame
+    CUevent frameCopyDone = nullptr;
     {
         nvtx3::scoped_range_in<my_nvtx_domains::nvdec> r("EventRecord(copyDone)");
-        CUDA_CHECK_CALLBACK(cuEventRecord(fr.copyDone, s));
+        CUDA_CHECK_CALLBACK(cuEventCreate(&frameCopyDone, CU_EVENT_DISABLE_TIMING));
+        CUDA_CHECK_CALLBACK(cuEventRecord(frameCopyDone, s));
     }
 
     // If we get here, all CUDA operations were successful.
@@ -704,7 +706,7 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
 
     ReadyGpuFrame readyFrame;
     // Store the event in the outgoing frame struct; keep all existing fields/logging intact.
-    readyFrame.copyDone = fr.copyDone;
+    readyFrame.copyDone = frameCopyDone; // Ownership transferred to renderer
 
     readyFrame.hw_decoded_texture_Y  = self->m_frameResources[pDispInfo->picture_index].pTextureY;
     readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
