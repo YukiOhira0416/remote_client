@@ -123,6 +123,9 @@ static bool CreateWindowOnBestMonitor(HINSTANCE hInstance, int nCmdShow,
         return false;
     }
 
+    // NEW: exclude viewer from OS-level screen capture to prevent recursion on same-machine testing
+    TryExcludeThisWindowFromCapture(g_hWnd);
+
     ShowWindow(g_hWnd, nCmdShow);
     UpdateWindow(g_hWnd);
     currentResolutionWidth  = desiredClientWidth;
@@ -130,6 +133,79 @@ static bool CreateWindowOnBestMonitor(HINSTANCE hInstance, int nCmdShow,
     return true;
 }
 // ==== [Multi-monitor helpers - END] ====
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <dwmapi.h>
+#pragma comment(lib, "Dwmapi.lib")
+
+#ifndef DWMWA_EXCLUDED_FROM_CAPTURE
+// Windows 10, version 2004+; provide fallback define if SDK is older
+#define DWMWA_EXCLUDED_FROM_CAPTURE 0x0011
+#endif
+
+#ifndef WDA_EXCLUDEFROMCAPTURE
+// Fallback for SetWindowDisplayAffinity
+#define WDA_EXCLUDEFROMCAPTURE 0x00000011
+#endif
+
+static void TryExcludeThisWindowFromCapture(HWND hwnd)
+{
+    if (!hwnd) return;
+
+    // First try DwmSetWindowAttribute(DWMWA_EXCLUDED_FROM_CAPTURE)
+    BOOL enable = TRUE;
+    HMODULE hDwm = LoadLibraryW(L"dwmapi.dll");
+    if (hDwm) {
+        typedef HRESULT (WINAPI *PFNDwmSetWindowAttribute)(
+            HWND, DWORD, LPCVOID, DWORD);
+        auto pDwmSetWindowAttribute = reinterpret_cast<PFNDwmSetWindowAttribute>(
+            GetProcAddress(hDwm, "DwmSetWindowAttribute"));
+        if (pDwmSetWindowAttribute) {
+            HRESULT hr = pDwmSetWindowAttribute(
+                hwnd, DWMWA_EXCLUDED_FROM_CAPTURE, &enable, sizeof(enable));
+            if (SUCCEEDED(hr)) {
+                DebugLog(L"CaptureExclusion: DWMWA_EXCLUDED_FROM_CAPTURE applied.");
+                FreeLibrary(hDwm);
+                return;
+            } else {
+                DebugLog(L"CaptureExclusion: DwmSetWindowAttribute failed (will try WDA).");
+            }
+        } else {
+            DebugLog(L"CaptureExclusion: DwmSetWindowAttribute not available (will try WDA).");
+        }
+        FreeLibrary(hDwm);
+    } else {
+        DebugLog(L"CaptureExclusion: dwmapi.dll not available (will try WDA).");
+    }
+
+    // Fallback: SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)
+    HMODULE hUser = LoadLibraryW(L"user32.dll");
+    if (hUser) {
+        typedef BOOL (WINAPI *PFNSetWindowDisplayAffinity)(HWND, DWORD);
+        auto pSetWindowDisplayAffinity = reinterpret_cast<PFNSetWindowDisplayAffinity>(
+            GetProcAddress(hUser, "SetWindowDisplayAffinity"));
+        if (pSetWindowDisplayAffinity) {
+            if (pSetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)) {
+                DebugLog(L"CaptureExclusion: WDA_EXCLUDEFROMCAPTURE applied.");
+                FreeLibrary(hUser);
+                return;
+            } else {
+                DebugLog(L"CaptureExclusion: SetWindowDisplayAffinity failed.");
+            }
+        } else {
+            DebugLog(L"CaptureExclusion: SetWindowDisplayAffinity not available.");
+        }
+        FreeLibrary(hUser);
+    } else {
+        DebugLog(L"CaptureExclusion: user32.dll LoadLibrary failed.");
+    }
+
+    // If both mechanisms unavailable, continue gracefully.
+    DebugLog(L"CaptureExclusion: No exclusion mechanism applied (continuing).");
+}
 
 #pragma comment(lib, "User32.lib")
 #pragma comment(lib, "ws2_32.lib")
