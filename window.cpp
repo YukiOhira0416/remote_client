@@ -332,6 +332,8 @@ UINT64 g_fenceValue;
 HANDLE g_fenceEvent;
 UINT64 g_renderFenceValues[kSwapChainBufferCount]; // Fence values for each frame in flight for rendering
 
+static std::atomic<bool> g_deviceResetInProgress{false};
+
 // ==== [Deferred resource retire - BEGIN] ====
 // Keep layout/comments as-is around this block.
 struct RetiredGpuResources {
@@ -416,7 +418,6 @@ void ClearReorderState();
 bool InitD3D();
 
 // ---- Device-loss recovery (no goto, preserve layout/comments) ----
-static std::atomic<bool> g_deviceResetInProgress{false};
 
 static void HandleDeviceRemovedAndReinit() noexcept {
     if (g_deviceResetInProgress.exchange(true)) {
