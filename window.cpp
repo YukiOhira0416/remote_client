@@ -230,7 +230,8 @@ Microsoft::WRL::ComPtr<ID3D12CommandQueue> g_d3d12CommandQueue;
 Microsoft::WRL::ComPtr<IDXGISwapChain3> g_swapChain; // Use IDXGISwapChain3 or 4
 Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_rtvHeap;
 Microsoft::WRL::ComPtr<ID3D12Resource> g_renderTargets[kSwapChainBufferCount]; // Triple buffering
-Microsoft::WRL::ComPtr<ID3D12CommandAllocator> g_commandAllocator;
+// One allocator per swap-chain buffer (triple buffering respected)
+Microsoft::WRL::ComPtr<ID3D12CommandAllocator> g_commandAllocator[kSwapChainBufferCount];
 Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> g_commandList;
 Microsoft::WRL::ComPtr<ID3D12Fence> g_fence;
 UINT g_rtvDescriptorSize;
@@ -331,14 +332,14 @@ static std::map<uint32_t, ReadyGpuFrame> g_reorderBuffer;
 static std::mutex g_reorderMutex;
 
 // ==== [In-flight Frame Management - BEGIN] ====
-// GPUがまだ使用中の可能性のあるフレームのリソースを管理するための構造体
-struct InFlightFrame {
-    ReadyGpuFrame frameData;
-    UINT64 fenceValue;
-};
-// GPUへ投入済みのフレームを保持するキュー
-static std::queue<InFlightFrame> g_inFlightFrames;
-static std::mutex g_inFlightFramesMutex;
+// GPUがまだ使用中の可能性のあるフレームのリソースを管理するための構造体 (REMOVED with new fence logic)
+// struct InFlightFrame {
+//     ReadyGpuFrame frameData;
+//     UINT64 fenceValue;
+// };
+// // GPUへ投入済みのフレームを保持するキュー
+// static std::queue<InFlightFrame> g_inFlightFrames;
+// static std::mutex g_inFlightFramesMutex;
 // ==== [In-flight Frame Management - END] ====
 
 static uint32_t g_expectedStreamFrame = 0;
@@ -348,6 +349,11 @@ static bool     g_expectedInitialized = false;
 void ClearReorderState()
 {
     std::lock_guard<std::mutex> lk(g_reorderMutex);
+    for (const auto& pair : g_reorderBuffer) {
+        if (pair.second.nvtx_range_id) {
+            nvtxDomainRangeEnd(g_frameDomain, pair.second.nvtx_range_id);
+        }
+    }
     g_reorderBuffer.clear();
     g_expectedInitialized = false;
     g_expectedStreamFrame = 0;
@@ -357,6 +363,13 @@ void ClearReorderState()
 // 調整パラメータ
 static constexpr size_t REORDER_MAX_BUFFER = 8; // これを超えたら妥協して前進
 static constexpr int    REORDER_WAIT_MS    = 3; // N+1 を待つ最大時間（ms） (from 3ms)
+
+static inline int GetReorderWaitMsForDepth(size_t depth) {
+    if (depth <= 1) return 8;     // very shallow → wait a little longer
+    if (depth == 2) return 5;     // moderate
+    return 3;                     // deep enough → be aggressive
+}
+
 static std::chrono::steady_clock::time_point g_lastReorderDecision = std::chrono::steady_clock::now();
 
 // Rendering specific D3D12 globals
@@ -620,7 +633,9 @@ bool InitD3D() {
         // Release existing D3D12 resources if re-initializing
     if (g_fence) g_fence.Reset();
     if (g_commandList) g_commandList.Reset();
-    if (g_commandAllocator) g_commandAllocator.Reset();
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+        if (g_commandAllocator[i]) g_commandAllocator[i].Reset();
+    }
     for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
         if (g_renderTargets[i]) g_renderTargets[i].Reset();
     }
@@ -736,7 +751,7 @@ bool InitD3D() {
         Microsoft::WRL::ComPtr<IDXGISwapChain2> sc2;
         HRESULT hr_sc2 = g_swapChain.As(&sc2);
         if (SUCCEEDED(hr_sc2) && sc2) {
-            sc2->SetMaximumFrameLatency(2);
+            sc2->SetMaximumFrameLatency(1);
             g_frameLatencyWaitableObject = sc2->GetFrameLatencyWaitableObject();
         }
     }
@@ -771,15 +786,22 @@ bool InitD3D() {
     DebugLog(L"InitD3D (D3D12): Render Target Views created.");
 
     // 6. Create Command Allocator
-    hr = g_d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_commandAllocator));
-    if (FAILED(hr)) {
-        DebugLog(L"InitD3D (D3D12): Failed to create command allocator. HRESULT: " + HResultToHexWString(hr));
-        return false;
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+        hr = g_d3d12Device->CreateCommandAllocator(
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            IID_PPV_ARGS(&g_commandAllocator[i]));
+        if (FAILED(hr)) {
+            DebugLog(L"InitD3D (D3D12): Failed to create command allocator[" + std::to_wstring(i) + L"].");
+            return false;
+        }
     }
-    DebugLog(L"InitD3D (D3D12): Command Allocator created.");
+    DebugLog(L"InitD3D (D3D12): Command Allocators created.");
 
     // 7. Create Command List
-    hr = g_d3d12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_commandAllocator.Get(), nullptr, IID_PPV_ARGS(&g_commandList));
+    hr = g_d3d12Device->CreateCommandList(
+        0, D3D12_COMMAND_LIST_TYPE_DIRECT,
+        g_commandAllocator[g_currentFrameBufferIndex].Get(), nullptr,
+        IID_PPV_ARGS(&g_commandList));
     if (FAILED(hr)) {
         DebugLog(L"InitD3D (D3D12): Failed to create command list. HRESULT: " + HResultToHexWString(hr));
         return false;
@@ -933,10 +955,19 @@ struct reorder_domain { static constexpr char const* name = "REORDER"; };
 bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass ReadyGpuFrame by reference
     nvtx3::scoped_range_in<d3d12_domain> nvtx_populate_cmdlist{"PopulateCommandList"};
     // Reset command allocator and command list
-    HRESULT hr = g_commandAllocator->Reset();
-    if (FAILED(hr)) { DebugLog(L"PopulateCommandList: Failed to reset command allocator. HR: " + HResultToHexWString(hr)); return false; }
-    hr = g_commandList->Reset(g_commandAllocator.Get(), nullptr); // No initial PSO for clear
-    if (FAILED(hr)) { DebugLog(L"PopulateCommandList: Failed to reset command list. HR: " + HResultToHexWString(hr)); return false; }
+    ID3D12CommandAllocator* allocator = g_commandAllocator[g_currentFrameBufferIndex].Get();
+    HRESULT hr;
+    {
+        nvtx3::scoped_range_in<d3d12_domain> r{ "AllocatorReset" };
+        hr = allocator->Reset();
+    }
+    if (FAILED(hr)) { DebugLog(L"PopulateCommandList: allocator Reset failed."); return false; }
+
+    {
+        nvtx3::scoped_range_in<d3d12_domain> r{ "CmdListReset" };
+        hr = g_commandList->Reset(allocator, nullptr);
+    }
+    if (FAILED(hr)) { DebugLog(L"PopulateCommandList: cmdlist Reset failed."); return false; }
 
     // Transition the current back buffer from PRESENT to RENDER_TARGET.
     if (!g_renderTargets[g_currentFrameBufferIndex]) {
@@ -952,7 +983,10 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    g_commandList->ResourceBarrier(1, &barrier);
+    {
+        nvtx3::scoped_range_in<d3d12_domain> r{ "BarrierToRTV" };
+        g_commandList->ResourceBarrier(1, &barrier);
+    }
 
     // Set RTV
     // Set PSO and Root Signature
@@ -961,7 +995,10 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
     // Set RTV
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart(), g_currentFrameBufferIndex, g_rtvDescriptorSize);
-    g_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+    {
+        nvtx3::scoped_range_in<d3d12_domain> r{ "SetRT" };
+        g_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+    }
 
     // >>> NEW: Ensure viewport/scissor initially cover the full backbuffer <<<
     if (g_renderTargets[g_currentFrameBufferIndex]) {
@@ -1019,7 +1056,8 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         const bool haveExpected = g_reorderBuffer.count(g_expectedStreamFrame) != 0;
         const bool haveNext     = g_reorderBuffer.count(g_expectedStreamFrame + 1) != 0;
         const bool bufferTooBig = g_reorderBuffer.size() > REORDER_MAX_BUFFER;
-        const bool waitedLong   = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastReorderDecision).count() > REORDER_WAIT_MS;
+        const int dynamicWait = GetReorderWaitMsForDepth(g_reorderBuffer.size());
+        const bool waitedLong = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_lastReorderDecision).count() > dynamicWait;
 
         if (haveExpected && haveNext) {
             // 理想：N と N+1 がそろった
@@ -1109,7 +1147,10 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
         // フルスクリーンクアッド（TRIANGLESTRIP で 4 頂点）
         g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-        g_commandList->DrawInstanced(4, 1, 0, 0);
+        {
+            nvtx3::scoped_range_in<d3d12_domain> r{ "Draw" };
+            g_commandList->DrawInstanced(4, 1, 0, 0);
+        }
 
         // Release the ComPtrs now that they are submitted for rendering
         // The resources themselves are managed by the decoder's pool
@@ -1120,7 +1161,10 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     // Transition the current back buffer from RENDER_TARGET to PRESENT.
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    g_commandList->ResourceBarrier(1, &barrier);
+    {
+        nvtx3::scoped_range_in<d3d12_domain> r{ "BarrierToPresent" };
+        g_commandList->ResourceBarrier(1, &barrier);
+    }
 
     hr = g_commandList->Close();
     if (FAILED(hr)) { DebugLog(L"PopulateCommandList: Failed to close command list. HR: " + HResultToHexWString(hr)); return false; }
@@ -1141,6 +1185,11 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     DebugLog(L"Resize detected. Clearing in-flight frame queues.");
     {
         std::lock_guard<std::mutex> qlock(g_readyGpuFrameQueueMutex);
+        for (const auto& frame : g_readyGpuFrameQueue) {
+            if (frame.nvtx_range_id) {
+                nvtxDomainRangeEnd(g_frameDomain, frame.nvtx_range_id);
+            }
+        }
         // The ComPtrs in the deque will automatically be released.
         g_readyGpuFrameQueue.clear();
     }
@@ -1260,18 +1309,6 @@ void RenderFrame() {
     nvtx3::scoped_range_in<d3d12_domain> frame_r("Frame");
     nvtx3::scoped_range_in<d3d12_domain> r("D3D12Present");
     // Use existing fence and queue types; keep comments and layout intact.
-    {
-        std::lock_guard<std::mutex> lk(g_inFlightFramesMutex);
-        while (!g_inFlightFrames.empty()) {
-            const auto& front = g_inFlightFrames.front();
-            if (g_fence->GetCompletedValue() >= front.fenceValue) {
-                // Resource lifetime tied to frameData; let it go out of scope here.
-                g_inFlightFrames.pop();
-            } else {
-                break;
-            }
-        }
-    }
 
     // Pick up pending resize, if any
     if (g_pendingResize.has.load(std::memory_order_acquire)) {
@@ -1302,49 +1339,14 @@ void RenderFrame() {
     const bool shouldPresent = frameWasRendered || forcePresent;
 
     if (shouldPresent) {
-        // Immediately before Present:
-        const UINT presentFlags = g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
-        HRESULT hrPresent = S_OK;
-        {
-            nvtx3::scoped_range_in<d3d12_domain> present_r{"Present(Submit)"};
-            // Keep the current vsync interval (looks like 0); only flags change:
-            hrPresent = g_swapChain->Present(0, presentFlags);
-            // Keep existing error handling/logging if present.
-        }
-
-        if (FAILED(hrPresent)) {
-            if (hrPresent == DXGI_ERROR_DEVICE_REMOVED || hrPresent == DXGI_ERROR_DEVICE_RESET) {
-                DebugLog(L"RenderFrame (D3D12): Device removed/reset on Present. HR: " + HResultToHexWString(hrPresent));
-                // TODO: Handle device loss (e.g., re-initialize)
-            } else {
-                DebugLog(L"RenderFrame (D3D12): Present failed. HR: " + HResultToHexWString(hrPresent));
-            }
-        }
-
         if (frameWasRendered) {
-            // ---- Standard path for a rendered frame ----
-            // Fence: Track this frame's completion
-            const UINT64 currentFenceVal = g_renderFenceValues[g_currentFrameBufferIndex];
-            hr = g_d3d12CommandQueue->Signal(g_fence.Get(), currentFenceVal);
-            if (FAILED(hr)) {
-                DebugLog(L"RenderFrame: Failed to signal fence. HR: " + HResultToHexWString(hr));
-            }
-
-            // NEW: Extract data for logging BEFORE the move
+            // ---- Logging ----
             const auto log_render_start_ms = renderedFrameData.render_start_ms;
             const auto log_stream_frame_no = renderedFrameData.streamFrameNumber;
             const auto log_original_frame_no = renderedFrameData.originalFrameNumber;
             const auto log_id = renderedFrameData.id;
-
-            // ---- Logging (moved here to be in scope) ----
             const uint64_t render_end_ms = SteadyNowMs();
-
-            // Render totals (steady)
-            const uint64_t render_total_ms = (render_end_ms >= log_render_start_ms)
-                ? (render_end_ms - log_render_start_ms)
-                : 0;
-
-            // Client FEC End->RenderEnd (steady) using per-frame mapping
+            const uint64_t render_total_ms = (render_end_ms >= log_render_start_ms) ? (render_end_ms - log_render_start_ms) : 0;
             uint64_t client_e2e_ms = 0;
             {
                 std::lock_guard<std::mutex> lk(g_fecEndTimeMutex);
@@ -1352,41 +1354,30 @@ void RenderFrame() {
                 if (it != g_fecEndTimeByStreamFrame.end()) {
                     const uint64_t fec_end_ms = it->second;
                     client_e2e_ms = (render_end_ms >= fec_end_ms) ? (render_end_ms - fec_end_ms) : 0;
-                    // cleanup: we used it for this frame
                     g_fecEndTimeByStreamFrame.erase(it);
                 }
             }
-
-            // Logging cadence preserved
             if (RenderCount++ % 60 == 0) {
                 DebugLog(L"RenderFrame Total (wall): " + std::to_wstring(render_total_ms) + L" ms.");
                 DebugLog(L"Client FEC End->RenderEnd: " + std::to_wstring(client_e2e_ms) + L" ms.");
-                // NOTE: NVDEC End->RenderEnd log removed per spec
             }
-
-            // Keep the existing cross-machine log, but compute from per-frame map (unsynced clocks).
             int64_t wgc_to_renderend_ms = 0;
             {
-                // server WGC timestamp (ms since epoch, system_clock at server)
                 uint64_t wgc_ts_ms = 0;
                 {
                     std::lock_guard<std::mutex> lk(g_wgcTsMutex);
                     auto it = g_wgcCaptureTimestampByStreamFrame.find(log_stream_frame_no);
                     if (it != g_wgcCaptureTimestampByStreamFrame.end()) {
                         wgc_ts_ms = it->second;
-                        g_wgcCaptureTimestampByStreamFrame.erase(it); // consume once
+                        g_wgcCaptureTimestampByStreamFrame.erase(it);
                     }
                 }
                 if (wgc_ts_ms != 0) {
-                    auto frameEndSys   = std::chrono::system_clock::now();
+                    auto frameEndSys = std::chrono::system_clock::now();
                     uint64_t frameEndMs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
                     wgc_to_renderend_ms = static_cast<int64_t>(frameEndMs) - static_cast<int64_t>(wgc_ts_ms);
-                } else {
-                    // No timestamp found (e.g., rare drop/miss). Keep 0; still log as unsynced.
-                    wgc_to_renderend_ms = 0;
                 }
             }
-
             if (RenderCount % 60 == 0) {
                 DebugLog(L"RenderFrame Latency (unsynced clocks): StreamFrame #"
                     + std::to_wstring(log_stream_frame_no)
@@ -1394,54 +1385,40 @@ void RenderFrame() {
                     + L" (ID: " + std::to_wstring(log_id) + L")"
                     + L" - WGC to RenderEnd: " + std::to_wstring(wgc_to_renderend_ms) + L" ms.");
             }
-            // ---- End of moved logging block ----
 
-            // GPUに投入したフレームのリソースを、完了まで破棄しないようにキューへ移動
-            {
-                std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
-                g_inFlightFrames.push({std::move(renderedFrameData), currentFenceVal});
+            if (renderedFrameData.nvtx_range_id) {
+                nvtxDomainRangeEnd(g_frameDomain, renderedFrameData.nvtx_range_id);
+                renderedFrameData.nvtx_range_id = 0;
             }
-
-            // Update back buffer index for the next frame
-            g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
-
-            // Wait only if we risk getting too far ahead of the GPU (bounded backlog)
-            bool shouldWait = false;
-            {
-                std::lock_guard<std::mutex> lock(g_inFlightFramesMutex);
-                // Keep at most 2 frames in flight for this back buffer index
-                // (Adjust threshold carefully if you observe pipe underflow/overflow)
-                shouldWait = (g_inFlightFrames.size() >= 2);
-            }
-
-            if (shouldWait) {
-                if (g_fence->GetCompletedValue() < g_renderFenceValues[g_currentFrameBufferIndex]) {
-                    hr = g_fence->SetEventOnCompletion(g_renderFenceValues[g_currentFrameBufferIndex], g_fenceEvent);
-                    if (FAILED(hr)) {
-                        DebugLog(L"RenderFrame: Failed to set event on completion. HR: " + HResultToHexWString(hr));
-                    } else {
-                        // Bounded wait keeps pipeline responsive; still measured in the existing logging
-                        const DWORD timeoutMs = 2; // short, non-infinite
-                        nvtx3::scoped_range_in<d3d12_domain> fence_wait{"Fence(Wait bounded)"};
-                        WaitForSingleObjectEx(g_fenceEvent, timeoutMs, FALSE);
-                    }
-                }
-            }
-
-            // Increment fence value for the next use of this RTV
-            g_renderFenceValues[g_currentFrameBufferIndex] = currentFenceVal + 1;
-        } else {
-            // ---- Forced present path (no new frame rendered) ----
-            nvtx3::scoped_range_in<d3d12_domain> r_forced{"Present(Forced)"};
-            // Don't perform fence waits or signals that assume a rendered frame.
-            // Just refresh the back buffer index so the next real frame uses the correct RTV.
-            g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
-
-            // To be extra safe, align the fence value for this buffer index to what's known to be completed.
-            // This prevents a future wait on a stale, never-to-be-signaled value.
-            const UINT64 completed = g_fence->GetCompletedValue();
-            g_renderFenceValues[g_currentFrameBufferIndex] = completed + 1;
         }
+
+        // Signal end-of-frame on the render fence and remember the value for this backbuffer
+        const UINT64 fenceValue = ++g_fenceValue;
+        g_d3d12CommandQueue->Signal(g_fence.Get(), fenceValue);
+        g_renderFenceValues[g_currentFrameBufferIndex] = fenceValue;
+
+        // Present
+        HRESULT hrPresent;
+        {
+            nvtx3::scoped_range_in<d3d12_domain> present_r{"Present(Submit)"};
+            hrPresent = g_swapChain->Present(0, g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
+        }
+        if (FAILED(hrPresent)) {
+            if (hrPresent == DXGI_ERROR_DEVICE_REMOVED || hrPresent == DXGI_ERROR_DEVICE_RESET) {
+                DebugLog(L"RenderFrame (D3D12): Device removed/reset on Present. HR: " + HResultToHexWString(hrPresent));
+            } else {
+                DebugLog(L"RenderFrame (D3D12): Present failed. HR: " + HResultToHexWString(hrPresent));
+            }
+        }
+
+        // We are about to use the *next* backbuffer index; ensure its previous work is done
+        UINT nextIndex = g_swapChain->GetCurrentBackBufferIndex();
+        const UINT64 valueToWait = g_renderFenceValues[nextIndex];
+        if (valueToWait != 0 && g_fence->GetCompletedValue() < valueToWait) {
+            g_fence->SetEventOnCompletion(valueToWait, g_fenceEvent);
+            WaitForSingleObject(g_fenceEvent, INFINITE);
+        }
+        g_currentFrameBufferIndex = nextIndex;
     }
 }
 
@@ -1472,7 +1449,9 @@ void CleanupD3DRenderResources() {
     }
     if (g_fence) g_fence.Reset();
     if (g_commandList) g_commandList.Reset();
-    if (g_commandAllocator) g_commandAllocator.Reset();
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+        if (g_commandAllocator[i]) g_commandAllocator[i].Reset();
+    }
     for (UINT i = 0; i < 2; ++i) {
         if (g_renderTargets[i]) g_renderTargets[i].Reset();
     }
