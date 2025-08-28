@@ -1231,6 +1231,9 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 }
 
 void RenderFrame() {
+    if (g_frameLatencyWaitableObject != NULL) {
+        WaitForSingleObject(g_frameLatencyWaitableObject, INFINITE);
+    }
     nvtx3::scoped_range_in<d3d12_domain> frame_r("Frame");
     nvtx3::scoped_range_in<d3d12_domain> r("D3D12Present");
     // Use existing fence and queue types; keep comments and layout intact.
@@ -1286,7 +1289,7 @@ void RenderFrame() {
     const bool shouldPresent = frameWasRendered || forcePresent;
 
     if (shouldPresent) {
-        const UINT syncInterval = 1; // Lock to VSync
+        const UINT syncInterval = 0; // Lock to VSync
         const UINT presentFlags = 0; // Tearing is not allowed with VSync
         HRESULT hrPresent = S_OK;
         {
