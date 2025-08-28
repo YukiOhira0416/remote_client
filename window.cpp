@@ -31,6 +31,10 @@
 #include "AppShutdown.h"
 #include "main.h" // For RequestIDRNow
 
+// Keep layout/comments as-is around this block.
+// Forward declare to avoid cross-unit include churn.
+void RequestIDRNow(); // defined in main.cpp; used to re-sync stream after device reset
+
 // CUDA includes
 #include <cuda.h>
 #include <cuda_runtime_api.h>
@@ -245,6 +249,57 @@ UINT64 g_renderFenceValues[kSwapChainBufferCount]; // Fence values for each fram
 #define CLIENT_IP_FEC "127.0.0.1"// FEC用IPアドレス
 
 bool g_allowTearing = false; // ティアリングを許可するかどうか
+
+// ---- Device-loss recovery (no goto, preserve layout/comments) ----
+static std::atomic<bool> g_deviceResetInProgress{false};
+
+static void HandleDeviceRemovedAndReinit() noexcept {
+    if (g_deviceResetInProgress.exchange(true)) {
+        // Already handling a reset in another code path; do nothing.
+        return;
+    }
+
+    // Log remove/reset reason if available
+    if (g_d3d12Device) {
+        HRESULT gr = g_d3d12Device->GetDeviceRemovedReason();
+        DebugLog(L"D3D12 device removed/reset. Reason: " + HResultToHexWString(gr));
+    } else {
+        DebugLog(L"D3D12 device removed/reset. Reason: (device nullptr)");
+    }
+
+    // Drain GPU work while pumping messages; preserves timing/logging
+    WaitForGpu();
+
+    // Clear in-flight frames and reorder buffers to avoid stale resources
+    {
+        std::lock_guard<std::mutex> qlock(g_readyGpuFrameQueueMutex);
+        for (const auto& frame : g_readyGpuFrameQueue) {
+            if (frame.nvtx_range_id) {
+                nvtxDomainRangeEnd(g_frameDomain, frame.nvtx_range_id);
+            }
+        }
+        g_readyGpuFrameQueue.clear();
+    }
+    ClearReorderState(); // do not touch MonitorSharedMemory()
+
+    // Tear down and re-create the D3D12 pipeline (InitD3D already resets & recreates)
+    if (!InitD3D()) {
+        DebugLog(L"HandleDeviceRemovedAndReinit: InitD3D() failed.");
+        // We intentionally return; the main loop/logging survives.
+        g_deviceResetInProgress.store(false, std::memory_order_release);
+        return;
+    }
+
+    // Force at least one Present to refresh the screen after reset
+    g_forcePresentOnce.store(true, std::memory_order_release);
+
+    // Ask the server to send an IDR to re-sync decoder/render textures
+    RequestIDRNow();
+
+    DebugLog(L"HandleDeviceRemovedAndReinit: D3D12 re-initialized successfully.");
+    g_deviceResetInProgress.store(false, std::memory_order_release);
+}
+
 
 // ==== [Resize helpers - BEGIN] ====
 
@@ -1226,6 +1281,11 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
         kSwapChainBufferCount, newW, newH, DXGI_FORMAT_R8G8B8A8_UNORM,
         g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
     if (FAILED(hr)) {
+        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+            DebugLog(L"RenderThread: Device removed/reset on ResizeBuffers. HR: " + HResultToHexWString(hr));
+            HandleDeviceRemovedAndReinit();
+            return; // Recovery was handled, exit this function
+        }
         DebugLog(L"RenderThread: ResizeBuffers failed. HR: " + HResultToHexWString(hr));
         // As a fallback, try automatic size:
         hr = g_swapChain->ResizeBuffers(kSwapChainBufferCount, 0, 0, DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -1405,6 +1465,8 @@ void RenderFrame() {
     if (FAILED(hrPresent)) {
         if (hrPresent == DXGI_ERROR_DEVICE_REMOVED || hrPresent == DXGI_ERROR_DEVICE_RESET) {
             DebugLog(L"RenderFrame (D3D12): Device removed/reset on Present. HR: " + HResultToHexWString(hrPresent));
+            HandleDeviceRemovedAndReinit();
+            return; // let the next iteration render with the new device
         } else {
             DebugLog(L"RenderFrame (D3D12): Present failed. HR: " + HResultToHexWString(hrPresent));
         }
