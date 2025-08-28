@@ -349,9 +349,9 @@ static bool     g_expectedInitialized = false;
 // 描画側の「期待フレーム番号」やバッファをクリアして“待ち”を防ぐ
 void ClearReorderState()
 {
-    // NEW: Ensure GPU is idle w.r.t. any in-flight use of decoded-frame resources
-    // This prevents releasing ID3D12Resource while still referenced by the GPU.
-    WaitForGpu(); // ← insert this single line
+    // Ensure the GPU has finished using any resources that may be released below.
+    // This prevents releasing ID3D12Resource while still referenced by in-flight command lists.
+    WaitForGpu();
 
     std::lock_guard<std::mutex> lk(g_reorderMutex);
     for (const auto& pair : g_reorderBuffer) {
@@ -1161,7 +1161,40 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     g_swapChain->GetDesc1(&desc);
     if (desc.Width == (UINT)newW && desc.Height == (UINT)newH) return;
 
-    WaitForGpu(); // or WaitForGpuWithTimeout(…); use your existing helper
+    // Bounded wait so we never hard-freeze the pipeline
+    auto WaitForGpuWithTimeout = [](DWORD totalTimeoutMs)->bool {
+        // Signal
+        UINT64 fenceValueToSignal = g_fenceValue;
+        HRESULT hr = g_d3d12CommandQueue->Signal(g_fence.Get(), fenceValueToSignal);
+        if (FAILED(hr)) { DebugLog(L"WaitForGpuWithTimeout: Signal failed. HR: " + HResultToHexWString(hr)); return false; }
+
+        const DWORD step = 50; // ms
+        DWORD waited = 0;
+        while (g_fence->GetCompletedValue() < fenceValueToSignal) {
+            hr = g_fence->SetEventOnCompletion(fenceValueToSignal, g_fenceEvent);
+            if (FAILED(hr)) { DebugLog(L"WaitForGpuWithTimeout: SetEventOnCompletion failed. HR: " + HResultToHexWString(hr)); return false; }
+            DWORD r = MsgWaitForMultipleObjects(1, &g_fenceEvent, FALSE, step, QS_ALLINPUT);
+            if (r == WAIT_OBJECT_0) break; // fence signaled
+            // pump messages to keep app responsive
+            MSG msg;
+            while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+            }
+            waited += step;
+            if (waited >= totalTimeoutMs) {
+                DebugLog(L"WaitForGpuWithTimeout: timed out; proceeding cautiously.");
+                break;
+            }
+        }
+        g_fenceValue++;
+        return true;
+    };
+
+    DebugLog(L"RenderThread: resizing swap-chain to " + std::to_wstring(newW) + L"x" + std::to_wstring(newH));
+
+    // **Wait BEFORE clearing and releasing any resources**
+    WaitForGpuWithTimeout(500); // or WaitForGpu();
 
     // Clear any buffered frames, as their underlying resources might be invalid
     // after a resize. This prevents using stale D3D resources from the decoder.
@@ -1177,8 +1210,6 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
         g_readyGpuFrameQueue.clear();
     }
     ClearReorderState(); // This clears the reorder buffer and resets sequence.
-
-    DebugLog(L"RenderThread: resizing swap-chain to " + std::to_wstring(newW) + L"x" + std::to_wstring(newH));
 
     for (UINT i = 0; i < kSwapChainBufferCount; ++i) g_renderTargets[i].Reset();
 
@@ -1219,7 +1250,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     // Refresh the current index, as it might have changed.
     g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
 
-    // Ensure at least one post-resize Present to advance swap-chain even if no new frame is ready.
+    // Ensure we present at least one frame post-resize to refresh the screen.
     g_forcePresentOnce.store(true, std::memory_order_release);
 }
 
