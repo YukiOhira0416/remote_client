@@ -46,19 +46,19 @@ main.cpp:877:56: style: Consider using std::accumulate algorithm instead of a ra
 main.cpp:712:38: style: struct member 'net::name' is never used. [unusedStructMember]
         static constexpr char const* name = "NET";
                                      ^
-window.cpp:1452:24: style: inconclusive: Found duplicate branches for 'if' and 'else'. [duplicateBranch]
+window.cpp:1455:24: style: inconclusive: Found duplicate branches for 'if' and 'else'. [duplicateBranch]
                 } else if (r == WAIT_TIMEOUT) {
                        ^
-window.cpp:1456:17: note: Found duplicate branches for 'if' and 'else'.
+window.cpp:1459:17: note: Found duplicate branches for 'if' and 'else'.
                 else {
                 ^
-window.cpp:1452:24: note: Found duplicate branches for 'if' and 'else'.
+window.cpp:1455:24: note: Found duplicate branches for 'if' and 'else'.
                 } else if (r == WAIT_TIMEOUT) {
                        ^
-window.cpp:1263:32: style: Variable 's_lastY' can be declared as pointer to const [constVariablePointer]
+window.cpp:1266:32: style: Variable 's_lastY' can be declared as pointer to const [constVariablePointer]
         static ID3D12Resource* s_lastY = nullptr;
                                ^
-window.cpp:1264:32: style: Variable 's_lastUV' can be declared as pointer to const [constVariablePointer]
+window.cpp:1267:32: style: Variable 's_lastUV' can be declared as pointer to const [constVariablePointer]
         static ID3D12Resource* s_lastUV = nullptr;
                                ^
 window.cpp:229:52: style: struct member 'd3d12_domain::name' is never used. [unusedStructMember]
@@ -91,13 +91,10 @@ window.cpp:1233:42: style: Variable 'newFrameFromReorder.copyDone' is assigned a
 window.cpp:1238:34: style: Variable 'frameToDraw.copyDone' is assigned a value that is never used. [unreadVariable]
             frameToDraw.copyDone = nullptr;
                                  ^
-window.cpp:1245:41: style: Variable 'frameToDraw.render_start_ms' is assigned a value that is never used. [unreadVariable]
-            frameToDraw.render_start_ms = SteadyNowMs();
-                                        ^
-window.cpp:1493:30: style: Variable 'shouldPresent' is assigned a value that is never used. [unreadVariable]
+window.cpp:1496:30: style: Variable 'shouldPresent' is assigned a value that is never used. [unreadVariable]
     const bool shouldPresent = frameWasRendered || forcePresent;
                              ^
-window.cpp:1544:45: style: Variable 'renderedFrameData.nvtx_range_id' is assigned a value that is never used. [unreadVariable]
+window.cpp:1547:45: style: Variable 'renderedFrameData.nvtx_range_id' is assigned a value that is never used. [unreadVariable]
             renderedFrameData.nvtx_range_id = 0;
                                             ^
 nvdec.cpp:646:11: style: Variable 'fr' can be declared as reference to const [constVariableReference]
@@ -121,7 +118,7 @@ int getNALType(const uint8_t* data, size_t size) {
 main.cpp:1114:0: style: The function 'wWinMain' is never used. [unusedFunction]
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
 ^
-window.cpp:1616:0: style: The function 'CleanupD3DRenderResources' is never used. [unusedFunction]
+window.cpp:1619:0: style: The function 'CleanupD3DRenderResources' is never used. [unusedFunction]
 void CleanupD3DRenderResources() {
 ^
 nofile:0:0: information: Active checkers: 172/592 (use --checkers-report=<filename> to see details) [checkersReport]

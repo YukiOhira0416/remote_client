@@ -1245,6 +1245,9 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             frameToDraw.render_start_ms = SteadyNowMs();
             // We must wait on the event from the master copy in the cache.
             std::lock_guard<std::mutex> rlock(g_reorderMutex);
+            // Propagate the render-start time to the master cached frame, so that
+            // latency stats are correct.
+            g_lastDrawnFrame.render_start_ms = frameToDraw.render_start_ms;
             if (g_lastDrawnFrame.copyDone) {
                 if (cuEventQuery(g_lastDrawnFrame.copyDone) == CUDA_ERROR_NOT_READY) {
                     nvtx3::scoped_range_in<cuda_domain> r("Wait(copyDone)");
