@@ -1346,88 +1346,87 @@ void RenderFrame() {
     const bool forcePresent = g_forcePresentOnce.exchange(false, std::memory_order_acq_rel);
     const bool shouldPresent = frameWasRendered || forcePresent;
 
-    if (shouldPresent) {
-        if (frameWasRendered) {
-            // ---- Logging ----
-            const auto log_render_start_ms = renderedFrameData.render_start_ms;
-            const auto log_stream_frame_no = renderedFrameData.streamFrameNumber;
-            const auto log_original_frame_no = renderedFrameData.originalFrameNumber;
-            const auto log_id = renderedFrameData.id;
-            const uint64_t render_end_ms = SteadyNowMs();
-            const uint64_t render_total_ms = (render_end_ms >= log_render_start_ms) ? (render_end_ms - log_render_start_ms) : 0;
-            uint64_t client_e2e_ms = 0;
-            {
-                std::lock_guard<std::mutex> lk(g_fecEndTimeMutex);
-                auto it = g_fecEndTimeByStreamFrame.find(log_stream_frame_no);
-                if (it != g_fecEndTimeByStreamFrame.end()) {
-                    const uint64_t fec_end_ms = it->second;
-                    client_e2e_ms = (render_end_ms >= fec_end_ms) ? (render_end_ms - fec_end_ms) : 0;
-                    g_fecEndTimeByStreamFrame.erase(it);
-                }
-            }
-            if (RenderCount++ % 60 == 0) {
-                DebugLog(L"RenderFrame Total (wall): " + std::to_wstring(render_total_ms) + L" ms.");
-                DebugLog(L"Client FEC End->RenderEnd: " + std::to_wstring(client_e2e_ms) + L" ms.");
-            }
-            int64_t wgc_to_renderend_ms = 0;
-            {
-                uint64_t wgc_ts_ms = 0;
-                {
-                    std::lock_guard<std::mutex> lk(g_wgcTsMutex);
-                    auto it = g_wgcCaptureTimestampByStreamFrame.find(log_stream_frame_no);
-                    if (it != g_wgcCaptureTimestampByStreamFrame.end()) {
-                        wgc_ts_ms = it->second;
-                        g_wgcCaptureTimestampByStreamFrame.erase(it);
-                    }
-                }
-                if (wgc_ts_ms != 0) {
-                    auto frameEndSys = std::chrono::system_clock::now();
-                    uint64_t frameEndMs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
-                    wgc_to_renderend_ms = static_cast<int64_t>(frameEndMs) - static_cast<int64_t>(wgc_ts_ms);
-                }
-            }
-            if (RenderCount % 60 == 0) {
-                DebugLog(L"RenderFrame Latency (unsynced clocks): StreamFrame #"
-                    + std::to_wstring(log_stream_frame_no)
-                    + L", OriginalFrame #" + std::to_wstring(log_original_frame_no)
-                    + L" (ID: " + std::to_wstring(log_id) + L")"
-                    + L" - WGC to RenderEnd: " + std::to_wstring(wgc_to_renderend_ms) + L" ms.");
-            }
-
-            if (renderedFrameData.nvtx_range_id) {
-                nvtxDomainRangeEnd(g_frameDomain, renderedFrameData.nvtx_range_id);
-                renderedFrameData.nvtx_range_id = 0;
-            }
-        }
-
-        // Signal end-of-frame on the render fence and remember the value for this backbuffer
-        const UINT64 fenceValue = ++g_fenceValue;
-        g_d3d12CommandQueue->Signal(g_fence.Get(), fenceValue);
-        g_renderFenceValues[g_currentFrameBufferIndex] = fenceValue;
-
-        // Present
-        HRESULT hrPresent;
+    if (frameWasRendered) {
+        // ---- Logging ----
+        const auto log_render_start_ms = renderedFrameData.render_start_ms;
+        const auto log_stream_frame_no = renderedFrameData.streamFrameNumber;
+        const auto log_original_frame_no = renderedFrameData.originalFrameNumber;
+        const auto log_id = renderedFrameData.id;
+        const uint64_t render_end_ms = SteadyNowMs();
+        const uint64_t render_total_ms = (render_end_ms >= log_render_start_ms) ? (render_end_ms - log_render_start_ms) : 0;
+        uint64_t client_e2e_ms = 0;
         {
-            nvtx3::scoped_range_in<d3d12_domain> present_r{"Present(Submit)"};
-            hrPresent = g_swapChain->Present(0, g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
-        }
-        if (FAILED(hrPresent)) {
-            if (hrPresent == DXGI_ERROR_DEVICE_REMOVED || hrPresent == DXGI_ERROR_DEVICE_RESET) {
-                DebugLog(L"RenderFrame (D3D12): Device removed/reset on Present. HR: " + HResultToHexWString(hrPresent));
-            } else {
-                DebugLog(L"RenderFrame (D3D12): Present failed. HR: " + HResultToHexWString(hrPresent));
+            std::lock_guard<std::mutex> lk(g_fecEndTimeMutex);
+            auto it = g_fecEndTimeByStreamFrame.find(log_stream_frame_no);
+            if (it != g_fecEndTimeByStreamFrame.end()) {
+                const uint64_t fec_end_ms = it->second;
+                client_e2e_ms = (render_end_ms >= fec_end_ms) ? (render_end_ms - fec_end_ms) : 0;
+                g_fecEndTimeByStreamFrame.erase(it);
             }
         }
-
-        // We are about to use the *next* backbuffer index; ensure its previous work is done
-        UINT nextIndex = g_swapChain->GetCurrentBackBufferIndex();
-        const UINT64 valueToWait = g_renderFenceValues[nextIndex];
-        if (valueToWait != 0 && g_fence->GetCompletedValue() < valueToWait) {
-            g_fence->SetEventOnCompletion(valueToWait, g_fenceEvent);
-            WaitForSingleObject(g_fenceEvent, INFINITE);
+        if (RenderCount++ % 60 == 0) {
+            DebugLog(L"RenderFrame Total (wall): " + std::to_wstring(render_total_ms) + L" ms.");
+            DebugLog(L"Client FEC End->RenderEnd: " + std::to_wstring(client_e2e_ms) + L" ms.");
         }
-        g_currentFrameBufferIndex = nextIndex;
+        int64_t wgc_to_renderend_ms = 0;
+        {
+            uint64_t wgc_ts_ms = 0;
+            {
+                std::lock_guard<std::mutex> lk(g_wgcTsMutex);
+                auto it = g_wgcCaptureTimestampByStreamFrame.find(log_stream_frame_no);
+                if (it != g_wgcCaptureTimestampByStreamFrame.end()) {
+                    wgc_ts_ms = it->second;
+                    g_wgcCaptureTimestampByStreamFrame.erase(it);
+                }
+            }
+            if (wgc_ts_ms != 0) {
+                auto frameEndSys = std::chrono::system_clock::now();
+                uint64_t frameEndMs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
+                wgc_to_renderend_ms = static_cast<int64_t>(frameEndMs) - static_cast<int64_t>(wgc_ts_ms);
+            }
+        }
+        if (RenderCount % 60 == 0) {
+            DebugLog(L"RenderFrame Latency (unsynced clocks): StreamFrame #"
+                + std::to_wstring(log_stream_frame_no)
+                + L", OriginalFrame #" + std::to_wstring(log_original_frame_no)
+                + L" (ID: " + std::to_wstring(log_id) + L")"
+                + L" - WGC to RenderEnd: " + std::to_wstring(wgc_to_renderend_ms) + L" ms.");
+        }
+
+        if (renderedFrameData.nvtx_range_id) {
+            nvtxDomainRangeEnd(g_frameDomain, renderedFrameData.nvtx_range_id);
+            renderedFrameData.nvtx_range_id = 0;
+        }
     }
+
+    //常にPresentを呼び出して、ウィンドウが描画され続けるようにする
+    // Signal end-of-frame on the render fence and remember the value for this backbuffer
+    const UINT64 fenceValue = ++g_fenceValue;
+    g_d3d12CommandQueue->Signal(g_fence.Get(), fenceValue);
+    g_renderFenceValues[g_currentFrameBufferIndex] = fenceValue;
+
+    // Present
+    HRESULT hrPresent;
+    {
+        nvtx3::scoped_range_in<d3d12_domain> present_r{"Present(Submit)"};
+        hrPresent = g_swapChain->Present(0, g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
+    }
+    if (FAILED(hrPresent)) {
+        if (hrPresent == DXGI_ERROR_DEVICE_REMOVED || hrPresent == DXGI_ERROR_DEVICE_RESET) {
+            DebugLog(L"RenderFrame (D3D12): Device removed/reset on Present. HR: " + HResultToHexWString(hrPresent));
+        } else {
+            DebugLog(L"RenderFrame (D3D12): Present failed. HR: " + HResultToHexWString(hrPresent));
+        }
+    }
+
+    // We are about to use the *next* backbuffer index; ensure its previous work is done
+    UINT nextIndex = g_swapChain->GetCurrentBackBufferIndex();
+    const UINT64 valueToWait = g_renderFenceValues[nextIndex];
+    if (valueToWait != 0 && g_fence->GetCompletedValue() < valueToWait) {
+        g_fence->SetEventOnCompletion(valueToWait, g_fenceEvent);
+        WaitForSingleObject(g_fenceEvent, INFINITE);
+    }
+    g_currentFrameBufferIndex = nextIndex;
 }
 
 // Minimal blocking wait, only for shutdown.
