@@ -1,0 +1,127 @@
+main.cpp:53:0: information: Include file: "concurrentqueue/concurrentqueue.h" not found. [missingInclude]
+#include "concurrentqueue/concurrentqueue.h"
+^
+Globals.h:19:0: information: Include file: "concurrentqueue/concurrentqueue.h" not found. [missingInclude]
+#include "concurrentqueue/concurrentqueue.h"
+^
+nvdec.h:18:0: information: Include file: "nvcuvid.h" not found. [missingInclude]
+#include "nvcuvid.h"
+^
+nvdec.h:19:0: information: Include file: "cuviddec.h" not found. [missingInclude]
+#include "cuviddec.h"
+^
+main.cpp:563:42: style: C-style pointer casting [cstyleCast]
+        int* temp_cauchy_for_bitmatrix = (int*)malloc(sizeof(int) * RS_M * RS_K); // m x k 行列
+                                         ^
+main.cpp:684:66: style: C-style pointer casting [cstyleCast]
+        sendto(udpSocket, startMessage, strlen(startMessage), 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
+                                                                 ^
+main.cpp:690:68: style: C-style pointer casting [cstyleCast]
+            sendto(udpSocket, data.data() + offset, packetSize, 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
+                                                                   ^
+main.cpp:697:62: style: C-style pointer casting [cstyleCast]
+        sendto(udpSocket, endMessage, strlen(endMessage), 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
+                                                             ^
+main.cpp:994:35: style: The scope of the variable 'payload' can be reduced. [variableScope]
+            std::vector<uint8_t>& payload = parsedInfo.shardData; // Use reference or move if appropriate
+                                  ^
+main.cpp:243:16: style: Variable 'a' can be declared as reference to const [constVariableReference]
+    for (auto& a : adapters) {
+               ^
+main.cpp:1007:56: performance: Searching before insertion is not necessary. Instead of 'g_frameMetadata[frameNumber]={packetTimestamp,originalDataLenHost}' consider using 'g_frameMetadata.try_emplace(frameNumber, {packetTimestamp,originalDataLenHost});'. [stlFindInsert]
+                        g_frameMetadata[frameNumber] = {packetTimestamp, originalDataLenHost};
+                                                       ^
+main.cpp:1021:85: performance: Searching before insertion is not necessary. Instead of 'g_frameBuffer[frameNumber]=std::map<int,std::vector<uint8_t>>()' consider using 'g_frameBuffer.try_emplace(frameNumber, std::map<int,std::vector<uint8_t>>());'. [stlFindInsert]
+                    g_frameBuffer[frameNumber] = std::map<int, std::vector<uint8_t>>();
+                                                                                    ^
+main.cpp:1025:71: performance: Searching before insertion is not necessary. Instead of 'g_frameBuffer[frameNumber][shardIndex]=std::move(payload)' consider using 'g_frameBuffer[frameNumber].try_emplace(shardIndex, std::move(payload));'. [stlFindInsert]
+                    g_frameBuffer[frameNumber][shardIndex] = std::move(payload); // payload is moved here
+                                                                      ^
+main.cpp:1140:14: performance: Ineffective call of function 'substr' because a prefix of the string is assigned to itself. Use resize() or pop_back() instead. [uselessCallsSubstr]
+    exeDir = exeDir.substr(0, exeDir.find_last_of("\\/"));
+             ^
+main.cpp:877:56: style: Consider using std::accumulate algorithm instead of a raw loop. [useStlAlgorithm]
+                                total_reassembled_size += frag_pair.second.size();
+                                                       ^
+main.cpp:712:38: style: struct member 'net::name' is never used. [unusedStructMember]
+        static constexpr char const* name = "NET";
+                                     ^
+window.cpp:1452:24: style: inconclusive: Found duplicate branches for 'if' and 'else'. [duplicateBranch]
+                } else if (r == WAIT_TIMEOUT) {
+                       ^
+window.cpp:1456:17: note: Found duplicate branches for 'if' and 'else'.
+                else {
+                ^
+window.cpp:1452:24: note: Found duplicate branches for 'if' and 'else'.
+                } else if (r == WAIT_TIMEOUT) {
+                       ^
+window.cpp:1263:32: style: Variable 's_lastY' can be declared as pointer to const [constVariablePointer]
+        static ID3D12Resource* s_lastY = nullptr;
+                               ^
+window.cpp:1264:32: style: Variable 's_lastUV' can be declared as pointer to const [constVariablePointer]
+        static ID3D12Resource* s_lastUV = nullptr;
+                               ^
+window.cpp:229:52: style: struct member 'd3d12_domain::name' is never used. [unusedStructMember]
+struct d3d12_domain { static constexpr char const* name = "D3D12"; };
+                                                   ^
+window.cpp:230:51: style: struct member 'cuda_domain::name' is never used. [unusedStructMember]
+struct cuda_domain { static constexpr char const* name = "CUDA"; };
+                                                  ^
+window.cpp:566:29: style: struct member 'VertexPosTex::x' is never used. [unusedStructMember]
+struct VertexPosTex { float x, y, z; float u, v; };
+                            ^
+window.cpp:566:32: style: struct member 'VertexPosTex::y' is never used. [unusedStructMember]
+struct VertexPosTex { float x, y, z; float u, v; };
+                               ^
+window.cpp:566:35: style: struct member 'VertexPosTex::z' is never used. [unusedStructMember]
+struct VertexPosTex { float x, y, z; float u, v; };
+                                  ^
+window.cpp:566:44: style: struct member 'VertexPosTex::u' is never used. [unusedStructMember]
+struct VertexPosTex { float x, y, z; float u, v; };
+                                           ^
+window.cpp:566:47: style: struct member 'VertexPosTex::v' is never used. [unusedStructMember]
+struct VertexPosTex { float x, y, z; float u, v; };
+                                              ^
+window.cpp:1118:54: style: struct member 'reorder_domain::name' is never used. [unusedStructMember]
+struct reorder_domain { static constexpr char const* name = "REORDER"; };
+                                                     ^
+window.cpp:1233:42: style: Variable 'newFrameFromReorder.copyDone' is assigned a value that is never used. [unreadVariable]
+            newFrameFromReorder.copyDone = nullptr; // Ownership transferred to cache
+                                         ^
+window.cpp:1238:34: style: Variable 'frameToDraw.copyDone' is assigned a value that is never used. [unreadVariable]
+            frameToDraw.copyDone = nullptr;
+                                 ^
+window.cpp:1245:41: style: Variable 'frameToDraw.render_start_ms' is assigned a value that is never used. [unreadVariable]
+            frameToDraw.render_start_ms = SteadyNowMs();
+                                        ^
+window.cpp:1493:30: style: Variable 'shouldPresent' is assigned a value that is never used. [unreadVariable]
+    const bool shouldPresent = frameWasRendered || forcePresent;
+                             ^
+window.cpp:1544:45: style: Variable 'renderedFrameData.nvtx_range_id' is assigned a value that is never used. [unreadVariable]
+            renderedFrameData.nvtx_range_id = 0;
+                                            ^
+nvdec.cpp:646:11: style: Variable 'fr' can be declared as reference to const [constVariableReference]
+    auto& fr = self->m_frameResources[pDispInfo->picture_index];
+          ^
+nvdec.cpp:393:49: style: Parameter 'pVideoFormat' can be declared as pointer to const [constParameterPointer]
+bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
+                                                ^
+nvdec.cpp:8:38: style: struct member 'nvdec::name' is never used. [unusedStructMember]
+        static constexpr char const* name = "NVDEC";
+                                     ^
+Globals.h:67:0: style: The function 'PointerToWString' is never used. [unusedFunction]
+std::wstring PointerToWString(T* ptr) {
+^
+main.cpp:502:0: style: The function 'SaveH264ToFile_NUM' is never used. [unusedFunction]
+void SaveH264ToFile_NUM(const std::vector<uint8_t>& prepared_h264Buffer, const std::string& baseName) {
+^
+main.cpp:542:0: style: The function 'getNALType' is never used. [unusedFunction]
+int getNALType(const uint8_t* data, size_t size) {
+^
+main.cpp:1114:0: style: The function 'wWinMain' is never used. [unusedFunction]
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
+^
+window.cpp:1616:0: style: The function 'CleanupD3DRenderResources' is never used. [unusedFunction]
+void CleanupD3DRenderResources() {
+^
+nofile:0:0: information: Active checkers: 172/592 (use --checkers-report=<filename> to see details) [checkersReport]
