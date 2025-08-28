@@ -1292,16 +1292,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         }
 
         // After processing messages, render a frame, respecting the frame rate.
-        // This ensures rendering continues even during a message-heavy event like resizing.
         auto currentTime = std::chrono::high_resolution_clock::now();
         auto timeSinceLastRender = currentTime - lastFrameRenderTime;
 
-        // Render even while sizing; RenderFrame internally waits on the frame-latency object
-        // and pumps messages, so this won't busy-spin.
+        // Always render, even during live-resize.
+        // If you want to throttle while sizing, add a very small sleep AFTER rendering (e.g., Sleep(1)),
+        // but do NOT skip RenderFrame() itself.
         {
             nvtx3::scoped_range r("RenderFrame_Outer");
             RenderFrame(); // pacing handled by DXGI frame-latency waitable on the render side
             lastFrameRenderTime = currentTime;
+            if (g_isSizing) {
+                Sleep(1); // optional gentle throttle (no busy spin), keep it tiny
+            }
         }
     }
 
