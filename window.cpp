@@ -78,6 +78,9 @@ static UINT GetDpiForMonitorOrDefault(HMONITOR hMon) {
     return 96;
 }
 
+// Forward declare the capture-exclusion helper to resolve call-before-definition.
+static void TryExcludeThisWindowFromCapture(HWND hwnd);
+
 static bool CreateWindowOnBestMonitor(HINSTANCE hInstance, int nCmdShow,
                                       int desiredClientWidth, int desiredClientHeight) {
     // カーソル位置のモニタを初期ターゲットにする
