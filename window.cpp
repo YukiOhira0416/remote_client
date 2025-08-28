@@ -687,7 +687,7 @@ static void FinalizeResize(HWND hWnd, bool forceAnnounce = false)
     g_pendingResize.has.store(true, std::memory_order_release);
 
     // Notify server (single gate) with the *video* resolution ONLY
-    OnResolutionChanged_GatedSend(tw, th, /*force=*/forceAnnounce);
+    OnResolutionChanged_GatedSend(tw, th, /*force=*/true);
 
     InvalidateRect(hWnd, nullptr, FALSE);
 }
@@ -783,6 +783,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             g_pendingResize.w.store(width,  std::memory_order_relaxed);
             g_pendingResize.h.store(height, std::memory_order_relaxed);
             g_pendingResize.has.store(true, std::memory_order_release);
+            g_lastFrameRenderTimeForKick = std::chrono::high_resolution_clock::now(); // render kick
 
             return 0;
         }
@@ -858,7 +859,7 @@ bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
     // Notify the server with the *video* resolution only.
     // The swap-chain resize to the padded client size will be triggered by the WM_SIZE
     // message that SetWindowPos generates, which is handled by the render thread.
-    OnResolutionChanged_GatedSend(tw, th, false);
+    OnResolutionChanged_GatedSend(tw, th, /*force=*/true);
     return true;
 }
 
@@ -1423,6 +1424,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
         return true;
     };
 
+    if (newW == 0 || newH == 0) { DebugLog(L"Resize skipped: zero size."); return; }
     DebugLog(L"RenderThread: resizing swap-chain to " + std::to_wstring(newW) + L"x" + std::to_wstring(newH));
 
     // **Wait BEFORE clearing and releasing any resources**
