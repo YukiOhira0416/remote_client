@@ -349,9 +349,9 @@ static bool     g_expectedInitialized = false;
 // 描画側の「期待フレーム番号」やバッファをクリアして“待ち”を防ぐ
 void ClearReorderState()
 {
-    // Ensure the GPU has finished using any resources that may be released below.
-    // This prevents releasing ID3D12Resource while still referenced by in-flight command lists.
-    WaitForGpu();
+    // NEW: Ensure GPU is idle w.r.t. any in-flight use of decoded-frame resources
+    // This prevents releasing ID3D12Resource while still referenced by the GPU.
+    WaitForGpu(); // ← insert this single line
 
     std::lock_guard<std::mutex> lk(g_reorderMutex);
     for (const auto& pair : g_reorderBuffer) {
