@@ -168,8 +168,8 @@ static bool MapTextureMipArray(
     md.arrayDesc.Width = width;
     md.arrayDesc.Height = height;
     md.arrayDesc.Depth = 0; // This is a 2D texture
+    md.arrayDesc.Flags = 0; // No flags needed
     md.numLevels = levels;
-    md.flags = 0; // No flags needed
 
     CUresult cr = cuExternalMemoryGetMappedMipmappedArray(outMmArray, mem, &md);
     if (cr != CUDA_SUCCESS) {
