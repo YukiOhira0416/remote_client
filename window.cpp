@@ -332,6 +332,16 @@ UINT64 g_fenceValue;
 HANDLE g_fenceEvent;
 UINT64 g_renderFenceValues[kSwapChainBufferCount]; // Fence values for each frame in flight for rendering
 
+// [NEW] Shared fence used for CUDA→D3D12 GPU-GPU sync (do not reflow existing code)
+static Microsoft::WRL::ComPtr<ID3D12Fence> g_copyFence;
+static HANDLE g_copyFenceSharedHandle = nullptr; // passed to CUDA
+static UINT64 g_copyFenceValue = 0;              // monotonically increasing per ready frame
+
+// [NEW] Accessor for CUDA side (do not change signature or layout elsewhere)
+extern "C" HANDLE GetCopyFenceSharedHandleForCuda() {
+    return g_copyFenceSharedHandle;
+}
+
 static std::atomic<bool> g_deviceResetInProgress{false};
 
 // ==== [Deferred resource retire - BEGIN] ====
@@ -1078,6 +1088,19 @@ bool InitD3D() {
         DebugLog(L"InitD3D (D3D12): Failed to create fence. HRESULT: " + HResultToHexWString(hr));
         return false;
     }
+
+// [NEW] Create a *shared* fence for CUDA interop (do not alter formatting around here)
+hr = g_d3d12Device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&g_copyFence));
+if (FAILED(hr)) {
+    DebugLog(L"InitD3D (D3D12): Failed to create shared fence for CUDA interop. HRESULT: " + HResultToHexWString(hr));
+    return false;
+}
+if (g_copyFenceSharedHandle) { CloseHandle(g_copyFenceSharedHandle); g_copyFenceSharedHandle = nullptr; }
+hr = g_d3d12Device->CreateSharedHandle(g_copyFence.Get(), nullptr, GENERIC_ALL, nullptr, &g_copyFenceSharedHandle);
+if (FAILED(hr) || !g_copyFenceSharedHandle) {
+    DebugLog(L"InitD3D (D3D12): CreateSharedHandle(copy fence) failed. HRESULT: " + HResultToHexWString(hr));
+    return false;
+}
     g_fenceValue = 1;
     g_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     if (g_fenceEvent == nullptr) {
@@ -1347,11 +1370,15 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             // Propagate the render-start time to the master cached frame, so that
             // latency stats are correct.
             g_lastDrawnFrame.render_start_ms = frameToDraw.render_start_ms;
-            if (g_lastDrawnFrame.copyDone) {
-                if (cuEventQuery(g_lastDrawnFrame.copyDone) == CUDA_ERROR_NOT_READY) {
-                    nvtx3::scoped_range_in<cuda_domain> r("Wait(copyDone)");
-                    cuEventSynchronize(g_lastDrawnFrame.copyDone);
-                }
+            // [CHANGED] No CPU blocking on CUDA event.
+            // We now wait on the GPU queue using the fence value supplied by CUDA.
+            // Fallback: if fenceValue==0, keep the old non-blocking query (no synchronize).
+            if (g_lastDrawnFrame.fenceValue) {
+                // GPU-side wait ties D3D12 work-after-copy completion on the GPU timeline
+                g_d3d12CommandQueue->Wait(g_copyFence.Get(), g_lastDrawnFrame.fenceValue);
+            } else if (g_lastDrawnFrame.copyDone) {
+                // Fallback/qos: keep non-blocking query for diagnostics; DO NOT synchronize here
+                (void)cuEventQuery(g_lastDrawnFrame.copyDone);
             }
         }
 
@@ -1735,6 +1762,9 @@ void CleanupD3DRenderResources() {
         CloseHandle(g_fenceEvent);
         g_fenceEvent = nullptr;
     }
+// [NEW] Close shared fence handle
+if (g_copyFenceSharedHandle) { CloseHandle(g_copyFenceSharedHandle); g_copyFenceSharedHandle = nullptr; }
+g_copyFence.Reset();
     if (g_fence) g_fence.Reset();
     if (g_commandList) g_commandList.Reset();
     for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
