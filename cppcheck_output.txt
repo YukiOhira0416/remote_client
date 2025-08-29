@@ -1,0 +1,253 @@
+window.cpp:1:0: information: Include file: <nvtx3/nvtx3.hpp> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <nvtx3/nvtx3.hpp>
+^
+window.cpp:2:0: information: Include file: <d3dcompiler.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <d3dcompiler.h> // For shader compilation
+^
+window.cpp:3:0: information: Include file: <DirectXColors.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <DirectXColors.h> // For DirectX::Colors
+^
+window.cpp:4:0: information: Include file: <windows.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <windows.h>
+^
+window.cpp:5:0: information: Include file: <d3d12.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <d3d12.h> // D3D12
+^
+window.cpp:6:0: information: Include file: <d3dx12.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <d3dx12.h> // D3D12 Helper Structures (for CD3DX12_CPU_DESCRIPTOR_HANDLE, etc.)
+^
+window.cpp:7:0: information: Include file: <wrl/client.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <wrl/client.h>
+^
+window.cpp:8:0: information: Include file: <dxgi1_6.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <dxgi1_6.h> // For IDXGIFactory6 and CreateSwapChainForHwnd
+^
+window.cpp:9:0: information: Include file: <cmath> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cmath>
+^
+window.cpp:10:0: information: Include file: <winsock2.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <winsock2.h>
+^
+window.cpp:11:0: information: Include file: <ws2tcpip.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <ws2tcpip.h>
+^
+window.cpp:12:0: information: Include file: <vector> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <vector>
+^
+window.cpp:13:0: information: Include file: <string> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <string>
+^
+window.cpp:14:0: information: Include file: <iostream> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <iostream>
+^
+window.cpp:15:0: information: Include file: <stdexcept> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <stdexcept>
+^
+window.cpp:16:0: information: Include file: <cstring> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cstring>
+^
+DebugLog.h:2:0: information: Include file: <string> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <string>
+^
+ReedSolomon.h:1:0: information: Include file: <vector> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <vector>
+^
+ReedSolomon.h:2:0: information: Include file: <cstdint> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cstdint>
+^
+ReedSolomon.h:3:0: information: Include file: <map> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <map>     // ※ std::map を使用するためにインクルード
+^
+window.cpp:19:0: information: Include file: <algorithm> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <algorithm> // For std::min, std::abs
+^
+window.cpp:20:0: information: Include file: <vector> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <vector> // For std::vector
+^
+window.cpp:21:0: information: Include file: <deque> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <deque>  // For std::deque (used by Globals.h)
+^
+window.cpp:22:0: information: Include file: <mutex> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <mutex>  // For std::mutex (used by Globals.h)
+^
+window.cpp:23:0: information: Include file: <condition_variable> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <condition_variable> // For std::condition_variable (used by Globals.h)
+^
+window.cpp:24:0: information: Include file: <atomic> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <atomic> // For std::atomic (used by Globals.h)
+^
+window.cpp:25:0: information: Include file: <sstream> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <sstream>      // Required for std::wstringstream (for PointerToWString)
+^
+window.cpp:26:0: information: Include file: <iomanip> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <iomanip>      // Required for std::hex (for PointerToWString)
+^
+window.cpp:27:0: information: Include file: <chrono> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <chrono> // For time measurement
+^
+window.cpp:28:0: information: Include file: <map> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <map>
+^
+window.cpp:29:0: information: Include file: <queue> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <queue>
+^
+Globals.h:3:0: information: Include file: <windows.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <windows.h>
+^
+Globals.h:4:0: information: Include file: <atomic> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <atomic>
+^
+Globals.h:5:0: information: Include file: <string> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <string>
+^
+Globals.h:6:0: information: Include file: <thread> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <thread>
+^
+Globals.h:7:0: information: Include file: <vector> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <vector>
+^
+Globals.h:8:0: information: Include file: <utility> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <utility>
+^
+Globals.h:9:0: information: Include file: <cstdint> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cstdint>
+^
+Globals.h:10:0: information: Include file: <d3d12.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <d3d12.h>
+^
+Globals.h:11:0: information: Include file: <wrl/client.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <wrl/client.h>
+^
+Globals.h:12:0: information: Include file: <deque> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <deque>
+^
+Globals.h:13:0: information: Include file: <mutex> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <mutex>
+^
+Globals.h:14:0: information: Include file: <sstream> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <sstream>
+^
+Globals.h:15:0: information: Include file: <iostream> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <iostream>
+^
+Globals.h:16:0: information: Include file: <iomanip> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <iomanip>
+^
+Globals.h:17:0: information: Include file: <condition_variable> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <condition_variable>
+^
+Globals.h:18:0: information: Include file: <unordered_map> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <unordered_map>
+^
+Globals.h:19:0: information: Include file: "concurrentqueue/concurrentqueue.h" not found. [missingInclude]
+#include "concurrentqueue/concurrentqueue.h"
+^
+Globals.h:20:0: information: Include file: <nvtx3/nvtx3.hpp> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <nvtx3/nvtx3.hpp>
+^
+Globals.h:23:0: information: Include file: <cuda.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cuda.h>
+^
+AppShutdown.h:2:0: information: Include file: <thread> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <thread>
+^
+AppShutdown.h:3:0: information: Include file: <vector> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <vector>
+^
+AppShutdown.h:4:0: information: Include file: <atomic> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <atomic>
+^
+main.h:2:0: information: Include file: <string> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <string>
+^
+window.cpp:39:0: information: Include file: <cuda.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cuda.h>
+^
+window.cpp:40:0: information: Include file: <cuda_runtime_api.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cuda_runtime_api.h>
+^
+window.cpp:46:0: information: Include file: <ShellScalingApi.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <ShellScalingApi.h> // AdjustWindowRectExForDpi 等
+^
+window.cpp:162:0: information: Include file: <windows.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <windows.h>
+^
+window.cpp:163:0: information: Include file: <dwmapi.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <dwmapi.h>
+^
+window.cpp:56:34: style: C-style pointer casting detected. C++ offers four different kinds of casts as replacements: static_cast, const_cast, dynamic_cast and reinterpret_cast. A C-style cast could evaluate to any of those automatically, thus it is considered safer if the programmer explicitly states which kind of cast is expected. [cstyleCast]
+        auto pGetDpiForMonitor = (GetDpiForMonitorFunc)GetProcAddress(hShcore, "GetDpiForMonitor");
+                                 ^
+window.cpp:70:33: style: C-style pointer casting detected. C++ offers four different kinds of casts as replacements: static_cast, const_cast, dynamic_cast and reinterpret_cast. A C-style cast could evaluate to any of those automatically, thus it is considered safer if the programmer explicitly states which kind of cast is expected. [cstyleCast]
+        auto pGetDpiForWindow = (GetDpiForWindowFunc)GetProcAddress(hUser32, "GetDpiForWindow");
+                                ^
+window.cpp:119:21: style: C-style pointer casting detected. C++ offers four different kinds of casts as replacements: static_cast, const_cast, dynamic_cast and reinterpret_cast. A C-style cast could evaluate to any of those automatically, thus it is considered safer if the programmer explicitly states which kind of cast is expected. [cstyleCast]
+        auto pAdj = (AdjustForDpi)GetProcAddress(hUser32, "AdjustWindowRectExForDpi");
+                    ^
+window.cpp:1660:24: style: inconclusive: Finding the same code in an 'if' and related 'else' branch is suspicious and might indicate a cut and paste or logic error. Please examine this code carefully to determine if it is correct. [duplicateBranch]
+                } else if (r == WAIT_TIMEOUT) {
+                       ^
+window.cpp:1664:17: note: Found duplicate branches for 'if' and 'else'.
+                else {
+                ^
+window.cpp:1660:24: note: Found duplicate branches for 'if' and 'else'.
+                } else if (r == WAIT_TIMEOUT) {
+                       ^
+window.cpp:1470:32: style: Variable 's_lastY' can be declared as pointer to const [constVariablePointer]
+        static ID3D12Resource* s_lastY = nullptr;
+                               ^
+window.cpp:1471:32: style: Variable 's_lastUV' can be declared as pointer to const [constVariablePointer]
+        static ID3D12Resource* s_lastUV = nullptr;
+                               ^
+window.cpp:392:52: style: struct member 'd3d12_domain::name' is never used. [unusedStructMember]
+struct d3d12_domain { static constexpr char const* name = "D3D12"; };
+                                                   ^
+window.cpp:393:51: style: struct member 'cuda_domain::name' is never used. [unusedStructMember]
+struct cuda_domain { static constexpr char const* name = "CUDA"; };
+                                                  ^
+window.cpp:746:29: style: struct member 'VertexPosTex::x' is never used. [unusedStructMember]
+struct VertexPosTex { float x, y, z; float u, v; };
+                            ^
+window.cpp:746:32: style: struct member 'VertexPosTex::y' is never used. [unusedStructMember]
+struct VertexPosTex { float x, y, z; float u, v; };
+                               ^
+window.cpp:746:35: style: struct member 'VertexPosTex::z' is never used. [unusedStructMember]
+struct VertexPosTex { float x, y, z; float u, v; };
+                                  ^
+window.cpp:746:44: style: struct member 'VertexPosTex::u' is never used. [unusedStructMember]
+struct VertexPosTex { float x, y, z; float u, v; };
+                                           ^
+window.cpp:746:47: style: struct member 'VertexPosTex::v' is never used. [unusedStructMember]
+struct VertexPosTex { float x, y, z; float u, v; };
+                                              ^
+window.cpp:1318:54: style: struct member 'reorder_domain::name' is never used. [unusedStructMember]
+struct reorder_domain { static constexpr char const* name = "REORDER"; };
+                                                     ^
+window.cpp:1433:42: style: Variable 'newFrameFromReorder.copyDone' is assigned a value that is never used. [unreadVariable]
+            newFrameFromReorder.copyDone = nullptr; // Ownership transferred to cache
+                                         ^
+window.cpp:1438:34: style: Variable 'frameToDraw.copyDone' is assigned a value that is never used. [unreadVariable]
+            frameToDraw.copyDone = nullptr;
+                                 ^
+window.cpp:1701:30: style: Variable 'shouldPresent' is assigned a value that is never used. [unreadVariable]
+    const bool shouldPresent = frameWasRendered || forcePresent;
+                             ^
+window.cpp:1752:45: style: Variable 'renderedFrameData.nvtx_range_id' is assigned a value that is never used. [unreadVariable]
+            renderedFrameData.nvtx_range_id = 0;
+                                            ^
+Globals.h:88:0: style: The function 'PointerToWString' is never used. [unusedFunction]
+std::wstring PointerToWString(T* ptr) {
+^
+window.cpp:926:0: style: The function 'InitWindow' is never used. [unusedFunction]
+bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
+^
+window.cpp:1629:0: style: The function 'RenderFrame' is never used. [unusedFunction]
+void RenderFrame() {
+^
+window.cpp:1845:0: style: The function 'CleanupD3DRenderResources' is never used. [unusedFunction]
+void CleanupD3DRenderResources() {
+^
+window.cpp:1879:0: style: The function 'SendFinalResolution' is never used. [unusedFunction]
+void SendFinalResolution(int width, int height) {
+^
+nofile:0:0: information: Active checkers: 174/592 (use --checkers-report=<filename> to see details) [checkersReport]

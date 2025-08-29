@@ -1582,7 +1582,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 
     HRESULT hr = g_swapChain->ResizeBuffers(
         kSwapChainBufferCount, newW, newH, DXGI_FORMAT_R8G8B8A8_UNORM,
-        g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
+        g_TearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
     if (FAILED(hr)) {
         if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
             DebugLog(L"RenderThread: Device removed/reset on ResizeBuffers. HR: " + HResultToHexWString(hr));
@@ -1592,7 +1592,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
         DebugLog(L"RenderThread: ResizeBuffers failed. HR: " + HResultToHexWString(hr));
         // As a fallback, try automatic size:
         hr = g_swapChain->ResizeBuffers(kSwapChainBufferCount, 0, 0, DXGI_FORMAT_R8G8B8A8_UNORM,
-                                        g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
+                                        g_TearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
         if (FAILED(hr)) {
             DebugLog(L"RenderThread: ResizeBuffers(0,0) also failed. HR: " + HResultToHexWString(hr));
             return;
