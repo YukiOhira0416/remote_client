@@ -1,3 +1,4 @@
+#include <cuda_d3d12_interop.h>
 #include "nvdec.h"
 #include "Globals.h"
 #include "window.h" // For NextCopyFenceValue and g_cudaCopyFenceSem
