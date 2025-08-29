@@ -146,10 +146,31 @@ static bool MapTextureMipArray(
     size_t width, size_t height, unsigned levels = 1)
 {
     CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC md{};
-    md.formatDesc = chDesc;
-    md.extent = { (unsigned int)width, (unsigned int)height, 0 };
+    memset(&md, 0, sizeof(md));
+
+    // Manually translate cudaChannelFormatDesc to CUDA_ARRAY3D_DESCRIPTOR
+    if (chDesc.f == cudaChannelFormatKindUnsigned) {
+        if (chDesc.x == 8 && chDesc.y == 0) { // R8 (Y plane)
+            md.arrayDesc.Format = CU_AD_FORMAT_UNSIGNED_INT8;
+            md.arrayDesc.NumChannels = 1;
+        } else if (chDesc.x == 8 && chDesc.y == 8) { // R8G8 (UV plane)
+            md.arrayDesc.Format = CU_AD_FORMAT_UNSIGNED_INT8;
+            md.arrayDesc.NumChannels = 2;
+        } else {
+            DebugLog(L"MapTextureMipArray: Unsupported channel format description.");
+            return false;
+        }
+    } else {
+        DebugLog(L"MapTextureMipArray: Unsupported channel format kind.");
+        return false;
+    }
+
+    md.arrayDesc.Width = width;
+    md.arrayDesc.Height = height;
+    md.arrayDesc.Depth = 0; // This is a 2D texture
     md.numLevels = levels;
-    md.flags = 0; // no special flags
+    md.flags = 0; // No flags needed
+
     CUresult cr = cuExternalMemoryGetMappedMipmappedArray(outMmArray, mem, &md);
     if (cr != CUDA_SUCCESS) {
         const char* es = nullptr;
