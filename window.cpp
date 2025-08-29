@@ -237,6 +237,11 @@ static void TryExcludeThisWindowFromCapture(HWND hwnd)
 
 bool g_VsyncEnabled = true; // VSync toggle
 
+// Low-latency policy toggle
+static std::atomic<bool> g_LowLatency{ true }; // default ON for now (latency focus)
+static HANDLE g_hFrameLatencyWaitableObject = nullptr; // new
+
+
 // Independent Flip / Present Optimization Helpers
 // ==== Present Mode Toggle ====
 static std::atomic<bool> g_RequestBorderlessIF{ false }; // default: windowed
@@ -815,8 +820,9 @@ static void RecreateSwapChain(DXGI_SCALING newScaling)
 
     WaitForGpu(); // Ensure GPU is idle before releasing resources
 
+    const UINT bufferCount = g_LowLatency.load(std::memory_order_acquire) ? 2u : kSwapChainBufferCount;
     // Release resources that depend on the swap chain
-    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+    for (UINT i = 0; i < bufferCount; ++i) {
         g_renderTargets[i].Reset();
     }
 
@@ -862,7 +868,7 @@ static void RecreateSwapChain(DXGI_SCALING newScaling)
 
     // Re-create the render target views
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+    for (UINT i = 0; i < bufferCount; ++i) {
         hr = g_swapChain->GetBuffer(i, IID_PPV_ARGS(&g_renderTargets[i]));
         if (FAILED(hr)) {
             DebugLog(L"RecreateSwapChain: GetBuffer failed. Re-initializing.");
@@ -908,12 +914,20 @@ static void ApplyPresentMode(HWND hwnd)
         if (g_swapChain) {
             DXGI_SWAP_CHAIN_DESC1 desc{};
             g_swapChain->GetDesc1(&desc);
+            const LONG newW = mi.rcMonitor.right - mi.rcMonitor.left;
+            const LONG newH = mi.rcMonitor.bottom - mi.rcMonitor.top;
+
+            // Avoid churn if we're already in the correct state.
+            if (desc.Scaling == DXGI_SCALING_STRETCH && desc.Width == newW && desc.Height == newH) {
+                return; // No-op
+            }
+
             if (desc.Scaling != DXGI_SCALING_STRETCH) {
                 DebugLog(L"ApplyPresentMode: Switching to SCALING_STRETCH for borderless.");
                 RecreateSwapChain(DXGI_SCALING_STRETCH);
             }
             // Ensure size is correct for the monitor
-            ResizeSwapChainOnRenderThread(mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top);
+            ResizeSwapChainOnRenderThread(newW, newH);
         }
 
     } else {
@@ -938,14 +952,22 @@ static void ApplyPresentMode(HWND hwnd)
         if (g_swapChain) {
             DXGI_SWAP_CHAIN_DESC1 desc{};
             g_swapChain->GetDesc1(&desc);
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            const LONG newW = rc.right - rc.left;
+            const LONG newH = rc.bottom - rc.top;
+
+            // Avoid churn if we're already in the correct state.
+            if (desc.Scaling == DXGI_SCALING_NONE && desc.Width == newW && desc.Height == newH) {
+                return; // No-op
+            }
+
             if (desc.Scaling != DXGI_SCALING_NONE) {
                 DebugLog(L"ApplyPresentMode: Switching to SCALING_NONE for windowed mode.");
                 RecreateSwapChain(DXGI_SCALING_NONE);
             }
             // Resize to current client rect
-            RECT rc;
-            GetClientRect(hwnd, &rc);
-            ResizeSwapChainOnRenderThread(rc.right - rc.left, rc.bottom - rc.top);
+            ResizeSwapChainOnRenderThread(newW, newH);
         }
     }
 }
@@ -1138,6 +1160,11 @@ bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
 
 bool InitD3D() {
     nvtxNameOsThreadA(GetCurrentThreadId(), "RenderThread");
+
+    // At init, if low-latency, start with vsync off; do not remove the toggle UI/logic.
+    if (g_LowLatency.load(std::memory_order_acquire)) {
+        g_VsyncEnabled = false; // existing variable; keep its usage in Present1
+    }
         // Release existing D3D12 resources if re-initializing
     if (g_fence) g_fence.Reset();
     if (g_commandList) g_commandList.Reset();
@@ -1221,9 +1248,12 @@ bool InitD3D() {
     }
     DebugLog(L"InitD3D (D3D12): Command Queue created.");
 
+    // Use 2 buffers in low-latency mode, otherwise keep 3.
+    const UINT bufferCount = g_LowLatency.load(std::memory_order_acquire) ? 2u : kSwapChainBufferCount;
+
     // 3. Create Swap Chain
     DXGI_SWAP_CHAIN_DESC1 scd1 = {};
-    scd1.BufferCount = kSwapChainBufferCount; // Use 3 for smoother presentation
+    scd1.BufferCount = bufferCount; // Use 2 or 3 for smoother presentation
     RECT rcClient;
     GetClientRect(g_hWnd, &rcClient);
     scd1.Width = (rcClient.right - rcClient.left > 0) ? (rcClient.right - rcClient.left) : 1;
@@ -1239,6 +1269,10 @@ bool InitD3D() {
     scd1.Flags = 0;
     if (g_TearingSupported) {
         scd1.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+    }
+    // NEW: gate waitable-object support for low-latency mode
+    if (g_LowLatency.load(std::memory_order_acquire)) {
+        scd1.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     }
 
     Microsoft::WRL::ComPtr<IDXGISwapChain1> tempSwapChain;
@@ -1257,13 +1291,12 @@ bool InitD3D() {
         return false;
     }
 
-    // Set maximum frame latency to 1 for the waitable object
-    {
-        Microsoft::WRL::ComPtr<IDXGISwapChain2> sc2;
-        HRESULT hr_sc2 = g_swapChain.As(&sc2);
-        if (SUCCEEDED(hr_sc2) && sc2) {
-            sc2->SetMaximumFrameLatency(1);
-            g_frameLatencyWaitableObject = sc2->GetFrameLatencyWaitableObject();
+    // After swapchain created:
+    Microsoft::WRL::ComPtr<IDXGISwapChain2> sc2;
+    if (SUCCEEDED(g_swapChain.As(&sc2))) {
+        if (g_LowLatency.load(std::memory_order_relaxed)) {
+            sc2->SetMaximumFrameLatency(1); // one frame in flight
+            g_hFrameLatencyWaitableObject = sc2->GetFrameLatencyWaitableObject(); // store; do not close
         }
     }
 
@@ -1272,7 +1305,7 @@ bool InitD3D() {
 
     // 4. Create RTV Descriptor Heap
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = kSwapChainBufferCount; // For triple buffering
+    rtvHeapDesc.NumDescriptors = bufferCount;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
     hr = g_d3d12Device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&g_rtvHeap));
@@ -1285,7 +1318,7 @@ bool InitD3D() {
 
     // 5. Create Render Target Views
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+    for (UINT i = 0; i < bufferCount; ++i) {
         hr = g_swapChain->GetBuffer(i, IID_PPV_ARGS(&g_renderTargets[i]));
         if (FAILED(hr)) {
             DebugLog(L"InitD3D (D3D12): Failed to get swap chain buffer " + std::to_wstring(i) + L". HRESULT: " + HResultToHexWString(hr));
@@ -1297,7 +1330,7 @@ bool InitD3D() {
     DebugLog(L"InitD3D (D3D12): Render Target Views created.");
 
     // 6. Create Command Allocator
-    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+    for (UINT i = 0; i < bufferCount; ++i) {
         hr = g_d3d12Device->CreateCommandAllocator(
             D3D12_COMMAND_LIST_TYPE_DIRECT,
             IID_PPV_ARGS(&g_commandAllocator[i]));
@@ -1741,10 +1774,11 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     }
     ClearReorderState(); // This clears the reorder buffer and resets sequence.
 
-    for (UINT i = 0; i < kSwapChainBufferCount; ++i) g_renderTargets[i].Reset();
+    const UINT bufferCount = g_LowLatency.load(std::memory_order_acquire) ? 2u : kSwapChainBufferCount;
+    for (UINT i = 0; i < bufferCount; ++i) g_renderTargets[i].Reset();
 
     HRESULT hr = g_swapChain->ResizeBuffers(
-        kSwapChainBufferCount, newW, newH, DXGI_FORMAT_R8G8B8A8_UNORM,
+        bufferCount, newW, newH, DXGI_FORMAT_R8G8B8A8_UNORM,
         g_TearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
     if (FAILED(hr)) {
         if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
@@ -1754,7 +1788,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
         }
         DebugLog(L"RenderThread: ResizeBuffers failed. HR: " + HResultToHexWString(hr));
         // As a fallback, try automatic size:
-        hr = g_swapChain->ResizeBuffers(kSwapChainBufferCount, 0, 0, DXGI_FORMAT_R8G8B8A8_UNORM,
+        hr = g_swapChain->ResizeBuffers(bufferCount, 0, 0, DXGI_FORMAT_R8G8B8A8_UNORM,
                                         g_TearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
         if (FAILED(hr)) {
             DebugLog(L"RenderThread: ResizeBuffers(0,0) also failed. HR: " + HResultToHexWString(hr));
@@ -1765,7 +1799,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
 
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+    for (UINT i = 0; i < bufferCount; ++i) {
         hr = g_swapChain->GetBuffer(i, IID_PPV_ARGS(&g_renderTargets[i]));
         if (FAILED(hr)) {
             DebugLog(L"RenderThread: GetBuffer(" + std::to_wstring(i) + L") failed. HR: " + HResultToHexWString(hr));
@@ -1779,7 +1813,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     // After ResizeBuffers, any old fence targets are invalid for the new back buffers.
     // This reset prevents waiting on never-signaled values.
     const UINT64 completed = g_fence->GetCompletedValue();
-    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+    for (UINT i = 0; i < bufferCount; ++i) {
         g_renderFenceValues[i] = completed + 1;
     }
     // Refresh the current index, as it might have changed.
@@ -1790,46 +1824,10 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 }
 
 void RenderFrame() {
-    // NVTX range for frame latency wait
-    {
-        nvtx3::scoped_range_in<d3d12_domain> frame_latency_wait{"FrameLatency(Wait)"};
-        if (g_frameLatencyWaitableObject) {
-            // Wait on frame-latency object but remain responsive to window messages.
-            HANDLE handles[1] = { g_frameLatencyWaitableObject };
-            for (;;) {
-                DWORD r = MsgWaitForMultipleObjectsEx(
-                    1,
-                    handles,
-                    100, // タイムアウトを100msに設定してフリーズを回避
-                    QS_ALLINPUT,
-                    MWMO_INPUTAVAILABLE | MWMO_ALERTABLE
-                );
-                if (r == WAIT_OBJECT_0) {
-                    // frame-latency object signaled -> proceed to next frame
-                    break;
-                } else if (r == WAIT_OBJECT_0 + 1) {
-                    // pump messages; preserve layout and existing logging if present
-                    MSG msg;
-                    while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-                        if (msg.message == WM_QUIT) {
-                            PostQuitMessage((int)msg.wParam);
-                            return; // メインループに終了を任せるため、即時復帰
-                        }
-                        TranslateMessage(&msg);
-                        DispatchMessage(&msg);
-                    }
-                    // loop and wait again
-                    continue;
-                } else if (r == WAIT_TIMEOUT) {
-                    // タイムアウトは想定内の動作。ループを抜けて処理を続ける
-                    break;
-                }
-                else {
-                    // Unexpected; if you already have logging, reuse it.
-                    break;
-                }
-            }
-        }
+    // NEW: very short wait to enforce 1 frame in flight (no heavy waits)
+    if (g_hFrameLatencyWaitableObject && g_LowLatency.load(std::memory_order_acquire)) {
+        nvtx3::scoped_range_in<d3d12_domain> r("FrameLatencyWait");
+        WaitForSingleObject(g_hFrameLatencyWaitableObject, 1);
     }
     nvtx3::scoped_range_in<d3d12_domain> frame_r("Frame");
     nvtx3::scoped_range_in<d3d12_domain> r("D3D12Present");
