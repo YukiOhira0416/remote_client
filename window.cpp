@@ -316,10 +316,23 @@ static inline void SetViewportScissorToBackbuffer(
 // D3D12 Global Variables
 struct d3d12_domain { static constexpr char const* name = "D3D12"; };
 struct cuda_domain { static constexpr char const* name = "CUDA"; };
-static constexpr UINT kSwapChainBufferCount = 3; // was 2
+static constexpr UINT kSwapChainBufferCount = 2;
 Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;
 Microsoft::WRL::ComPtr<ID3D12CommandQueue> g_d3d12CommandQueue;
 Microsoft::WRL::ComPtr<IDXGISwapChain3> g_swapChain; // Use IDXGISwapChain3 or 4
+
+// For D3D12/CUDA Interop
+Microsoft::WRL::ComPtr<ID3D12Fence> g_copyFence;
+std::atomic<UINT64> g_copyFenceValue = 0;
+HANDLE g_copyFenceShared = nullptr; // for CreateSharedHandle/CloseHandle
+CUexternalSemaphore g_cudaCopyFenceSem = nullptr; // CUDA (driver API)
+
+UINT64 NextCopyFenceValue() noexcept {
+    // Atomically increment and return the new value for the fence.
+    // fetch_add provides the necessary memory ordering guarantees.
+    return g_copyFenceValue.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
 Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_rtvHeap;
 Microsoft::WRL::ComPtr<ID3D12Resource> g_renderTargets[kSwapChainBufferCount]; // Triple buffering
 // One allocator per swap-chain buffer (triple buffering respected)
@@ -628,13 +641,11 @@ void ClearReorderState()
 }
 
 // 調整パラメータ
-static constexpr size_t REORDER_MAX_BUFFER = 4; // tighten to reduce in-buffer latency
-static constexpr int    REORDER_WAIT_MS    = 2; // base wait smaller
+// --- Reorder config (keep comment block) ---
+static const int REORDER_MAX_BUFFER = 2;
 
-static inline int GetReorderWaitMsForDepth(size_t depth) {
-    if (depth <= 1) return 6;
-    if (depth == 2) return 4;
-    return 2;
+static inline int GetReorderWaitMsForDepth(size_t depth) noexcept {
+    return (depth <= 1) ? 1 : 0;
 }
 
 static std::chrono::steady_clock::time_point g_lastReorderDecision = std::chrono::steady_clock::now();
@@ -969,6 +980,34 @@ bool InitD3D() {
         return false;
     }
     DebugLog(L"InitD3D (D3D12): D3D12 Device created.");
+
+    // Create fence for CUDA/D3D12 interop
+    hr = g_d3d12Device->CreateFence(0, D3D12_FENCE_FLAG_SHARED, IID_PPV_ARGS(&g_copyFence));
+    if (FAILED(hr)) {
+        DebugLog(L"InitD3D: Failed to create shared fence. HR=" + HResultToHexWString(hr));
+        return false;
+    }
+    hr = g_d3d12Device->CreateSharedHandle(g_copyFence.Get(), nullptr, GENERIC_ALL, nullptr, &g_copyFenceShared);
+    if (FAILED(hr)) {
+        DebugLog(L"InitD3D: Failed to create shared handle for fence. HR=" + HResultToHexWString(hr));
+        return false;
+    }
+
+    CUexternalSemaphoreHandleDesc sd{};
+    sd.type = CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE;
+    sd.handle.win32.handle = g_copyFenceShared;
+    sd.flags = 0;
+
+    if (cuImportExternalSemaphore(&g_cudaCopyFenceSem, &sd) != CUDA_SUCCESS) {
+        DebugLog(L"InitD3D: cuImportExternalSemaphore failed.");
+        CloseHandle(g_copyFenceShared);
+        g_copyFenceShared = nullptr;
+        return false;
+    }
+
+    CloseHandle(g_copyFenceShared);
+    g_copyFenceShared = nullptr;
+    DebugLog(L"InitD3D: D3D12/CUDA interop fence and semaphore created.");
 
     // 2. Create Command Queue
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
@@ -1343,15 +1382,17 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         if (isNewFrame) {
             frameToDraw.render_start_ms = SteadyNowMs();
             // We must wait on the event from the master copy in the cache.
-            std::lock_guard<std::mutex> rlock(g_reorderMutex);
-            // Propagate the render-start time to the master cached frame, so that
-            // latency stats are correct.
-            g_lastDrawnFrame.render_start_ms = frameToDraw.render_start_ms;
-            if (g_lastDrawnFrame.copyDone) {
-                if (cuEventQuery(g_lastDrawnFrame.copyDone) == CUDA_ERROR_NOT_READY) {
-                    nvtx3::scoped_range_in<cuda_domain> r("Wait(copyDone)");
-                    cuEventSynchronize(g_lastDrawnFrame.copyDone);
-                }
+            { // new scope to limit lock lifetime
+                std::lock_guard<std::mutex> rlock(g_reorderMutex);
+                // Propagate the render-start time to the master cached frame, so that
+                // latency stats are correct.
+                g_lastDrawnFrame.render_start_ms = frameToDraw.render_start_ms;
+            }
+
+            // Ensure decode->copy finished on GPU timeline before we use the textures
+            if (frameToDraw.copyFenceValue > 0) {
+                nvtx3::scoped_range_in<d3d12_domain> r("Wait(copyFence)");
+                g_d3d12CommandQueue->Wait(g_copyFence.Get(), frameToDraw.copyFenceValue);
             }
         }
 
@@ -1522,47 +1563,8 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 }
 
 void RenderFrame() {
-    // NVTX range for frame latency wait
-    {
-        nvtx3::scoped_range_in<d3d12_domain> frame_latency_wait{"FrameLatency(Wait)"};
-        if (g_frameLatencyWaitableObject) {
-            // Wait on frame-latency object but remain responsive to window messages.
-            HANDLE handles[1] = { g_frameLatencyWaitableObject };
-            for (;;) {
-                DWORD r = MsgWaitForMultipleObjectsEx(
-                    1,
-                    handles,
-                    100, // タイムアウトを100msに設定してフリーズを回避
-                    QS_ALLINPUT,
-                    MWMO_INPUTAVAILABLE | MWMO_ALERTABLE
-                );
-                if (r == WAIT_OBJECT_0) {
-                    // frame-latency object signaled -> proceed to next frame
-                    break;
-                } else if (r == WAIT_OBJECT_0 + 1) {
-                    // pump messages; preserve layout and existing logging if present
-                    MSG msg;
-                    while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-                        if (msg.message == WM_QUIT) {
-                            PostQuitMessage((int)msg.wParam);
-                            return; // メインループに終了を任せるため、即時復帰
-                        }
-                        TranslateMessage(&msg);
-                        DispatchMessage(&msg);
-                    }
-                    // loop and wait again
-                    continue;
-                } else if (r == WAIT_TIMEOUT) {
-                    // タイムアウトは想定内の動作。ループを抜けて処理を続ける
-                    break;
-                }
-                else {
-                    // Unexpected; if you already have logging, reuse it.
-                    break;
-                }
-            }
-        }
-    }
+    // The pre-wait on the frame latency object has been removed to rely solely on
+    // Present() for back-pressure, reducing CPU-side stalls.
     nvtx3::scoped_range_in<d3d12_domain> frame_r("Frame");
     nvtx3::scoped_range_in<d3d12_domain> r("D3D12Present");
     // Use existing fence and queue types; keep comments and layout intact.
@@ -1729,6 +1731,13 @@ void WaitForGpu() {
 
 
 void CleanupD3DRenderResources() {
+    // Cleanup interop resources first
+    if (g_cudaCopyFenceSem) {
+        cuDestroyExternalSemaphore(g_cudaCopyFenceSem);
+        g_cudaCopyFenceSem = nullptr;
+    }
+    g_copyFence.Reset();
+
     WaitForGpu(); // Ensure GPU is idle before releasing resources
 
     if (g_fenceEvent) {

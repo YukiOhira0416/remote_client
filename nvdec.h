@@ -30,7 +30,7 @@ struct FrameTimings {
 
 class FrameDecoder {
 public:
-    static const int NUM_DECODE_SURFACES = 20;
+    static const int NUM_DECODE_SURFACES = 3; // Reduced from 20 for lower latency
     
     FrameDecoder(CUcontext cuContext, ID3D12Device* pD3D12Device);
     ~FrameDecoder();

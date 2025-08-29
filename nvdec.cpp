@@ -1,5 +1,6 @@
 #include "nvdec.h"
 #include "Globals.h"
+#include "window.h" // For NextCopyFenceValue and g_cudaCopyFenceSem
 #include <nvtx3/nvtx3.hpp>
 #include <stdexcept>
 
@@ -418,7 +419,7 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
     // We will perform a crop manually during the cuMemcpy2D.
     m_videoDecoderCreateInfo.ulTargetWidth = pVideoFormat->coded_width;
     m_videoDecoderCreateInfo.ulTargetHeight = pVideoFormat->coded_height;
-    m_videoDecoderCreateInfo.ulNumOutputSurfaces = 12; // more headroom during resize/IDR
+    m_videoDecoderCreateInfo.ulNumOutputSurfaces = 3; // Reduced from 12 for lower latency
     m_videoDecoderCreateInfo.OutputFormat = cudaVideoSurfaceFormat_NV12;
 
     CUDA_CHECK(cuvidCreateDecoder(&m_hDecoder, &m_videoDecoderCreateInfo));
@@ -704,12 +705,20 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         CUDA_CHECK_CALLBACK(cuEventRecord(frameCopyDone, s));
     }
 
+    // Also signal the D3D12 fence via external semaphore for GPU-side sync
+    const UINT64 fv = NextCopyFenceValue();
+    CUexternalSemaphoreSignalParams sp{};
+    sp.params.fence.value = fv;
+    sp.flags = 0;
+    CUDA_CHECK_CALLBACK(cuSignalExternalSemaphoresAsync(&g_cudaCopyFenceSem, &sp, 1, s));
+
     // If we get here, all CUDA operations were successful.
     // The destructors for mappedFrame and ctxLocker will automatically clean up.
 
     ReadyGpuFrame readyFrame;
     // Store the event in the outgoing frame struct; keep all existing fields/logging intact.
     readyFrame.copyDone = frameCopyDone; // Ownership transferred to renderer
+    readyFrame.copyFenceValue = fv;      // Store fence value for the renderer
 
     readyFrame.hw_decoded_texture_Y  = self->m_frameResources[pDispInfo->picture_index].pTextureY;
     readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
