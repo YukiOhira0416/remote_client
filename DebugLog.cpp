@@ -37,7 +37,7 @@ bool                  g_alsoODS  = true;
 moodycamel::ConcurrentQueue<LogMsg> g_queue;
 
 std::wofstream        g_file;
-std::thread           g_worker;
+std::thread*          g_worker = nullptr;
 std::mutex            g_wakeupMtx;
 std::condition_variable g_wakeupCv;
 
@@ -139,7 +139,7 @@ bool DebugLogAsync::Init(const wchar_t* logFileName, size_t queueCapacity, bool 
 
     g_running.store(true, std::memory_order_release);
     try {
-        g_worker = std::thread(&WorkerLoop);
+        g_worker = new std::thread(&WorkerLoop);
     } catch (...) {
         g_running.store(false, std::memory_order_release);
         if (g_file.is_open()) g_file.close();
@@ -155,8 +155,14 @@ void DebugLogAsync::Shutdown() noexcept {
     // 起床させる
     g_wakeupCv.notify_all();
 
-    if (wasRunning && g_worker.joinable()) {
-        try { g_worker.join(); } catch (...) {}
+    if (wasRunning && g_worker && g_worker->joinable()) {
+        try {
+            g_worker->join();
+        } catch (...) {
+            // join が例外を投げても、少なくともメモリリークは防ぐ
+        }
+        delete g_worker;
+        g_worker = nullptr;
     }
 
     if (g_file.is_open()) {
