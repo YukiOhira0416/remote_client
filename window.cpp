@@ -324,7 +324,7 @@ Microsoft::WRL::ComPtr<IDXGISwapChain3> g_swapChain; // Use IDXGISwapChain3 or 4
 // For D3D12/CUDA Interop
 Microsoft::WRL::ComPtr<ID3D12Fence> g_copyFence;
 std::atomic<UINT64> g_copyFenceValue = 0;
-cudaExternalSemaphore_t g_cudaCopyFenceSem = nullptr; // CUDA (driver API)
+CUexternalSemaphore g_cudaCopyFenceSem = nullptr; // CUDA (driver API)
 
 UINT64 NextCopyFenceValue() noexcept {
     // Atomically increment and return the new value for the fence.
@@ -992,15 +992,16 @@ bool InitD3D() {
         HRESULT hr_sh = g_d3d12Device->CreateSharedHandle(
             g_copyFence.Get(), nullptr, GENERIC_ALL, nullptr, &hFence);
         if (SUCCEEDED(hr_sh) && hFence) {
-            cudaExternalSemaphoreHandleDesc sd{};
-            sd.type = cudaExternalSemaphoreHandleTypeD3D12Fence;
+            CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC sd{};
+            sd.type = CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE;
             sd.handle.win32.handle = hFence;
             sd.flags = 0;
-            cudaError_t ce = cudaImportExternalSemaphore(&g_cudaCopyFenceSem, &sd);
-            if (ce != cudaSuccess) {
-                const char* es = cudaGetErrorString(ce);
+            CUresult cr = cuImportExternalSemaphore(&g_cudaCopyFenceSem, &sd);
+            if (cr != CUDA_SUCCESS) {
+                const char* es = nullptr;
+                cuGetErrorString(cr, &es);
                 std::string err_str = es ? es : "unknown error";
-                DebugLog(L"cudaImportExternalSemaphore failed: " + std::wstring(err_str.begin(), err_str.end()));
+                DebugLog(L"cuImportExternalSemaphore failed: " + std::wstring(err_str.begin(), err_str.end()));
                 CloseHandle(hFence);
                 return false;
             }
@@ -1736,7 +1737,7 @@ void WaitForGpu() {
 void CleanupD3DRenderResources() {
     // Cleanup interop resources first
     if (g_cudaCopyFenceSem) {
-        cudaDestroyExternalSemaphore(g_cudaCopyFenceSem);
+        cuDestroyExternalSemaphore(g_cudaCopyFenceSem);
         g_cudaCopyFenceSem = nullptr;
     }
     g_copyFence.Reset();
