@@ -38,7 +38,6 @@ void RequestIDRNow(); // defined in main.cpp; used to re-sync stream after devic
 // CUDA includes
 #include <cuda.h>
 #include <cuda_runtime_api.h>
-#include <cuda_d3d12_interop.h>
 
 // ==== [Multi-monitor helpers - BEGIN] ====
 #ifndef _USE_MATH_DEFINES
@@ -325,8 +324,7 @@ Microsoft::WRL::ComPtr<IDXGISwapChain3> g_swapChain; // Use IDXGISwapChain3 or 4
 // For D3D12/CUDA Interop
 Microsoft::WRL::ComPtr<ID3D12Fence> g_copyFence;
 std::atomic<UINT64> g_copyFenceValue = 0;
-HANDLE g_copyFenceShared = nullptr; // for CreateSharedHandle/CloseHandle
-CUexternalSemaphore g_cudaCopyFenceSem = nullptr; // CUDA (driver API)
+cudaExternalSemaphore_t g_cudaCopyFenceSem = nullptr; // CUDA (driver API)
 
 UINT64 NextCopyFenceValue() noexcept {
     // Atomically increment and return the new value for the fence.
@@ -988,26 +986,30 @@ bool InitD3D() {
         DebugLog(L"InitD3D: Failed to create shared fence. HR=" + HResultToHexWString(hr));
         return false;
     }
-    hr = g_d3d12Device->CreateSharedHandle(g_copyFence.Get(), nullptr, GENERIC_ALL, nullptr, &g_copyFenceShared);
-    if (FAILED(hr)) {
-        DebugLog(L"InitD3D: Failed to create shared handle for fence. HR=" + HResultToHexWString(hr));
-        return false;
+    // Import D3D12 fence as CUDA external semaphore (do not change surrounding comments/layout)
+    if (g_copyFence && g_d3d12Device) {
+        HANDLE hFence = nullptr;
+        HRESULT hr_sh = g_d3d12Device->CreateSharedHandle(
+            g_copyFence.Get(), nullptr, GENERIC_ALL, nullptr, &hFence);
+        if (SUCCEEDED(hr_sh) && hFence) {
+            cudaExternalSemaphoreHandleDesc sd{};
+            sd.type = cudaExternalSemaphoreHandleTypeD3D12Fence;
+            sd.handle.win32.handle = hFence;
+            sd.flags = 0;
+            cudaError_t ce = cudaImportExternalSemaphore(&g_cudaCopyFenceSem, &sd);
+            if (ce != cudaSuccess) {
+                const char* es = cudaGetErrorString(ce);
+                std::string err_str = es ? es : "unknown error";
+                DebugLog(L"cudaImportExternalSemaphore failed: " + std::wstring(err_str.begin(), err_str.end()));
+                CloseHandle(hFence);
+                return false;
+            }
+            CloseHandle(hFence); // important: CUDA owns it now
+        } else {
+            DebugLog(L"CreateSharedHandle for fence failed.");
+            return false;
+        }
     }
-
-    CUexternalSemaphoreHandleDesc sd{};
-    sd.type = CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE;
-    sd.handle.win32.handle = g_copyFenceShared;
-    sd.flags = 0;
-
-    if (cuImportExternalSemaphore(&g_cudaCopyFenceSem, &sd) != CUDA_SUCCESS) {
-        DebugLog(L"InitD3D: cuImportExternalSemaphore failed.");
-        CloseHandle(g_copyFenceShared);
-        g_copyFenceShared = nullptr;
-        return false;
-    }
-
-    CloseHandle(g_copyFenceShared);
-    g_copyFenceShared = nullptr;
     DebugLog(L"InitD3D: D3D12/CUDA interop fence and semaphore created.");
 
     // 2. Create Command Queue
@@ -1734,7 +1736,7 @@ void WaitForGpu() {
 void CleanupD3DRenderResources() {
     // Cleanup interop resources first
     if (g_cudaCopyFenceSem) {
-        cuDestroyExternalSemaphore(g_cudaCopyFenceSem);
+        cudaDestroyExternalSemaphore(g_cudaCopyFenceSem);
         g_cudaCopyFenceSem = nullptr;
     }
     g_copyFence.Reset();

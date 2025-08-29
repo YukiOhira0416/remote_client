@@ -1,4 +1,3 @@
-#include <cuda_d3d12_interop.h>
 #include "nvdec.h"
 #include "Globals.h"
 #include "window.h" // For NextCopyFenceValue and g_cudaCopyFenceSem
@@ -117,6 +116,50 @@ extern void ClearReorderState();
 
 // === ここまで追加 ===
 
+// === Begin: CUDA External Memory helpers (NVDEC surfaces) ===
+// Keep comments/layout around existing code; this block is new and self-contained.
+static bool ImportTextureAsCudaExternalMemory(
+    HANDLE sharedHandle,
+    size_t allocationSizeBytes, // must match D3D12 allocation size
+    cudaExternalMemory_t& outMem)
+{
+    cudaExternalMemoryHandleDesc hd{};
+    hd.type = cudaExternalMemoryHandleTypeD3D12Resource;
+    hd.handle.win32.handle = sharedHandle;
+    hd.size = allocationSizeBytes;
+    hd.flags = 0; // dedicated resource
+    cudaError_t ce = cudaImportExternalMemory(&outMem, &hd);
+    if (ce != cudaSuccess) {
+        const char* es = cudaGetErrorString(ce);
+        std::string err_str = es ? es : "unknown error";
+        DebugLog(L"cudaImportExternalMemory failed: " + std::wstring(err_str.begin(), err_str.end()));
+        return false;
+    }
+    return true;
+}
+
+static bool MapTextureMipArray(
+    const cudaExternalMemory_t mem,
+    cudaMipmappedArray_t& outMmArray,
+    const cudaChannelFormatDesc& chDesc,
+    size_t width, size_t height, unsigned levels = 1)
+{
+    cudaExternalMemoryMipmappedArrayDesc md{};
+    md.formatDesc = chDesc;
+    md.extent = make_cudaExtent(width, height, 0);
+    md.numLevels = levels;
+    md.flags = 0; // no special flags
+    cudaError_t ce = cudaExternalMemoryGetMappedMipmappedArray(&outMmArray, mem, &md);
+    if (ce != cudaSuccess) {
+        const char* es = cudaGetErrorString(ce);
+        std::string err_str = es ? es : "unknown error";
+        DebugLog(L"cudaExternalMemoryGetMappedMipmappedArray failed: " + std::wstring(err_str.begin(), err_str.end()));
+        return false;
+    }
+    return true;
+}
+// === End: helpers ===
+
 FrameDecoder::FrameDecoder(CUcontext cuContext, ID3D12Device* pD3D12Device)
     : m_cuContext(cuContext), m_pD3D12Device(pD3D12Device) {
     CUDA_CHECK(cuCtxPushCurrent(m_cuContext));
@@ -154,11 +197,11 @@ void FrameDecoder::releaseDecoderResources() {
         resource.pMipmappedArrayUV = nullptr;
 
         if (resource.cudaExtMemY) {
-            cuDestroyExternalMemory(resource.cudaExtMemY);
+            cudaDestroyExternalMemory(resource.cudaExtMemY);
             resource.cudaExtMemY = nullptr;
         }
         if (resource.cudaExtMemUV) {
-            cuDestroyExternalMemory(resource.cudaExtMemUV);
+            cudaDestroyExternalMemory(resource.cudaExtMemUV);
             resource.cudaExtMemUV = nullptr;
         }
         if(resource.sharedHandleY) {
@@ -537,46 +580,31 @@ bool FrameDecoder::allocateFrameBuffers() {
         // -----------------------------
         // 3) Import as CUDA External Memory (Dedicated)
         // -----------------------------
-        CUDA_EXTERNAL_MEMORY_HANDLE_DESC extY = {};
-        extY.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE;
-        extY.handle.win32.handle = m_frameResources[i].sharedHandleY;
-        extY.size  = yImportSize;                    // Use the larger of allocation or RowPitch*Height
-        extY.flags = cudaExternalMemoryDedicated;    // Must be Dedicated for Committed
-        CUDA_CHECK(cuImportExternalMemory(&m_frameResources[i].cudaExtMemY, &extY));
-
-        CUDA_EXTERNAL_MEMORY_HANDLE_DESC extUV = {};
-        extUV.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE;
-        extUV.handle.win32.handle = m_frameResources[i].sharedHandleUV;
-        extUV.size  = uvImportSize;
-        extUV.flags = cudaExternalMemoryDedicated;   // Must be Dedicated for Committed
-        CUDA_CHECK(cuImportExternalMemory(&m_frameResources[i].cudaExtMemUV, &extUV));
+        if (!ImportTextureAsCudaExternalMemory(m_frameResources[i].sharedHandleY, yImportSize, m_frameResources[i].cudaExtMemY)) {
+            DebugLog(L"allocateFrameBuffers: ImportTextureAsCudaExternalMemory(Y) failed.");
+            return false;
+        }
+        if (!ImportTextureAsCudaExternalMemory(m_frameResources[i].sharedHandleUV, uvImportSize, m_frameResources[i].cudaExtMemUV)) {
+            DebugLog(L"allocateFrameBuffers: ImportTextureAsCudaExternalMemory(UV) failed.");
+            return false;
+        }
 
         // -----------------------------
         // 4) Map to MipmappedArray
         // -----------------------------
-        CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC mmY = {};
-        mmY.offset = 0; // Always 0 for Resources
-        mmY.arrayDesc.Width       = static_cast<unsigned int>(m_videoDecoderCreateInfo.ulWidth);
-        mmY.arrayDesc.Height      = static_cast<unsigned int>(m_videoDecoderCreateInfo.ulHeight);
-        mmY.arrayDesc.Depth       = 0;
-        mmY.arrayDesc.NumChannels = 1;
-        mmY.arrayDesc.Format      = CU_AD_FORMAT_UNSIGNED_INT8;
-        mmY.arrayDesc.Flags       = 0;
-        mmY.numLevels = 1;
-        CUDA_CHECK(cuExternalMemoryGetMappedMipmappedArray(&m_frameResources[i].pMipmappedArrayY,
-                                                           m_frameResources[i].cudaExtMemY, &mmY));
+        cudaChannelFormatDesc chDescY = cudaCreateChannelDesc(8, 0, 0, 0, cudaChannelFormatKindUnsigned);
+        if (!MapTextureMipArray(m_frameResources[i].cudaExtMemY, m_frameResources[i].pMipmappedArrayY, chDescY,
+                                m_videoDecoderCreateInfo.ulWidth, m_videoDecoderCreateInfo.ulHeight)) {
+            DebugLog(L"allocateFrameBuffers: MapTextureMipArray(Y) failed.");
+            return false;
+        }
 
-        CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC mmUV = {};
-        mmUV.offset = 0;
-        mmUV.arrayDesc.Width       = static_cast<unsigned int>(m_videoDecoderCreateInfo.ulWidth  / 2);
-        mmUV.arrayDesc.Height      = static_cast<unsigned int>(m_videoDecoderCreateInfo.ulHeight / 2);
-        mmUV.arrayDesc.Depth       = 0;
-        mmUV.arrayDesc.NumChannels = 2;
-        mmUV.arrayDesc.Format      = CU_AD_FORMAT_UNSIGNED_INT8;
-        mmUV.arrayDesc.Flags       = 0;
-        mmUV.numLevels = 1;
-        CUDA_CHECK(cuExternalMemoryGetMappedMipmappedArray(&m_frameResources[i].pMipmappedArrayUV,
-                                                           m_frameResources[i].cudaExtMemUV, &mmUV));
+        cudaChannelFormatDesc chDescUV = cudaCreateChannelDesc(8, 8, 0, 0, cudaChannelFormatKindUnsigned);
+        if (!MapTextureMipArray(m_frameResources[i].cudaExtMemUV, m_frameResources[i].pMipmappedArrayUV, chDescUV,
+                                m_videoDecoderCreateInfo.ulWidth / 2, m_videoDecoderCreateInfo.ulHeight / 2)) {
+            DebugLog(L"allocateFrameBuffers: MapTextureMipArray(UV) failed.");
+            return false;
+        }
 
         // Get Level 0
         CUDA_CHECK(cuMipmappedArrayGetLevel(&m_frameResources[i].pCudaArrayY,  m_frameResources[i].pMipmappedArrayY,  0));
@@ -708,10 +736,9 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
 
     // Also signal the D3D12 fence via external semaphore for GPU-side sync
     const UINT64 fv = NextCopyFenceValue();
-    CUexternalSemaphoreSignalParams sp{};
+    cudaExternalSemaphoreSignalParams sp{};
     sp.params.fence.value = fv;
-    sp.flags = 0;
-    CUDA_CHECK_CALLBACK(cuSignalExternalSemaphoresAsync(&g_cudaCopyFenceSem, &sp, 1, s));
+    CUDA_RUNTIME_CHECK_CALLBACK(cudaSignalExternalSemaphoresAsync(&g_cudaCopyFenceSem, &sp, 1, s));
 
     // If we get here, all CUDA operations were successful.
     // The destructors for mappedFrame and ctxLocker will automatically clean up.
