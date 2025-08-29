@@ -14,6 +14,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <cstring>
+#include "window.h"
 #include "DebugLog.h"
 #include "ReedSolomon.h"
 #include <algorithm> // For std::min, std::abs
