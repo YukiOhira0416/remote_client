@@ -463,7 +463,7 @@ public:
         if (m_pq.empty()) {
             return false;
         }
-        item_out = m_pq.top(); // This is a copy operation from const T&
+        item_out = std::move(const_cast<T&>(m_pq.top()));
         m_pq.pop();
         return true;
     }
