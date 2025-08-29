@@ -14,7 +14,6 @@
 #include <iostream>
 #include <stdexcept>
 #include <cstring>
-#include "window.h"
 #include "DebugLog.h"
 #include "ReedSolomon.h"
 #include <algorithm> // For std::min, std::abs
@@ -39,6 +38,7 @@ void RequestIDRNow(); // defined in main.cpp; used to re-sync stream after devic
 // CUDA includes
 #include <cuda.h>
 #include <cuda_runtime_api.h>
+#include <cuda_d3d12_interop.h>
 
 // ==== [Multi-monitor helpers - BEGIN] ====
 #ifndef _USE_MATH_DEFINES
