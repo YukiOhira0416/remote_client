@@ -2,6 +2,16 @@
 #include "Globals.h"
 #include <nvtx3/nvtx3.hpp>
 #include <stdexcept>
+#include <windows.h> // ensure HANDLE is available
+#include <cuda.h>    // we use Driver API external semaphore calls
+
+// [NEW] Extern accessor provided by window.cpp
+extern "C" HANDLE GetCopyFenceSharedHandleForCuda();
+
+// [NEW] CUDA external semaphore for the D3D12 copy fence
+static CUexternalSemaphore g_cuCopyFenceSemaphore = nullptr;
+// [NEW] Per-frame fence value counter (monotonic). If there is another global frame counter, you may reuse it.
+static std::atomic<uint64_t> g_cudaCopyFenceValue{0};
 
 namespace my_nvtx_domains {
     struct nvdec {
@@ -187,6 +197,12 @@ FrameDecoder::~FrameDecoder() {
 
     // Now it's safe to release resources.
     releaseDecoderResources();
+
+// [NEW] Destroy external semaphore if created
+if (g_cuCopyFenceSemaphore) {
+    cuDestroyExternalSemaphore(g_cuCopyFenceSemaphore);
+    g_cuCopyFenceSemaphore = nullptr;
+}
 
     if (m_ctxLock) {
         cuvidCtxLockDestroy(m_ctxLock);
@@ -433,6 +449,25 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
 bool FrameDecoder::allocateFrameBuffers() {
     // pHeapY/pHeapUV are no longer used but can remain in the struct
     m_frameResources.resize(m_videoDecoderCreateInfo.ulNumDecodeSurfaces);
+
+// [NEW] Import D3D12 fence as CUDA external semaphore (once)
+if (!g_cuCopyFenceSemaphore) {
+    HANDLE hFence = GetCopyFenceSharedHandleForCuda();
+    if (hFence) {
+        CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC semDesc{};
+        semDesc.type = CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE;
+        semDesc.handle.win32.handle = hFence;
+        CUresult cr = cuImportExternalSemaphore(&g_cuCopyFenceSemaphore, &semDesc);
+        if (cr != CUDA_SUCCESS) {
+            DebugLog(L"CUDA: cuImportExternalSemaphore(D3D12_FENCE) failed.");
+            g_cuCopyFenceSemaphore = nullptr; // fallback to event-only path
+        } else {
+            DebugLog(L"CUDA: Imported D3D12 fence as external semaphore.");
+        }
+    } else {
+        DebugLog(L"CUDA: Shared fence handle unavailable; staying on event-only path.");
+    }
+}
 
     for (UINT i = 0; i < m_videoDecoderCreateInfo.ulNumDecodeSurfaces; ++i) {
         // -----------------------------
@@ -704,12 +739,26 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         CUDA_CHECK_CALLBACK(cuEventRecord(frameCopyDone, s));
     }
 
+// [NEW] Signal external semaphore (D3D12 fence) so the render queue can GPU-wait
+UINT64 fenceValue = 0;
+if (g_cuCopyFenceSemaphore) {
+    fenceValue = ++g_cudaCopyFenceValue;
+    CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS sig{};
+    sig.params.fence.value = fenceValue;
+    CUresult cr = cuSignalExternalSemaphoresAsync(&g_cuCopyFenceSemaphore, &sig, 1, s);
+    if (cr != CUDA_SUCCESS) {
+        DebugLog(L"CUDA: cuSignalExternalSemaphoresAsync failed; continuing with event fallback.");
+        fenceValue = 0; // disable fence for this frame
+    }
+}
+
     // If we get here, all CUDA operations were successful.
     // The destructors for mappedFrame and ctxLocker will automatically clean up.
 
     ReadyGpuFrame readyFrame;
     // Store the event in the outgoing frame struct; keep all existing fields/logging intact.
     readyFrame.copyDone = frameCopyDone; // Ownership transferred to renderer
+readyFrame.fenceValue = fenceValue;    // NEW: used by render queue GPU-wait
 
     readyFrame.hw_decoded_texture_Y  = self->m_frameResources[pDispInfo->picture_index].pTextureY;
     readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;

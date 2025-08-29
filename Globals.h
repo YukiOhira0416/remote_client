@@ -125,6 +125,7 @@ struct ReadyGpuFrame {
     uint64_t present_ms = 0;       // Client steady clock: right after Present returns
     uint64_t fence_done_ms = 0;    // Client steady clock: after per-frame fence wait (if any)
     CUevent copyDone = nullptr; // NEW: signaled when NVDEC->CUDA copy has finished
+    UINT64 fenceValue = 0;  // NEW (0 means “no fence” / fallback path)
     nvtxRangeId_t nvtx_range_id = 0;
 };
 
