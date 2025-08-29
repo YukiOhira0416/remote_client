@@ -1368,9 +1368,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     // This single call handles joining all threads and releasing all resources idempotently.
     ReleaseAllResources(appThreads);
     
-    DebugLog(L"Cleanup complete. Exiting wWinMain.");
-
     // === 非同期ロガーを安全に停止（全ログを flush） ===
-    Shutdown();
+    // This MUST be the last action to ensure all other threads have finished and logged.
+    DebugLogAsync::Shutdown();
     return 0;
 }
