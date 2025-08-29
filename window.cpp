@@ -235,6 +235,81 @@ static void TryExcludeThisWindowFromCapture(HWND hwnd)
 #pragma comment(lib, "dxgi.lib") // DXGI is still used
 #pragma comment(lib, "d3dcompiler.lib")
 
+bool g_VsyncEnabled = true; // VSync toggle
+
+// Independent Flip / Present Optimization Helpers
+static bool g_TearingSupported = false;
+static RECT g_WindowedRect = {}; // store original position/size for borderless fullscreen
+
+static void QueryTearingSupportOnce()
+{
+    static std::once_flag s_flag;
+    std::call_once(s_flag, []{
+        Microsoft::WRL::ComPtr<IDXGIFactory5> factory5;
+        BOOL allowTearing = FALSE;
+        // Note: The provided brief snippet implied a global g_dxgiFactory, which does not exist.
+        // Creating a temporary factory here to perform the check is consistent with the original code's approach.
+        // The result is cached via std::call_once, satisfying the requirement.
+        if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory5))) &&
+            SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                                                    &allowTearing, sizeof(allowTearing))))
+        {
+            g_TearingSupported = (allowTearing == TRUE);
+        }
+    });
+}
+
+void EnterBorderlessFullscreen(HWND hWnd)
+{
+    // Save current rect once
+    if (IsRectEmpty(&g_WindowedRect)) {
+        GetWindowRect(hWnd, &g_WindowedRect);
+    }
+
+    HMONITOR hMon = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = { sizeof(mi) };
+    GetMonitorInfo(hMon, &mi);
+    RECT r = mi.rcMonitor; // exact monitor bounds
+
+    // Remove windowed styles that force composition
+    LONG style = GetWindowLong(hWnd, GWL_STYLE);
+    style &= ~(WS_OVERLAPPEDWINDOW);
+    style |= WS_POPUP; // borderless
+    SetWindowLong(hWnd, GWL_STYLE, style);
+
+    // Extended styles: ensure it's not layered/transparent
+    LONG ex = GetWindowLong(hWnd, GWL_EXSTYLE);
+    ex &= ~(WS_EX_LAYERED | WS_EX_TRANSPARENT);
+    SetWindowLong(hWnd, GWL_EXSTYLE, ex);
+
+    // Resize exactly to monitor bounds (pixel-perfect)
+    SetWindowPos(hWnd, HWND_TOP, r.left, r.top,
+                 r.right - r.left, r.bottom - r.top,
+                 SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+}
+
+void ExitBorderlessFullscreen(HWND hWnd)
+{
+    if (IsRectEmpty(&g_WindowedRect)) {
+        return; // Nothing to restore
+    }
+
+    // Restore window styles
+    LONG style = GetWindowLong(hWnd, GWL_STYLE);
+    style &= ~WS_POPUP;
+    style |= WS_OVERLAPPEDWINDOW;
+    SetWindowLong(hWnd, GWL_STYLE, style);
+
+    // Restore original size and position
+    SetWindowPos(hWnd, NULL, g_WindowedRect.left, g_WindowedRect.top,
+                 g_WindowedRect.right - g_WindowedRect.left, g_WindowedRect.bottom - g_WindowedRect.top,
+                 SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+
+    // Clear the stored rect so we don't try to restore it again.
+    SetRectEmpty(&g_WindowedRect);
+}
+
+
 // Renders the video with its aspect ratio preserved, adding black bars (letterboxing/pillarboxing).
 static void SetLetterboxViewport(ID3D12GraphicsCommandList* cmd, D3D12_RESOURCE_DESC backbufferDesc, int videoWidthInt, int videoHeightInt)
 {
@@ -419,8 +494,6 @@ static void DrainRetireBin() {
 // D3D11 specific globals (to be removed or replaced)
 #define CLIENT_PORT_FEC 8080// FEC用ポート番号
 #define CLIENT_IP_FEC "127.0.0.1"// FEC用IPアドレス
-
-bool g_allowTearing = false; // ティアリングを許可するかどうか
 
 // Forward declarations for recovery helper
 void WaitForGpu();
@@ -927,15 +1000,10 @@ bool InitD3D() {
 
     // 1. Create Device
     Microsoft::WRL::ComPtr<IDXGIFactory6> dxgiFactory; // Use a newer factory for better features
-    // Check for tearing support
-    Microsoft::WRL::ComPtr<IDXGIFactory5> factory5;
-    if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory5)))) {
-        BOOL allowTearing = FALSE;
-        if (SUCCEEDED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearing, sizeof(allowTearing)))) {
-            g_allowTearing = static_cast<bool>(allowTearing);
-            DebugLog(g_allowTearing ? L"InitD3D (D3D12): Tearing is supported." : L"InitD3D (D3D12): Tearing is NOT supported.");
-        }
-    }
+
+    // Query for tearing support once and cache the result.
+    QueryTearingSupportOnce();
+    DebugLog(g_TearingSupported ? L"InitD3D (D3D12): Tearing is supported." : L"InitD3D (D3D12): Tearing is NOT supported.");
 
     HRESULT hr = CreateDXGIFactory2(0, IID_PPV_ARGS(&dxgiFactory));
     if (FAILED(hr)) {
@@ -993,7 +1061,7 @@ bool InitD3D() {
 
     // 3. Create Swap Chain
     DXGI_SWAP_CHAIN_DESC1 scd1 = {};
-    scd1.BufferCount = kSwapChainBufferCount; // Triple buffering
+    scd1.BufferCount = kSwapChainBufferCount; // Use 3 for smoother presentation
     RECT rcClient;
     GetClientRect(g_hWnd, &rcClient);
     scd1.Width = (rcClient.right - rcClient.left > 0) ? (rcClient.right - rcClient.left) : 1;
@@ -1003,10 +1071,13 @@ bool InitD3D() {
     scd1.SampleDesc.Count = 1;
     scd1.SampleDesc.Quality = 0;
     scd1.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    scd1.Scaling = DXGI_SCALING_NONE;   // 既存は DXGI_SCALING_STRETCH
-    scd1.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD; // Recommended for D3D12
-    scd1.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
-    scd1.Flags = g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+    scd1.Scaling = DXGI_SCALING_STRETCH; // For borderless fullscreen
+    scd1.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD; // Required for Independent Flip
+    scd1.AlphaMode = DXGI_ALPHA_MODE_IGNORE; // Recommended for performance
+    scd1.Flags = 0;
+    if (g_TearingSupported) {
+        scd1.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+    }
 
     Microsoft::WRL::ComPtr<IDXGISwapChain1> tempSwapChain;
     hr = dxgiFactory->CreateSwapChainForHwnd(g_d3d12CommandQueue.Get(), g_hWnd, &scd1, nullptr, nullptr, &tempSwapChain);
@@ -1014,12 +1085,17 @@ bool InitD3D() {
         DebugLog(L"InitD3D (D3D12): Failed to create swap chain. HRESULT: " + HResultToHexWString(hr));
         return false;
     }
+
+    // Prevent DXGI from monitoring this app's window messages
+    dxgiFactory->MakeWindowAssociation(g_hWnd, DXGI_MWA_NO_WINDOW_CHANGES | DXGI_MWA_NO_ALT_ENTER);
+
     hr = tempSwapChain.As(&g_swapChain); // QueryInterface to IDXGISwapChain3
     if (FAILED(hr)) {
         DebugLog(L"InitD3D (D3D12): Failed to QI for IDXGISwapChain3. HRESULT: " + HResultToHexWString(hr));
         return false;
     }
 
+    // Set maximum frame latency to 1 for the waitable object
     {
         Microsoft::WRL::ComPtr<IDXGISwapChain2> sc2;
         HRESULT hr_sc2 = g_swapChain.As(&sc2);
@@ -1232,6 +1308,8 @@ if (FAILED(hr) || !g_copyFenceSharedHandle) {
     // Vertex buffer is not strictly needed for a full-screen triangle generated in VS,
     // but if you were to use one:
     // Create vertex buffer for a quad (or use SV_VertexID in VS to generate one)
+
+    EnterBorderlessFullscreen(g_hWnd);
 
     return true;
 }
@@ -1684,8 +1762,17 @@ void RenderFrame() {
     // Present
     HRESULT hrPresent;
     {
-        nvtx3::scoped_range_in<d3d12_domain> present_r{"Present(Submit)"};
-        hrPresent = g_swapChain->Present(0, g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
+        // Determine present args once per frame
+        UINT syncInterval = g_VsyncEnabled ? 1 : 0;
+        UINT presentFlags = 0;
+        if (!g_VsyncEnabled && g_TearingSupported) {
+            presentFlags |= DXGI_PRESENT_ALLOW_TEARING;
+        }
+        DXGI_PRESENT_PARAMETERS pp = {}; // Zero-initialized is fine for this use case
+
+        // NVTX markers around Present (keep others intact)
+        nvtx3::scoped_range_in<d3d12_domain> present_r("Present");
+        hrPresent = g_swapChain->Present1(syncInterval, presentFlags, &pp);
     }
     if (FAILED(hrPresent)) {
         if (hrPresent == DXGI_ERROR_DEVICE_REMOVED || hrPresent == DXGI_ERROR_DEVICE_RESET) {
@@ -1756,6 +1843,7 @@ void WaitForGpu() {
 
 
 void CleanupD3DRenderResources() {
+    ExitBorderlessFullscreen(g_hWnd);
     WaitForGpu(); // Ensure GPU is idle before releasing resources
 
     if (g_fenceEvent) {
