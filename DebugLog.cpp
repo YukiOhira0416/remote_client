@@ -34,7 +34,12 @@ std::atomic<size_t>   g_dropped{0};
 size_t                g_capacity = 8192;
 bool                  g_alsoODS  = true;
 
-moodycamel::ConcurrentQueue<LogMsg> g_queue;
+// moodycamel::ConcurrentQueue<LogMsg> g_queue; // Replaced with getter function
+
+moodycamel::ConcurrentQueue<LogMsg>& get_log_queue() {
+    static moodycamel::ConcurrentQueue<LogMsg> instance;
+    return instance;
+}
 
 std::wofstream        g_file;
 std::thread*          g_worker = nullptr;
@@ -88,7 +93,7 @@ void WorkerLoop() {
 
     while (g_running.load(std::memory_order_acquire) || g_qSize.load(std::memory_order_relaxed) > 0) {
         LogMsg msg;
-        bool got = g_queue.try_dequeue(msg);
+        bool got = get_log_queue().try_dequeue(msg);
         if (!got) {
             // 何も無ければ少し待つ
             std::unique_lock<std::mutex> lk(g_wakeupMtx);
@@ -219,7 +224,7 @@ void DebugLog(const std::wstring& message) {
         // CAS失敗時はcurが更新されるのでループ続行
     }
 
-    g_queue.enqueue(LogMsg{ std::move(line) });
+    get_log_queue().enqueue(LogMsg{ std::move(line) });
     // ワーカを起床
     g_wakeupCv.notify_one();
 }
