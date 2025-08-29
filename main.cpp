@@ -43,6 +43,7 @@ using namespace DebugLogAsync;
 #include <sstream>
 #include "concurrentqueue/concurrentqueue.h"
 #include <enet/enet.h>
+#include <wchar.h> // For wcsstr
 #include <nvtx3/nvtx3.hpp>
 #include "Globals.h"
 #include "nvdec.h"
@@ -1141,6 +1142,14 @@ ThreadConfig getOptimalThreadConfig(){
     config.render = 1;
     config.RS_K = 6;
     config.RS_M = 2;
+
+    // Check for latency profile override from command line
+    if (wcsstr(GetCommandLineW(), L"--fec_profile=latency")) {
+        config.RS_K = 5;
+        // Keep M/K ratio similar. Original is 2/6 ~= 0.33. New M for K=5 is 5*0.33~=1.66 -> 2.
+        config.RS_M = 2;
+        DebugLog(L"Low-latency FEC profile enabled via command line: K=5, M=2");
+    }
 
     return config;
 }
