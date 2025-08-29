@@ -238,6 +238,8 @@ static void TryExcludeThisWindowFromCapture(HWND hwnd)
 bool g_VsyncEnabled = true; // VSync toggle
 
 // Independent Flip / Present Optimization Helpers
+// ==== Present Mode Toggle ====
+static std::atomic<bool> g_RequestBorderlessIF{ false }; // default: windowed
 static bool g_TearingSupported = false;
 static RECT g_WindowedRect = {}; // store original position/size for borderless fullscreen
 
@@ -307,6 +309,150 @@ void ExitBorderlessFullscreen(HWND hWnd)
 
     // Clear the stored rect so we don't try to restore it again.
     SetRectEmpty(&g_WindowedRect);
+}
+
+// Forward declare for use in ApplyPresentMode
+static void ResizeSwapChainOnRenderThread(int newW, int newH);
+
+static void RecreateSwapChain(DXGI_SCALING newScaling)
+{
+    if (!g_swapChain) return;
+
+    WaitForGpu(); // Ensure GPU is idle before releasing resources
+
+    // Release resources that depend on the swap chain
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+        g_renderTargets[i].Reset();
+    }
+
+    DXGI_SWAP_CHAIN_DESC1 desc;
+    g_swapChain->GetDesc1(&desc);
+    desc.Scaling = newScaling;
+
+    // Get the factory from the existing swap chain
+    Microsoft::WRL::ComPtr<IDXGIFactory5> factory;
+    HRESULT hr = g_swapChain->GetParent(IID_PPV_ARGS(&factory));
+    if (FAILED(hr)) {
+        DebugLog(L"RecreateSwapChain: Failed to get DXGI Factory. Re-initializing.");
+        HandleDeviceRemovedAndReinit();
+        return;
+    }
+
+    // Release the old swap chain
+    g_swapChain.Reset();
+
+    // Create a new swap chain
+    Microsoft::WRL::ComPtr<IDXGISwapChain1> newSwapChain;
+    hr = factory->CreateSwapChainForHwnd(
+        g_d3d12CommandQueue.Get(),
+        g_hWnd,
+        &desc,
+        nullptr,
+        nullptr,
+        &newSwapChain
+    );
+
+    if (FAILED(hr)) {
+        DebugLog(L"RecreateSwapChain: CreateSwapChainForHwnd failed. Re-initializing.");
+        HandleDeviceRemovedAndReinit();
+        return;
+    }
+
+    hr = newSwapChain.As(&g_swapChain);
+    if (FAILED(hr)) {
+        DebugLog(L"RecreateSwapChain: Failed to QI for IDXGISwapChain3. Re-initializing.");
+        HandleDeviceRemovedAndReinit();
+        return;
+    }
+
+    // Re-create the render target views
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart());
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+        hr = g_swapChain->GetBuffer(i, IID_PPV_ARGS(&g_renderTargets[i]));
+        if (FAILED(hr)) {
+            DebugLog(L"RecreateSwapChain: GetBuffer failed. Re-initializing.");
+            HandleDeviceRemovedAndReinit();
+            return;
+        }
+        g_d3d12Device->CreateRenderTargetView(g_renderTargets[i].Get(), nullptr, rtvHandle);
+        rtvHandle.Offset(1, g_rtvDescriptorSize);
+    }
+
+    g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
+}
+
+static void ApplyPresentMode(HWND hwnd)
+{
+    // Query tearing support once (existing helper)
+    QueryTearingSupportOnce();
+
+    if (g_RequestBorderlessIF.load(std::memory_order_acquire)) {
+        // === Enter Borderless Fullscreen (Independent Flip intent) ===
+        // Save windowed rect once
+        if (IsIconic(hwnd) == FALSE) {
+            GetWindowRect(hwnd, &g_WindowedRect);
+        }
+
+        // Style: borderless
+        LONG style = GetWindowLong(hwnd, GWL_STYLE);
+        style &= ~(WS_OVERLAPPEDWINDOW);
+        style |= (WS_POPUP | WS_VISIBLE);
+        SetWindowLong(hwnd, GWL_STYLE, style);
+
+        // Resize to monitor bounds
+        HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi{ sizeof(mi) };
+        GetMonitorInfo(hmon, &mi);
+        SetWindowPos(hwnd, HWND_TOP,
+            mi.rcMonitor.left, mi.rcMonitor.top,
+            mi.rcMonitor.right - mi.rcMonitor.left,
+            mi.rcMonitor.bottom - mi.rcMonitor.top,
+            SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+
+        // Swap-chain scaling for borderless IF
+        if (g_swapChain) {
+            DXGI_SWAP_CHAIN_DESC1 desc{};
+            g_swapChain->GetDesc1(&desc);
+            if (desc.Scaling != DXGI_SCALING_STRETCH) {
+                DebugLog(L"ApplyPresentMode: Switching to SCALING_STRETCH for borderless.");
+                RecreateSwapChain(DXGI_SCALING_STRETCH);
+            }
+            // Ensure size is correct for the monitor
+            ResizeSwapChainOnRenderThread(mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top);
+        }
+
+    } else {
+        // === Return to Windowed (graceful fallback) ===
+        // Restore window style/rect
+        LONG style = GetWindowLong(hwnd, GWL_STYLE);
+        style &= ~(WS_POPUP);
+        style |= WS_OVERLAPPEDWINDOW;
+        SetWindowLong(hwnd, GWL_STYLE, style);
+
+        if (g_WindowedRect.right > g_WindowedRect.left && g_WindowedRect.bottom > g_WindowedRect.top) {
+            SetWindowPos(hwnd, nullptr,
+                g_WindowedRect.left, g_WindowedRect.top,
+                g_WindowedRect.right - g_WindowedRect.left,
+                g_WindowedRect.bottom - g_WindowedRect.top,
+                SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+        } else {
+            ShowWindow(hwnd, SW_RESTORE);
+        }
+
+        // Ensure SCALING_NONE for windowed path
+        if (g_swapChain) {
+            DXGI_SWAP_CHAIN_DESC1 desc{};
+            g_swapChain->GetDesc1(&desc);
+            if (desc.Scaling != DXGI_SCALING_NONE) {
+                DebugLog(L"ApplyPresentMode: Switching to SCALING_NONE for windowed mode.");
+                RecreateSwapChain(DXGI_SCALING_NONE);
+            }
+            // Resize to current client rect
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            ResizeSwapChainOnRenderThread(rc.right - rc.left, rc.bottom - rc.top);
+        }
+    }
 }
 
 
@@ -899,6 +1045,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             return 0;
         }
 
+        case WM_SYSKEYDOWN:
+            if (wParam == VK_RETURN && (GetKeyState(VK_MENU) & 0x8000)) {
+                g_RequestBorderlessIF.store(!g_RequestBorderlessIF.load(std::memory_order_relaxed), std::memory_order_release);
+                ApplyPresentMode(hWnd);
+                return 0;
+            }
+            break;
+        case WM_KEYDOWN:
+            if (wParam == VK_F11) {
+                g_RequestBorderlessIF.store(!g_RequestBorderlessIF.load(std::memory_order_relaxed), std::memory_order_release);
+                ApplyPresentMode(hWnd);
+                return 0;
+            }
+            break;
+
         default:
             return DefWindowProc(hWnd, message, wParam, lParam);
         }
@@ -1071,7 +1232,7 @@ bool InitD3D() {
     scd1.SampleDesc.Count = 1;
     scd1.SampleDesc.Quality = 0;
     scd1.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    scd1.Scaling = DXGI_SCALING_STRETCH; // For borderless fullscreen
+    scd1.Scaling = DXGI_SCALING_NONE; // Default to windowed-friendly scaling
     scd1.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD; // Required for Independent Flip
     scd1.AlphaMode = DXGI_ALPHA_MODE_IGNORE; // Recommended for performance
     scd1.Flags = 0;
@@ -1309,7 +1470,8 @@ if (FAILED(hr) || !g_copyFenceSharedHandle) {
     // but if you were to use one:
     // Create vertex buffer for a quad (or use SV_VertexID in VS to generate one)
 
-    EnterBorderlessFullscreen(g_hWnd);
+    // Apply the default present mode on startup.
+    ApplyPresentMode(g_hWnd);
 
     return true;
 }
