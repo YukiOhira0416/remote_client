@@ -70,8 +70,8 @@ private:
         Microsoft::WRL::ComPtr<ID3D12Heap> pHeapUV;
         Microsoft::WRL::ComPtr<ID3D12Resource> pTextureY;
         Microsoft::WRL::ComPtr<ID3D12Resource> pTextureUV;
-        CUexternalMemory cudaExtMemY;
-        CUexternalMemory cudaExtMemUV;
+        cudaExternalMemory_t cudaExtMemY;
+        cudaExternalMemory_t cudaExtMemUV;
         CUmipmappedArray pMipmappedArrayY;
         CUmipmappedArray pMipmappedArrayUV;
         CUarray pCudaArrayY;

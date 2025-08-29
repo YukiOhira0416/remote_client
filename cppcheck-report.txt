@@ -1,0 +1,106 @@
+Globals.h:19:0: information: Include file: "concurrentqueue/concurrentqueue.h" not found. [missingInclude]
+#include "concurrentqueue/concurrentqueue.h"
+^
+nvdec.h:18:0: information: Include file: "nvcuvid.h" not found. [missingInclude]
+#include "nvcuvid.h"
+^
+nvdec.h:19:0: information: Include file: "cuviddec.h" not found. [missingInclude]
+#include "cuviddec.h"
+^
+DebugLog.cpp:17:0: information: Include file: "concurrentqueue/concurrentqueue.h" not found. [missingInclude]
+#include "concurrentqueue/concurrentqueue.h" // 既にプロジェクトで利用
+^
+Globals.cpp:6:0: information: Include file: "Nvdec.h" not found. [missingInclude]
+#include "Nvdec.h"
+^
+main.cpp:44:0: information: Include file: "concurrentqueue/concurrentqueue.h" not found. [missingInclude]
+#include "concurrentqueue/concurrentqueue.h"
+^
+window.cpp:1409:32: style: Variable 's_lastY' can be declared as pointer to const [constVariablePointer]
+        static ID3D12Resource* s_lastY = nullptr;
+                               ^
+window.cpp:1410:32: style: Variable 's_lastUV' can be declared as pointer to const [constVariablePointer]
+        static ID3D12Resource* s_lastUV = nullptr;
+                               ^
+window.cpp:317:52: style: struct member 'd3d12_domain::name' is never used. [unusedStructMember]
+struct d3d12_domain { static constexpr char const* name = "D3D12"; };
+                                                   ^
+window.cpp:318:51: style: struct member 'cuda_domain::name' is never used. [unusedStructMember]
+struct cuda_domain { static constexpr char const* name = "CUDA"; };
+                                                  ^
+window.cpp:673:29: style: struct member 'VertexPosTex::x' is never used. [unusedStructMember]
+struct VertexPosTex { float x, y, z; float u, v; };
+                            ^
+window.cpp:673:32: style: struct member 'VertexPosTex::y' is never used. [unusedStructMember]
+struct VertexPosTex { float x, y, z; float u, v; };
+                               ^
+window.cpp:673:35: style: struct member 'VertexPosTex::z' is never used. [unusedStructMember]
+struct VertexPosTex { float x, y, z; float u, v; };
+                                  ^
+window.cpp:673:44: style: struct member 'VertexPosTex::u' is never used. [unusedStructMember]
+struct VertexPosTex { float x, y, z; float u, v; };
+                                           ^
+window.cpp:673:47: style: struct member 'VertexPosTex::v' is never used. [unusedStructMember]
+struct VertexPosTex { float x, y, z; float u, v; };
+                                              ^
+window.cpp:1259:54: style: struct member 'reorder_domain::name' is never used. [unusedStructMember]
+struct reorder_domain { static constexpr char const* name = "REORDER"; };
+                                                     ^
+window.cpp:1374:42: style: Variable 'newFrameFromReorder.copyDone' is assigned a value that is never used. [unreadVariable]
+            newFrameFromReorder.copyDone = nullptr; // Ownership transferred to cache
+                                         ^
+window.cpp:1379:34: style: Variable 'frameToDraw.copyDone' is assigned a value that is never used. [unreadVariable]
+            frameToDraw.copyDone = nullptr;
+                                 ^
+window.cpp:1601:30: style: Variable 'shouldPresent' is assigned a value that is never used. [unreadVariable]
+    const bool shouldPresent = frameWasRendered || forcePresent;
+                             ^
+window.cpp:1652:45: style: Variable 'renderedFrameData.nvtx_range_id' is assigned a value that is never used. [unreadVariable]
+            renderedFrameData.nvtx_range_id = 0;
+                                            ^
+main.cpp:564:42: style: C-style pointer casting [cstyleCast]
+        int* temp_cauchy_for_bitmatrix = (int*)malloc(sizeof(int) * RS_M * RS_K); // m x k 行列
+                                         ^
+main.cpp:685:66: style: C-style pointer casting [cstyleCast]
+        sendto(udpSocket, startMessage, strlen(startMessage), 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
+                                                                 ^
+main.cpp:691:68: style: C-style pointer casting [cstyleCast]
+            sendto(udpSocket, data.data() + offset, packetSize, 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
+                                                                   ^
+main.cpp:698:62: style: C-style pointer casting [cstyleCast]
+        sendto(udpSocket, endMessage, strlen(endMessage), 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
+                                                             ^
+main.cpp:1009:35: style: The scope of the variable 'payload' can be reduced. [variableScope]
+            std::vector<uint8_t>& payload = parsedInfo.shardData; // Use reference or move if appropriate
+                                  ^
+main.cpp:242:16: style: Variable 'a' can be declared as reference to const [constVariableReference]
+    for (auto& a : adapters) {
+               ^
+main.cpp:1022:56: performance: Searching before insertion is not necessary. Instead of 'g_frameMetadata[frameNumber]={packetTimestamp,originalDataLenHost,SteadyNowMs()}' consider using 'g_frameMetadata.try_emplace(frameNumber, {packetTimestamp,originalDataLenHost,SteadyNowMs()});'. [stlFindInsert]
+                        g_frameMetadata[frameNumber] = {packetTimestamp, originalDataLenHost, SteadyNowMs()};
+                                                       ^
+main.cpp:1036:85: performance: Searching before insertion is not necessary. Instead of 'g_frameBuffer[frameNumber]=std::map<int,std::vector<uint8_t>>()' consider using 'g_frameBuffer.try_emplace(frameNumber, std::map<int,std::vector<uint8_t>>());'. [stlFindInsert]
+                    g_frameBuffer[frameNumber] = std::map<int, std::vector<uint8_t>>();
+                                                                                    ^
+main.cpp:1040:71: performance: Searching before insertion is not necessary. Instead of 'g_frameBuffer[frameNumber][shardIndex]=std::move(payload)' consider using 'g_frameBuffer[frameNumber].try_emplace(shardIndex, std::move(payload));'. [stlFindInsert]
+                    g_frameBuffer[frameNumber][shardIndex] = std::move(payload); // payload is moved here
+                                                                      ^
+main.cpp:1183:14: performance: Ineffective call of function 'substr' because a prefix of the string is assigned to itself. Use resize() or pop_back() instead. [uselessCallsSubstr]
+    exeDir = exeDir.substr(0, exeDir.find_last_of("\\/"));
+             ^
+main.cpp:878:56: style: Consider using std::accumulate algorithm instead of a raw loop. [useStlAlgorithm]
+                                total_reassembled_size += frag_pair.second.size();
+                                                       ^
+nvdec.cpp:679:11: style: Variable 'fr' can be declared as reference to const [constVariableReference]
+    auto& fr = self->m_frameResources[pDispInfo->picture_index];
+          ^
+nvdec.cpp:434:49: style: Parameter 'pVideoFormat' can be declared as pointer to const [constParameterPointer]
+bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
+                                                ^
+nvdec.cpp:9:38: style: struct member 'nvdec::name' is never used. [unusedStructMember]
+        static constexpr char const* name = "NVDEC";
+                                     ^
+main.cpp:713:38: style: struct member 'net::name' is never used. [unusedStructMember]
+        static constexpr char const* name = "NET";
+                                     ^
+nofile:0:0: information: Active checkers: 168/592 (use --checkers-report=<filename> to see details) [checkersReport]
