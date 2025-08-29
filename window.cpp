@@ -311,150 +311,6 @@ void ExitBorderlessFullscreen(HWND hWnd)
     SetRectEmpty(&g_WindowedRect);
 }
 
-// Forward declare for use in ApplyPresentMode
-static void ResizeSwapChainOnRenderThread(int newW, int newH);
-
-static void RecreateSwapChain(DXGI_SCALING newScaling)
-{
-    if (!g_swapChain) return;
-
-    WaitForGpu(); // Ensure GPU is idle before releasing resources
-
-    // Release resources that depend on the swap chain
-    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
-        g_renderTargets[i].Reset();
-    }
-
-    DXGI_SWAP_CHAIN_DESC1 desc;
-    g_swapChain->GetDesc1(&desc);
-    desc.Scaling = newScaling;
-
-    // Get the factory from the existing swap chain
-    Microsoft::WRL::ComPtr<IDXGIFactory5> factory;
-    HRESULT hr = g_swapChain->GetParent(IID_PPV_ARGS(&factory));
-    if (FAILED(hr)) {
-        DebugLog(L"RecreateSwapChain: Failed to get DXGI Factory. Re-initializing.");
-        HandleDeviceRemovedAndReinit();
-        return;
-    }
-
-    // Release the old swap chain
-    g_swapChain.Reset();
-
-    // Create a new swap chain
-    Microsoft::WRL::ComPtr<IDXGISwapChain1> newSwapChain;
-    hr = factory->CreateSwapChainForHwnd(
-        g_d3d12CommandQueue.Get(),
-        g_hWnd,
-        &desc,
-        nullptr,
-        nullptr,
-        &newSwapChain
-    );
-
-    if (FAILED(hr)) {
-        DebugLog(L"RecreateSwapChain: CreateSwapChainForHwnd failed. Re-initializing.");
-        HandleDeviceRemovedAndReinit();
-        return;
-    }
-
-    hr = newSwapChain.As(&g_swapChain);
-    if (FAILED(hr)) {
-        DebugLog(L"RecreateSwapChain: Failed to QI for IDXGISwapChain3. Re-initializing.");
-        HandleDeviceRemovedAndReinit();
-        return;
-    }
-
-    // Re-create the render target views
-    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart());
-    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
-        hr = g_swapChain->GetBuffer(i, IID_PPV_ARGS(&g_renderTargets[i]));
-        if (FAILED(hr)) {
-            DebugLog(L"RecreateSwapChain: GetBuffer failed. Re-initializing.");
-            HandleDeviceRemovedAndReinit();
-            return;
-        }
-        g_d3d12Device->CreateRenderTargetView(g_renderTargets[i].Get(), nullptr, rtvHandle);
-        rtvHandle.Offset(1, g_rtvDescriptorSize);
-    }
-
-    g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
-}
-
-static void ApplyPresentMode(HWND hwnd)
-{
-    // Query tearing support once (existing helper)
-    QueryTearingSupportOnce();
-
-    if (g_RequestBorderlessIF.load(std::memory_order_acquire)) {
-        // === Enter Borderless Fullscreen (Independent Flip intent) ===
-        // Save windowed rect once
-        if (IsIconic(hwnd) == FALSE) {
-            GetWindowRect(hwnd, &g_WindowedRect);
-        }
-
-        // Style: borderless
-        LONG style = GetWindowLong(hwnd, GWL_STYLE);
-        style &= ~(WS_OVERLAPPEDWINDOW);
-        style |= (WS_POPUP | WS_VISIBLE);
-        SetWindowLong(hwnd, GWL_STYLE, style);
-
-        // Resize to monitor bounds
-        HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        MONITORINFO mi{ sizeof(mi) };
-        GetMonitorInfo(hmon, &mi);
-        SetWindowPos(hwnd, HWND_TOP,
-            mi.rcMonitor.left, mi.rcMonitor.top,
-            mi.rcMonitor.right - mi.rcMonitor.left,
-            mi.rcMonitor.bottom - mi.rcMonitor.top,
-            SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
-
-        // Swap-chain scaling for borderless IF
-        if (g_swapChain) {
-            DXGI_SWAP_CHAIN_DESC1 desc{};
-            g_swapChain->GetDesc1(&desc);
-            if (desc.Scaling != DXGI_SCALING_STRETCH) {
-                DebugLog(L"ApplyPresentMode: Switching to SCALING_STRETCH for borderless.");
-                RecreateSwapChain(DXGI_SCALING_STRETCH);
-            }
-            // Ensure size is correct for the monitor
-            ResizeSwapChainOnRenderThread(mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top);
-        }
-
-    } else {
-        // === Return to Windowed (graceful fallback) ===
-        // Restore window style/rect
-        LONG style = GetWindowLong(hwnd, GWL_STYLE);
-        style &= ~(WS_POPUP);
-        style |= WS_OVERLAPPEDWINDOW;
-        SetWindowLong(hwnd, GWL_STYLE, style);
-
-        if (g_WindowedRect.right > g_WindowedRect.left && g_WindowedRect.bottom > g_WindowedRect.top) {
-            SetWindowPos(hwnd, nullptr,
-                g_WindowedRect.left, g_WindowedRect.top,
-                g_WindowedRect.right - g_WindowedRect.left,
-                g_WindowedRect.bottom - g_WindowedRect.top,
-                SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
-        } else {
-            ShowWindow(hwnd, SW_RESTORE);
-        }
-
-        // Ensure SCALING_NONE for windowed path
-        if (g_swapChain) {
-            DXGI_SWAP_CHAIN_DESC1 desc{};
-            g_swapChain->GetDesc1(&desc);
-            if (desc.Scaling != DXGI_SCALING_NONE) {
-                DebugLog(L"ApplyPresentMode: Switching to SCALING_NONE for windowed mode.");
-                RecreateSwapChain(DXGI_SCALING_NONE);
-            }
-            // Resize to current client rect
-            RECT rc;
-            GetClientRect(hwnd, &rc);
-            ResizeSwapChainOnRenderThread(rc.right - rc.left, rc.bottom - rc.top);
-        }
-    }
-}
-
 
 // Renders the video with its aspect ratio preserved, adding black bars (letterboxing/pillarboxing).
 static void SetLetterboxViewport(ID3D12GraphicsCommandList* cmd, D3D12_RESOURCE_DESC backbufferDesc, int videoWidthInt, int videoHeightInt)
@@ -645,6 +501,7 @@ static void DrainRetireBin() {
 void WaitForGpu();
 void ClearReorderState();
 bool InitD3D();
+static void HandleDeviceRemovedAndReinit() noexcept;
 
 // ---- Device-loss recovery (no goto, preserve layout/comments) ----
 
@@ -947,6 +804,150 @@ static void FinalizeResize(HWND hWnd, bool forceAnnounce = false)
     OnResolutionChanged_GatedSend(tw, th, /*force=*/true);
 
     InvalidateRect(hWnd, nullptr, FALSE);
+}
+
+// Forward declare for use in ApplyPresentMode
+static void ResizeSwapChainOnRenderThread(int newW, int newH);
+
+static void RecreateSwapChain(DXGI_SCALING newScaling)
+{
+    if (!g_swapChain) return;
+
+    WaitForGpu(); // Ensure GPU is idle before releasing resources
+
+    // Release resources that depend on the swap chain
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+        g_renderTargets[i].Reset();
+    }
+
+    DXGI_SWAP_CHAIN_DESC1 desc;
+    g_swapChain->GetDesc1(&desc);
+    desc.Scaling = newScaling;
+
+    // Get the factory from the existing swap chain
+    Microsoft::WRL::ComPtr<IDXGIFactory5> factory;
+    HRESULT hr = g_swapChain->GetParent(IID_PPV_ARGS(&factory));
+    if (FAILED(hr)) {
+        DebugLog(L"RecreateSwapChain: Failed to get DXGI Factory. Re-initializing.");
+        HandleDeviceRemovedAndReinit();
+        return;
+    }
+
+    // Release the old swap chain
+    g_swapChain.Reset();
+
+    // Create a new swap chain
+    Microsoft::WRL::ComPtr<IDXGISwapChain1> newSwapChain;
+    hr = factory->CreateSwapChainForHwnd(
+        g_d3d12CommandQueue.Get(),
+        g_hWnd,
+        &desc,
+        nullptr,
+        nullptr,
+        &newSwapChain
+    );
+
+    if (FAILED(hr)) {
+        DebugLog(L"RecreateSwapChain: CreateSwapChainForHwnd failed. Re-initializing.");
+        HandleDeviceRemovedAndReinit();
+        return;
+    }
+
+    hr = newSwapChain.As(&g_swapChain);
+    if (FAILED(hr)) {
+        DebugLog(L"RecreateSwapChain: Failed to QI for IDXGISwapChain3. Re-initializing.");
+        HandleDeviceRemovedAndReinit();
+        return;
+    }
+
+    // Re-create the render target views
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart());
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+        hr = g_swapChain->GetBuffer(i, IID_PPV_ARGS(&g_renderTargets[i]));
+        if (FAILED(hr)) {
+            DebugLog(L"RecreateSwapChain: GetBuffer failed. Re-initializing.");
+            HandleDeviceRemovedAndReinit();
+            return;
+        }
+        g_d3d12Device->CreateRenderTargetView(g_renderTargets[i].Get(), nullptr, rtvHandle);
+        rtvHandle.Offset(1, g_rtvDescriptorSize);
+    }
+
+    g_currentFrameBufferIndex = g_swapChain->GetCurrentBackBufferIndex();
+}
+
+static void ApplyPresentMode(HWND hwnd)
+{
+    // Query tearing support once (existing helper)
+    QueryTearingSupportOnce();
+
+    if (g_RequestBorderlessIF.load(std::memory_order_acquire)) {
+        // === Enter Borderless Fullscreen (Independent Flip intent) ===
+        // Save windowed rect once
+        if (IsIconic(hwnd) == FALSE) {
+            GetWindowRect(hwnd, &g_WindowedRect);
+        }
+
+        // Style: borderless
+        LONG style = GetWindowLong(hwnd, GWL_STYLE);
+        style &= ~(WS_OVERLAPPEDWINDOW);
+        style |= (WS_POPUP | WS_VISIBLE);
+        SetWindowLong(hwnd, GWL_STYLE, style);
+
+        // Resize to monitor bounds
+        HMONITOR hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi{ sizeof(mi) };
+        GetMonitorInfo(hmon, &mi);
+        SetWindowPos(hwnd, HWND_TOP,
+            mi.rcMonitor.left, mi.rcMonitor.top,
+            mi.rcMonitor.right - mi.rcMonitor.left,
+            mi.rcMonitor.bottom - mi.rcMonitor.top,
+            SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+
+        // Swap-chain scaling for borderless IF
+        if (g_swapChain) {
+            DXGI_SWAP_CHAIN_DESC1 desc{};
+            g_swapChain->GetDesc1(&desc);
+            if (desc.Scaling != DXGI_SCALING_STRETCH) {
+                DebugLog(L"ApplyPresentMode: Switching to SCALING_STRETCH for borderless.");
+                RecreateSwapChain(DXGI_SCALING_STRETCH);
+            }
+            // Ensure size is correct for the monitor
+            ResizeSwapChainOnRenderThread(mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top);
+        }
+
+    } else {
+        // === Return to Windowed (graceful fallback) ===
+        // Restore window style/rect
+        LONG style = GetWindowLong(hwnd, GWL_STYLE);
+        style &= ~(WS_POPUP);
+        style |= WS_OVERLAPPEDWINDOW;
+        SetWindowLong(hwnd, GWL_STYLE, style);
+
+        if (g_WindowedRect.right > g_WindowedRect.left && g_WindowedRect.bottom > g_WindowedRect.top) {
+            SetWindowPos(hwnd, nullptr,
+                g_WindowedRect.left, g_WindowedRect.top,
+                g_WindowedRect.right - g_WindowedRect.left,
+                g_WindowedRect.bottom - g_WindowedRect.top,
+                SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+        } else {
+            ShowWindow(hwnd, SW_RESTORE);
+        }
+
+        // Ensure SCALING_NONE for windowed path
+        if (g_swapChain) {
+            DXGI_SWAP_CHAIN_DESC1 desc{};
+            g_swapChain->GetDesc1(&desc);
+            if (desc.Scaling != DXGI_SCALING_NONE) {
+                DebugLog(L"ApplyPresentMode: Switching to SCALING_NONE for windowed mode.");
+                RecreateSwapChain(DXGI_SCALING_NONE);
+            }
+            // Resize to current client rect
+            RECT rc;
+            GetClientRect(hwnd, &rc);
+            ResizeSwapChainOnRenderThread(rc.right - rc.left, rc.bottom - rc.top);
+        }
+    }
 }
 
 UINT64 count = 0;
