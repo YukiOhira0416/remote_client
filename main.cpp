@@ -1028,12 +1028,26 @@ void FecWorkerThread(int threadId) {
                                  L". Frame: " + std::to_wstring(frameNumber) + L", Shard: " + std::to_wstring(shardIndex));
                         continue; // Skip this shard
                     }
+                    // Explicitly enforce shardIndex bounds using header values (order-agnostic interleaving guard).
+                    const uint32_t shards_total_from_header =
+                        parsedInfo.totalDataShards + parsedInfo.totalParityShards;
+                    if (expectedFrameCounts.find(frameNumber) == expectedFrameCounts.end()) {
+                        expectedFrameCounts[frameNumber] = static_cast<int>(shards_total_from_header);
+                    }
+                    if (shardIndex >= static_cast<int>(shards_total_from_header)) {
+                        DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) +
+                                 L"]: Invalid shardIndex (out of range). Frame " + std::to_wstring(frameNumber) +
+                                 L", Shard " + std::to_wstring(shardIndex) +
+                                 L", Total(K+M)=" + std::to_wstring(shards_total_from_header));
+                        continue; // drop malformed shard (do not count toward K)
+                    }
                 }
 
                 std::lock_guard<std::mutex> bufferLock(g_frameBufferMutex);
                 if (g_frameBuffer.find(frameNumber) == g_frameBuffer.end()) {
                     g_frameBuffer[frameNumber] = std::map<int, std::vector<uint8_t>>();
                 }
+                // Note: arrival order can be interleaved (data/parity). We only require >=K unique shard indices.
 
                 if (g_frameBuffer[frameNumber].find(shardIndex) == g_frameBuffer[frameNumber].end()) {
                     g_frameBuffer[frameNumber][shardIndex] = std::move(payload); // payload is moved here

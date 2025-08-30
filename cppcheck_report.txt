@@ -1,5 +1,209 @@
+main.cpp:9:0: information: Include file: <winsock2.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <winsock2.h>
+^
+main.cpp:10:0: information: Include file: <cstdint> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cstdint> // For uint64_t
+^
+main.cpp:11:0: information: Include file: <chrono> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <chrono>
+^
+main.cpp:13:0: information: Include file: <ws2tcpip.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <ws2tcpip.h>
+^
+main.cpp:14:0: information: Include file: <mswsock.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <mswsock.h> // Required for WSARecvMsg and WSASendMsg
+^
+main.cpp:15:0: information: Include file: <windows.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <windows.h>
+^
+main.cpp:16:0: information: Include file: <mmsystem.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <mmsystem.h>
+^
+main.cpp:17:0: information: Include file: <thread> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <thread>
+^
+main.cpp:18:0: information: Include file: <atomic> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <atomic>
+^
+main.cpp:19:0: information: Include file: <algorithm> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <algorithm>
+^
+main.cpp:20:0: information: Include file: <fstream> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <fstream>
+^
+main.cpp:21:0: information: Include file: <string> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <string>
+^
+main.cpp:22:0: information: Include file: <mutex> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <mutex>
+^
+main.cpp:23:0: information: Include file: <ctime> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <ctime>
+^
+window.h:1:0: information: Include file: <windows.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <windows.h>
+^
+window.h:2:0: information: Include file: <wrl/client.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <wrl/client.h>
+^
+window.h:3:0: information: Include file: <atomic> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <atomic>
+^
+main.cpp:25:0: information: Include file: <filesystem> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <filesystem>
+^
+main.cpp:26:0: information: Include file: <regex> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <regex>
+^
+main.cpp:27:0: information: Include file: <vector> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <vector>
+^
+main.cpp:28:0: information: Include file: <iostream> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <iostream>
+^
+main.cpp:29:0: information: Include file: <iomanip> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <iomanip>
+^
+main.cpp:30:0: information: Include file: <cstdint> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cstdint>
+^
+main.cpp:31:0: information: Include file: <cstring> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cstring>
+^
+main.cpp:32:0: information: Include file: <map> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <map>
+^
+main.cpp:33:0: information: Include file: <queue> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <queue>
+^
+main.cpp:34:0: information: Include file: <condition_variable> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <condition_variable>
+^
+DebugLog.h:2:0: information: Include file: <string> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <string>
+^
+ReedSolomon.h:1:0: information: Include file: <vector> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <vector>
+^
+ReedSolomon.h:2:0: information: Include file: <cstdint> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cstdint>
+^
+ReedSolomon.h:3:0: information: Include file: <map> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <map>     // ※ std::map を使用するためにインクルード
+^
+main.cpp:39:0: information: Include file: <gf_complete.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <gf_complete.h>
+^
+main.cpp:40:0: information: Include file: <jerasure.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <jerasure.h>
+^
+main.cpp:41:0: information: Include file: <reed_sol.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <reed_sol.h>
+^
+main.cpp:42:0: information: Include file: <cauchy.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cauchy.h>
+^
+main.cpp:43:0: information: Include file: <sstream> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <sstream>
+^
+main.cpp:44:0: information: Include file: "concurrentqueue/concurrentqueue.h" not found. [missingInclude]
+#include "concurrentqueue/concurrentqueue.h"
+^
+main.cpp:45:0: information: Include file: <enet/enet.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <enet/enet.h>
+^
+main.cpp:46:0: information: Include file: <nvtx3/nvtx3.hpp> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <nvtx3/nvtx3.hpp>
+^
+Globals.h:3:0: information: Include file: <windows.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <windows.h>
+^
+Globals.h:4:0: information: Include file: <atomic> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <atomic>
+^
+Globals.h:5:0: information: Include file: <string> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <string>
+^
+Globals.h:6:0: information: Include file: <thread> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <thread>
+^
+Globals.h:7:0: information: Include file: <vector> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <vector>
+^
+Globals.h:8:0: information: Include file: <utility> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <utility>
+^
+Globals.h:9:0: information: Include file: <cstdint> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cstdint>
+^
+Globals.h:10:0: information: Include file: <d3d12.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <d3d12.h>
+^
+Globals.h:11:0: information: Include file: <wrl/client.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <wrl/client.h>
+^
+Globals.h:12:0: information: Include file: <deque> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <deque>
+^
+Globals.h:13:0: information: Include file: <mutex> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <mutex>
+^
+Globals.h:14:0: information: Include file: <sstream> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <sstream>
+^
+Globals.h:15:0: information: Include file: <iostream> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <iostream>
+^
+Globals.h:16:0: information: Include file: <iomanip> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <iomanip>
+^
+Globals.h:17:0: information: Include file: <condition_variable> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <condition_variable>
+^
+Globals.h:18:0: information: Include file: <unordered_map> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <unordered_map>
+^
 Globals.h:19:0: information: Include file: "concurrentqueue/concurrentqueue.h" not found. [missingInclude]
 #include "concurrentqueue/concurrentqueue.h"
+^
+Globals.h:20:0: information: Include file: <nvtx3/nvtx3.hpp> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <nvtx3/nvtx3.hpp>
+^
+Globals.h:23:0: information: Include file: <cuda.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cuda.h>
+^
+nvdec.h:3:0: information: Include file: <nvtx3/nvtx3.hpp> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <nvtx3/nvtx3.hpp>
+^
+nvdec.h:4:0: information: Include file: <d3d12.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <d3d12.h>
+^
+nvdec.h:5:0: information: Include file: <wrl/client.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <wrl/client.h>
+^
+nvdec.h:6:0: information: Include file: <vector> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <vector>
+^
+nvdec.h:7:0: information: Include file: <memory> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <memory>
+^
+nvdec.h:8:0: information: Include file: <string> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <string>
+^
+nvdec.h:9:0: information: Include file: <cstdint> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cstdint>
+^
+nvdec.h:10:0: information: Include file: <unordered_map> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <unordered_map>
+^
+nvdec.h:11:0: information: Include file: <mutex> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <mutex>
+^
+nvdec.h:14:0: information: Include file: <cuda.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cuda.h>
+^
+nvdec.h:15:0: information: Include file: <cuda_runtime_api.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cuda_runtime_api.h>
 ^
 nvdec.h:18:0: information: Include file: "nvcuvid.h" not found. [missingInclude]
 #include "nvcuvid.h"
@@ -7,14 +211,38 @@ nvdec.h:18:0: information: Include file: "nvcuvid.h" not found. [missingInclude]
 nvdec.h:19:0: information: Include file: "cuviddec.h" not found. [missingInclude]
 #include "cuviddec.h"
 ^
-DebugLog.cpp:17:0: information: Include file: "concurrentqueue/concurrentqueue.h" not found. [missingInclude]
-#include "concurrentqueue/concurrentqueue.h" // 既にプロジェクトで利用
+AppShutdown.h:2:0: information: Include file: <thread> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <thread>
 ^
-Globals.cpp:6:0: information: Include file: "Nvdec.h" not found. [missingInclude]
-#include "Nvdec.h"
+AppShutdown.h:3:0: information: Include file: <vector> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <vector>
 ^
-main.cpp:44:0: information: Include file: "concurrentqueue/concurrentqueue.h" not found. [missingInclude]
-#include "concurrentqueue/concurrentqueue.h"
+AppShutdown.h:4:0: information: Include file: <atomic> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <atomic>
+^
+main.cpp:50:0: information: Include file: <cuda.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cuda.h>
+^
+main.cpp:51:0: information: Include file: <cuda_runtime_api.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <cuda_runtime_api.h>
+^
+main.cpp:52:0: information: Include file: <d3dx12.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <d3dx12.h>
+^
+main.cpp:53:0: information: Include file: <d3d12.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <d3d12.h>
+^
+main.cpp:184:0: information: Include file: <dxgi1_6.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <dxgi1_6.h>
+^
+main.cpp:186:0: information: Include file: <vector> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <vector>
+^
+main.cpp:187:0: information: Include file: <string> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <string>
+^
+main.cpp:321:0: information: Include file: <ShellScalingApi.h> not found. Please note: Cppcheck does not need standard library headers to get proper results. [missingIncludeSystem]
+#include <ShellScalingApi.h>
 ^
 main.cpp:563:42: style: C-style pointer casting [cstyleCast]
         int* temp_cauchy_for_bitmatrix = (int*)malloc(sizeof(int) * RS_M * RS_K); // m x k 行列
@@ -37,13 +265,16 @@ main.cpp:241:16: style: Variable 'a' can be declared as reference to const [cons
 main.cpp:1021:56: performance: Searching before insertion is not necessary. Instead of 'g_frameMetadata[frameNumber]={packetTimestamp,originalDataLenHost,SteadyNowMs()}' consider using 'g_frameMetadata.try_emplace(frameNumber, {packetTimestamp,originalDataLenHost,SteadyNowMs()});'. [stlFindInsert]
                         g_frameMetadata[frameNumber] = {packetTimestamp, originalDataLenHost, SteadyNowMs()};
                                                        ^
-main.cpp:1035:85: performance: Searching before insertion is not necessary. Instead of 'g_frameBuffer[frameNumber]=std::map<int,std::vector<uint8_t>>()' consider using 'g_frameBuffer.try_emplace(frameNumber, std::map<int,std::vector<uint8_t>>());'. [stlFindInsert]
+main.cpp:1035:76: performance: Searching before insertion is not necessary. Instead of 'expectedFrameCounts[frameNumber]=static_cast<int>(shards_total_from_header)' consider using 'expectedFrameCounts.try_emplace(frameNumber, static_cast<int>(shards_total_from_header));'. [stlFindInsert]
+                        expectedFrameCounts[frameNumber] = static_cast<int>(shards_total_from_header);
+                                                                           ^
+main.cpp:1048:85: performance: Searching before insertion is not necessary. Instead of 'g_frameBuffer[frameNumber]=std::map<int,std::vector<uint8_t>>()' consider using 'g_frameBuffer.try_emplace(frameNumber, std::map<int,std::vector<uint8_t>>());'. [stlFindInsert]
                     g_frameBuffer[frameNumber] = std::map<int, std::vector<uint8_t>>();
                                                                                     ^
-main.cpp:1039:71: performance: Searching before insertion is not necessary. Instead of 'g_frameBuffer[frameNumber][shardIndex]=std::move(payload)' consider using 'g_frameBuffer[frameNumber].try_emplace(shardIndex, std::move(payload));'. [stlFindInsert]
+main.cpp:1053:71: performance: Searching before insertion is not necessary. Instead of 'g_frameBuffer[frameNumber][shardIndex]=std::move(payload)' consider using 'g_frameBuffer[frameNumber].try_emplace(shardIndex, std::move(payload));'. [stlFindInsert]
                     g_frameBuffer[frameNumber][shardIndex] = std::move(payload); // payload is moved here
                                                                       ^
-main.cpp:1174:14: performance: Ineffective call of function 'substr' because a prefix of the string is assigned to itself. Use resize() or pop_back() instead. [uselessCallsSubstr]
+main.cpp:1188:14: performance: Ineffective call of function 'substr' because a prefix of the string is assigned to itself. Use resize() or pop_back() instead. [uselessCallsSubstr]
     exeDir = exeDir.substr(0, exeDir.find_last_of("\\/"));
              ^
 main.cpp:877:56: style: Consider using std::accumulate algorithm instead of a raw loop. [useStlAlgorithm]
@@ -52,74 +283,14 @@ main.cpp:877:56: style: Consider using std::accumulate algorithm instead of a ra
 main.cpp:712:38: style: struct member 'net::name' is never used. [unusedStructMember]
         static constexpr char const* name = "NET";
                                      ^
-nvdec.cpp:649:11: style: Variable 'fr' can be declared as reference to const [constVariableReference]
-    auto& fr = self->m_frameResources[pDispInfo->picture_index];
-          ^
-nvdec.cpp:389:49: style: Parameter 'pVideoFormat' can be declared as pointer to const [constParameterPointer]
-bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
-                                                ^
-nvdec.cpp:8:38: style: struct member 'nvdec::name' is never used. [unusedStructMember]
-        static constexpr char const* name = "NVDEC";
-                                     ^
-window.cpp:1555:24: style: inconclusive: Found duplicate branches for 'if' and 'else'. [duplicateBranch]
-                } else if (r == WAIT_TIMEOUT) {
-                       ^
-window.cpp:1559:17: note: Found duplicate branches for 'if' and 'else'.
-                else {
-                ^
-window.cpp:1555:24: note: Found duplicate branches for 'if' and 'else'.
-                } else if (r == WAIT_TIMEOUT) {
-                       ^
-window.cpp:1365:32: style: Variable 's_lastY' can be declared as pointer to const [constVariablePointer]
-        static ID3D12Resource* s_lastY = nullptr;
-                               ^
-window.cpp:1366:32: style: Variable 's_lastUV' can be declared as pointer to const [constVariablePointer]
-        static ID3D12Resource* s_lastUV = nullptr;
-                               ^
-window.cpp:317:52: style: struct member 'd3d12_domain::name' is never used. [unusedStructMember]
-struct d3d12_domain { static constexpr char const* name = "D3D12"; };
-                                                   ^
-window.cpp:318:51: style: struct member 'cuda_domain::name' is never used. [unusedStructMember]
-struct cuda_domain { static constexpr char const* name = "CUDA"; };
-                                                  ^
-window.cpp:663:29: style: struct member 'VertexPosTex::x' is never used. [unusedStructMember]
-struct VertexPosTex { float x, y, z; float u, v; };
-                            ^
-window.cpp:663:32: style: struct member 'VertexPosTex::y' is never used. [unusedStructMember]
-struct VertexPosTex { float x, y, z; float u, v; };
-                               ^
-window.cpp:663:35: style: struct member 'VertexPosTex::z' is never used. [unusedStructMember]
-struct VertexPosTex { float x, y, z; float u, v; };
-                                  ^
-window.cpp:663:44: style: struct member 'VertexPosTex::u' is never used. [unusedStructMember]
-struct VertexPosTex { float x, y, z; float u, v; };
-                                           ^
-window.cpp:663:47: style: struct member 'VertexPosTex::v' is never used. [unusedStructMember]
-struct VertexPosTex { float x, y, z; float u, v; };
-                                              ^
-window.cpp:1217:54: style: struct member 'reorder_domain::name' is never used. [unusedStructMember]
-struct reorder_domain { static constexpr char const* name = "REORDER"; };
-                                                     ^
-window.cpp:1332:42: style: Variable 'newFrameFromReorder.copyDone' is assigned a value that is never used. [unreadVariable]
-            newFrameFromReorder.copyDone = nullptr; // Ownership transferred to cache
-                                         ^
-window.cpp:1337:34: style: Variable 'frameToDraw.copyDone' is assigned a value that is never used. [unreadVariable]
-            frameToDraw.copyDone = nullptr;
-                                 ^
-window.cpp:1596:30: style: Variable 'shouldPresent' is assigned a value that is never used. [unreadVariable]
-    const bool shouldPresent = frameWasRendered || forcePresent;
-                             ^
-window.cpp:1647:45: style: Variable 'renderedFrameData.nvtx_range_id' is assigned a value that is never used. [unreadVariable]
-            renderedFrameData.nvtx_range_id = 0;
-                                            ^
-DebugLog.cpp:168:0: style: The function 'ForceFlush' is never used. [unusedFunction]
-void DebugLogAsync::ForceFlush() noexcept {
-^
-DebugLog.cpp:174:0: style: The function 'SetEnabled' is never used. [unusedFunction]
-void DebugLogAsync::SetEnabled(bool enabled) noexcept {
+Globals.h:40:0: style: The function 'BumpStreamGeneration' is never used. [unusedFunction]
+inline void BumpStreamGeneration() {
 ^
 Globals.h:88:0: style: The function 'PointerToWString' is never used. [unusedFunction]
 std::wstring PointerToWString(T* ptr) {
+^
+Globals.h:98:0: style: The function 'HResultToHexWString' is never used. [unusedFunction]
+inline std::wstring HResultToHexWString(HRESULT hr) {
 ^
 main.cpp:502:0: style: The function 'SaveH264ToFile_NUM' is never used. [unusedFunction]
 void SaveH264ToFile_NUM(const std::vector<uint8_t>& prepared_h264Buffer, const std::string& baseName) {
@@ -127,7 +298,7 @@ void SaveH264ToFile_NUM(const std::vector<uint8_t>& prepared_h264Buffer, const s
 main.cpp:542:0: style: The function 'getNALType' is never used. [unusedFunction]
 int getNALType(const uint8_t* data, size_t size) {
 ^
-main.cpp:1148:0: style: The function 'wWinMain' is never used. [unusedFunction]
+main.cpp:1162:0: style: The function 'wWinMain' is never used. [unusedFunction]
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
 ^
 nofile:0:0: information: Active checkers: 172/592 (use --checkers-report=<filename> to see details) [checkersReport]
