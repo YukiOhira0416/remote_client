@@ -112,6 +112,7 @@ struct ReadyGpuFrame {
     int height;
     uint32_t originalFrameNumber;
     uint64_t id;
+    uint32_t picture_index = 0; // The index of the NVDEC decode surface
     // 新規: 送信（ストリーム）側のフレーム番号
     uint32_t streamFrameNumber = 0;
     // Latency metric

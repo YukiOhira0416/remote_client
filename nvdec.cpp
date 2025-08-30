@@ -769,6 +769,7 @@ readyFrame.fenceValue = fenceValue;    // NEW: used by render queue GPU-wait
     readyFrame.hw_decoded_texture_Y  = self->m_frameResources[pDispInfo->picture_index].pTextureY;
     readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
     readyFrame.timestamp             = pDispInfo->timestamp;
+    readyFrame.picture_index         = pDispInfo->picture_index;
     readyFrame.originalFrameNumber   = self->m_nDecodedFrameCount++;
     readyFrame.id                    = readyFrame.originalFrameNumber;
     readyFrame.width                 = self->m_frameWidth;
