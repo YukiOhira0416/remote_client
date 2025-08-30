@@ -84,6 +84,8 @@ private:
         // NEW: for async copy
         CUstream copyStream = nullptr;
         CUevent copyDone = nullptr;
+        CUDA_MEMCPY2D cpyY;
+        CUDA_MEMCPY2D cpyUV;
     };
 
     std::vector<DecodedFrameResource> m_frameResources;

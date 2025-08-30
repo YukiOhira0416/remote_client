@@ -434,7 +434,7 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
     // We will perform a crop manually during the cuMemcpy2D.
     m_videoDecoderCreateInfo.ulTargetWidth = pVideoFormat->coded_width;
     m_videoDecoderCreateInfo.ulTargetHeight = pVideoFormat->coded_height;
-    m_videoDecoderCreateInfo.ulNumOutputSurfaces = 12; // more headroom during resize/IDR
+    m_videoDecoderCreateInfo.ulNumOutputSurfaces = 16; // was 12; add headroom for bursty ready frames
     m_videoDecoderCreateInfo.OutputFormat = cudaVideoSurfaceFormat_NV12;
 
     CUDA_CHECK(cuvidCreateDecoder(&m_hDecoder, &m_videoDecoderCreateInfo));
@@ -618,6 +618,19 @@ if (!g_cuCopyFenceSemaphore) {
         // NEW: Create async copy resources
         CUDA_CHECK(cuStreamCreate(&m_frameResources[i].copyStream, CU_STREAM_NON_BLOCKING));
         CUDA_CHECK(cuEventCreate(&m_frameResources[i].copyDone, CU_EVENT_DISABLE_TIMING));
+
+        // Pre-build CUDA_MEMCPY2D descriptors for Y/UV (immutable fields)
+        memset(&m_frameResources[i].cpyY, 0, sizeof(m_frameResources[i].cpyY));
+        m_frameResources[i].cpyY.dstMemoryType   = CU_MEMORYTYPE_ARRAY;
+        m_frameResources[i].cpyY.dstArray        = m_frameResources[i].pCudaArrayY;
+        m_frameResources[i].cpyY.WidthInBytes    = m_videoDecoderCreateInfo.ulWidth;   // bytes, Y
+        m_frameResources[i].cpyY.Height          = m_videoDecoderCreateInfo.ulHeight;  // rows, Y
+
+        memset(&m_frameResources[i].cpyUV, 0, sizeof(m_frameResources[i].cpyUV));
+        m_frameResources[i].cpyUV.dstMemoryType  = CU_MEMORYTYPE_ARRAY;
+        m_frameResources[i].cpyUV.dstArray       = m_frameResources[i].pCudaArrayUV;
+        m_frameResources[i].cpyUV.WidthInBytes   = m_videoDecoderCreateInfo.ulWidth;   // bytes, UV width matches Y
+        m_frameResources[i].cpyUV.Height         = m_videoDecoderCreateInfo.ulHeight / 2; // rows, UV
     }
 
     DebugLog(L"Allocated D3D12/CUDA frame buffers (Committed/Dedicated).");
@@ -703,40 +716,31 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     // Use the per-surface stream (create/keep it alongside your per-surface arrays).
     CUstream s = fr.copyStream;
 
+    // Update only the per-frame source fields and pitch, then launch async copies.
+    fr.cpyY.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+    fr.cpyY.srcDevice     = pDecodedFrame;
+    fr.cpyY.srcPitch      = nDecodedPitch;
+
+    fr.cpyUV.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+    fr.cpyUV.srcDevice     = pDecodedFrame + (size_t)fr.cpyY.Height * nDecodedPitch;
+    fr.cpyUV.srcPitch      = nDecodedPitch;
+
     // Y plane
     {
         nvtx3::scoped_range_in<my_nvtx_domains::nvdec> r("CopyAsync(Y)");
-        CUDA_MEMCPY2D y = {};
-        y.srcMemoryType = CU_MEMORYTYPE_DEVICE;
-        y.srcDevice     = pDecodedFrame;
-        y.srcPitch      = nDecodedPitch;
-        y.dstMemoryType = CU_MEMORYTYPE_ARRAY;
-        y.dstArray      = fr.pCudaArrayY;
-        y.WidthInBytes  = srcWidthBytes_Y;
-        y.Height        = srcHeightRows_Y;
-        CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&y, s));
+        CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&fr.cpyY, s));
     }
 
     // UV plane
     {
         nvtx3::scoped_range_in<my_nvtx_domains::nvdec> r("CopyAsync(UV)");
-        CUDA_MEMCPY2D uv = {};
-        uv.srcMemoryType = CU_MEMORYTYPE_DEVICE;
-        uv.srcDevice     = pDecodedFrame + (size_t)srcHeightRows_Y * nDecodedPitch;
-        uv.srcPitch      = nDecodedPitch;
-        uv.dstMemoryType = CU_MEMORYTYPE_ARRAY;
-        uv.dstArray      = fr.pCudaArrayUV;
-        uv.WidthInBytes  = srcWidthBytes_UV;
-        uv.Height        = srcHeightRows_UV;
-        CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&uv, s));
+        CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&fr.cpyUV, s));
     }
 
-    // Record completion event for this frame
-    CUevent frameCopyDone = nullptr;
+    // Record completion event for this frame using the pre-allocated event
     {
         nvtx3::scoped_range_in<my_nvtx_domains::nvdec> r("EventRecord(copyDone)");
-        CUDA_CHECK_CALLBACK(cuEventCreate(&frameCopyDone, CU_EVENT_DISABLE_TIMING));
-        CUDA_CHECK_CALLBACK(cuEventRecord(frameCopyDone, s));
+        CUDA_CHECK_CALLBACK(cuEventRecord(fr.copyDone, s));
     }
 
 // [NEW] Signal external semaphore (D3D12 fence) so the render queue can GPU-wait
@@ -757,7 +761,7 @@ if (g_cuCopyFenceSemaphore) {
 
     ReadyGpuFrame readyFrame;
     // Store the event in the outgoing frame struct; keep all existing fields/logging intact.
-    readyFrame.copyDone = frameCopyDone; // Ownership transferred to renderer
+    readyFrame.copyDone = fr.copyDone; // Ownership transferred to renderer
 readyFrame.fenceValue = fenceValue;    // NEW: used by render queue GPU-wait
 
     readyFrame.hw_decoded_texture_Y  = self->m_frameResources[pDispInfo->picture_index].pTextureY;
