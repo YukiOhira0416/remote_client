@@ -368,11 +368,6 @@ std::mutex g_frameMetadataMutex;
 std::map<uint64_t, std::chrono::steady_clock::time_point> g_fragmentFirstPacketTime;
 std::atomic<uint64_t> g_rgbaFrameIdCounter{0};
 
-// Number of packet processing threads
-const int NUM_FEC_WORKER_THREADS = 1;        // Threads that process ParsedShardInfo, assemble shards, and do FEC
-
-const int NUM_RECEIVER_THREADS = 4; // Number of receiver threads
-
 // Structures (assuming they are defined in Globals.h or a shared header, replicating here for clarity if not)
 // Ensure these match the definitions used by the sender (CaptureManager.cpp)
 #ifndef SHARED_PACKET_STRUCTURES_DEFINED
