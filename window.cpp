@@ -902,6 +902,8 @@ bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
 
 bool InitD3D() {
     nvtxNameOsThreadA(GetCurrentThreadId(), "RenderThread");
+    // Elevate priority to reduce scheduling jitter.
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
         // Release existing D3D12 resources if re-initializing
     if (g_fence) g_fence.Reset();
     if (g_commandList) g_commandList.Reset();
@@ -1317,6 +1319,23 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     {
         std::lock_guard<std::mutex> rlock(g_reorderMutex);
 
+        // Optional low-latency mode: if multiple frames have queued up,
+        // drop all but the newest one to minimize latency.
+        static const bool kLowLatencyDropOld =
+            (GetEnvironmentVariableW(L"LOW_LATENCY_DROP_OLD", nullptr, 0) != 0);
+
+        if (kLowLatencyDropOld) {
+            if (g_reorderBuffer.size() > 1) {
+                // Keep only the greatest streamFrameNumber
+                auto it_last = std::prev(g_reorderBuffer.end());
+                uint32_t newest_key = it_last->first;
+                ReadyGpuFrame newest = std::move(it_last->second);
+                g_reorderBuffer.clear(); // Invalidate iterators
+                g_reorderBuffer.emplace(newest_key, std::move(newest));
+                g_expectedStreamFrame = newest_key; // align expected
+            }
+        }
+
         ReadyGpuFrame newFrameFromReorder;
         bool hasNewFrame = false;
 
@@ -1369,14 +1388,11 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             // Propagate the render-start time to the master cached frame, so that
             // latency stats are correct.
             g_lastDrawnFrame.render_start_ms = frameToDraw.render_start_ms;
-            // [CHANGED] No CPU blocking on CUDA event.
-            // We now wait on the GPU queue using the fence value supplied by CUDA.
-            // Fallback: if fenceValue==0, keep the old non-blocking query (no synchronize).
-            if (g_lastDrawnFrame.fenceValue) {
-                // GPU-side wait ties D3D12 work-after-copy completion on the GPU timeline
-                g_d3d12CommandQueue->Wait(g_copyFence.Get(), g_lastDrawnFrame.fenceValue);
+            // GPU-GPU sync: ensure render queue does not sample Y/UV until CUDA copy signaled completion.
+            if (frameToDraw.fenceValue != 0 && g_copyFence) {
+                g_d3d12CommandQueue->Wait(g_copyFence.Get(), static_cast<UINT64>(frameToDraw.fenceValue));
             } else if (g_lastDrawnFrame.copyDone) {
-                // Fallback/qos: keep non-blocking query for diagnostics; DO NOT synchronize here
+                // Existing CUDA-event fallback logic (no-op wait, for diagnostics).
                 (void)cuEventQuery(g_lastDrawnFrame.copyDone);
             }
         }

@@ -739,18 +739,22 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
         CUDA_CHECK_CALLBACK(cuEventRecord(frameCopyDone, s));
     }
 
-// [NEW] Signal external semaphore (D3D12 fence) so the render queue can GPU-wait
-UINT64 fenceValue = 0;
-if (g_cuCopyFenceSemaphore) {
-    fenceValue = ++g_cudaCopyFenceValue;
-    CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS sig{};
-    sig.params.fence.value = fenceValue;
-    CUresult cr = cuSignalExternalSemaphoresAsync(&g_cuCopyFenceSemaphore, &sig, 1, s);
-    if (cr != CUDA_SUCCESS) {
-        DebugLog(L"CUDA: cuSignalExternalSemaphoresAsync failed; continuing with event fallback.");
-        fenceValue = 0; // disable fence for this frame
+    // After CUDA copy to D3D12 textures is enqueued and will complete on 'copyStream'
+    UINT64 fenceValue = 0;
+    if (g_cuCopyFenceSemaphore) {
+        // Bump per-frame fence value (monotonic)
+        const uint64_t fv = ++g_cudaCopyFenceValue;
+        CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS sParams{};
+        sParams.params.fence.value = fv;
+        // Use the _CALLBACK version as this is a callback function and should not throw.
+        CUDA_CHECK_CALLBACK(cuSignalExternalSemaphoresAsync(&g_cuCopyFenceSemaphore, &sParams, 1, s));
+
+        // Convey to the render side
+        fenceValue = fv;
+    } else {
+        // Fallback path (existing event-based timing stays intact)
+        // fenceValue remains 0; render will fall back to event waits if any.
     }
-}
 
     // If we get here, all CUDA operations were successful.
     // The destructors for mappedFrame and ctxLocker will automatically clean up.
@@ -758,7 +762,7 @@ if (g_cuCopyFenceSemaphore) {
     ReadyGpuFrame readyFrame;
     // Store the event in the outgoing frame struct; keep all existing fields/logging intact.
     readyFrame.copyDone = frameCopyDone; // Ownership transferred to renderer
-readyFrame.fenceValue = fenceValue;    // NEW: used by render queue GPU-wait
+    readyFrame.fenceValue = fenceValue;    // NEW: used by render queue GPU-wait
 
     readyFrame.hw_decoded_texture_Y  = self->m_frameResources[pDispInfo->picture_index].pTextureY;
     readyFrame.hw_decoded_texture_UV = self->m_frameResources[pDispInfo->picture_index].pTextureUV;
