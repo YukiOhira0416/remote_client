@@ -1176,13 +1176,54 @@ if (FAILED(hr) || !g_copyFenceSharedHandle) {
     compileFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 #endif
 
-    hr = D3DCompileFromFile(L"Shader/FullScreenQuadVS.hlsl", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "vs_5_1", compileFlags, 0, &vertexShaderBlob, &errorBlob);
+    // Get the executable directory to construct shader paths
+    wchar_t exePath[MAX_PATH];
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    std::wstring exeDir = std::wstring(exePath);
+    exeDir = exeDir.substr(0, exeDir.find_last_of(L"\\/"));
+    
+    // Try multiple possible shader locations
+    std::vector<std::wstring> shaderBasePaths = {
+        L"Shader/",  // Current directory relative (for VS Code)
+        exeDir + L"/../../Shader/",  // From build/Debug back to project root
+        exeDir + L"/../../../Shader/",  // Alternative path
+        exeDir + L"/Shader/"  // Same directory as executable
+    };
+    
+    std::wstring vsShaderPath, psShaderPath;
+    bool foundVS = false, foundPS = false;
+    
+    for (const auto& basePath : shaderBasePaths) {
+        std::wstring testVSPath = basePath + L"FullScreenQuadVS.hlsl";
+        std::wstring testPSPath = basePath + L"NV12ToRGBPS.hlsl";
+        
+        if (!foundVS && GetFileAttributesW(testVSPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            vsShaderPath = testVSPath;
+            foundVS = true;
+        }
+        if (!foundPS && GetFileAttributesW(testPSPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            psShaderPath = testPSPath;
+            foundPS = true;
+        }
+        if (foundVS && foundPS) break;
+    }
+
+    if (!foundVS) {
+        DebugLog(L"InitD3D (D3D12): Could not find FullScreenQuadVS.hlsl in any expected location");
+        return false;
+    }
+    if (!foundPS) {
+        DebugLog(L"InitD3D (D3D12): Could not find NV12ToRGBPS.hlsl in any expected location");
+        return false;
+    }
+
+    hr = D3DCompileFromFile(vsShaderPath.c_str(), nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "vs_5_1", compileFlags, 0, &vertexShaderBlob, &errorBlob);
     if (FAILED(hr)) {
         if (errorBlob) DebugLog(L"InitD3D (D3D12): Vertex shader compilation failed: " + std::wstring(static_cast<wchar_t*>(errorBlob->GetBufferPointer()), static_cast<wchar_t*>(errorBlob->GetBufferPointer()) + errorBlob->GetBufferSize() / sizeof(wchar_t)));
         else DebugLog(L"InitD3D (D3D12): Vertex shader compilation failed. HR: " + HResultToHexWString(hr));
         return false;
     }
-    hr = D3DCompileFromFile(L"Shader/NV12ToRGBPS.hlsl", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "ps_5_1", compileFlags, 0, &pixelShaderBlob, &errorBlob);
+    hr = D3DCompileFromFile(psShaderPath.c_str(), nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "ps_5_1", compileFlags, 0, &pixelShaderBlob, &errorBlob);
     if (FAILED(hr)) {
         if (errorBlob) DebugLog(L"InitD3D (D3D12): Pixel shader compilation failed: " + std::wstring(static_cast<wchar_t*>(errorBlob->GetBufferPointer()), static_cast<wchar_t*>(errorBlob->GetBufferPointer()) + errorBlob->GetBufferSize() / sizeof(wchar_t)));
         else DebugLog(L"InitD3D (D3D12): Pixel shader compilation failed. HR: " + HResultToHexWString(hr));
