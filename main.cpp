@@ -69,13 +69,6 @@ extern std::atomic<int> currentResolutionWidth;  // Assumed to be in window.cpp 
 extern std::atomic<int> currentResolutionHeight; // Assumed to be in window.cpp per instructions
 
 
-// 既存定義を流用（main.cpp 冒頭にある定数と同じもの）
-#ifndef SERVER_IP_RESEND
-#define SERVER_IP_RESEND "127.0.0.1"
-#endif
-#ifndef SERVER_PORT_RESEND
-#define SERVER_PORT_RESEND 8120
-#endif
 
 // 失敗しても致命傷にしない（ベストエフォート）
 void RequestIDRNow()
@@ -96,7 +89,7 @@ void RequestIDRNow()
         hints.ai_socktype = SOCK_DGRAM;
         hints.ai_protocol = IPPROTO_UDP;
 
-        if (getaddrinfo(SERVER_IP_RESEND, std::to_string(SERVER_PORT_RESEND).c_str(), &hints, &result) != 0 || !result) {
+        if (getaddrinfo(kServerIpResend.c_str(), std::to_string(kServerPortResend).c_str(), &hints, &result) != 0 || !result) {
             DebugLog(L"RequestIDRNow: getaddrinfo failed.");
             return;
         }
@@ -321,12 +314,52 @@ static bool EnforceGpuPolicyOrExit() {
 #include <ShellScalingApi.h>
 #pragma comment(lib, "Shcore.lib")
 
-#define SERVER_IP_DATA "127.0.0.1"
-#define SERVER_IP_RESEND "127.0.0.1"// 再送信要求用のIPアドレス
-#define CLIENT_IP_BANDWIDTH "127.0.0.1"
-#define SERVER_PORT_RESEND 8120 // 再送信要求用のポート番号
-#define SERVER_PORT_DATA 8130 // パケット受信用のポート番号
-#define CLIENT_PORT_BANDWIDTH 8200// 帯域幅測定用のポート番号
+// === Network configuration (replaces hard-coded #define IPs/ports) ===
+// Keep layout/comments; default to current behavior if env not set.
+
+static std::string GetEnvUtf8(const char* name) {
+    wchar_t wbuf[256] = {0};
+    DWORD n = GetEnvironmentVariableW(std::wstring(name, name + strlen(name)).c_str(), wbuf, (DWORD)(sizeof(wbuf)/sizeof(wbuf[0])));
+    if (n == 0 || n >= (DWORD)(sizeof(wbuf)/sizeof(wbuf[0]))) return {};
+    std::wstring ws(wbuf);
+    return std::string(ws.begin(), ws.end());
+}
+static uint16_t ParseU16Or(const std::string& s, uint16_t defv) {
+    if (s.empty()) return defv;
+    try {
+        unsigned long v = std::stoul(s);
+        if (v > 65535) return defv;
+        return (uint16_t)v;
+    } catch (...) { return defv; }
+}
+
+// Defaults preserve current behavior
+static std::string kServerIpData = []{
+    auto v = GetEnvUtf8("VIEWER_SERVER_IP");
+    return v.empty() ? std::string("127.0.0.1") : v;
+}();
+static std::string kServerIpResend = []{
+    auto v = GetEnvUtf8("VIEWER_SERVER_IP_RESEND");
+    return v.empty() ? kServerIpData : v;
+}();
+static std::string kClientIpBandwidth = []{
+    auto v = GetEnvUtf8("VIEWER_CLIENT_IP_BANDWIDTH");
+    return v.empty() ? std::string("127.0.0.1") : v;
+}();
+
+static uint16_t kServerPortData   = ParseU16Or(GetEnvUtf8("VIEWER_SERVER_PORT_DATA"),   8130);
+static uint16_t kServerPortResend = ParseU16Or(GetEnvUtf8("VIEWER_SERVER_PORT_RESEND"), 8120);
+static uint16_t kClientPortBw     = ParseU16Or(GetEnvUtf8("VIEWER_CLIENT_PORT_BW"),     8200);
+
+// Optional: Log resolved endpoints (keep timing/logging style intact)
+static void LogResolvedNetConfig() {
+    DebugLog(L"[NetConfig] SERVER(data)=" + std::wstring(kServerIpData.begin(), kServerIpData.end()) +
+            L":" + std::to_wstring(kServerPortData));
+    DebugLog(L"[NetConfig] SERVER(resend)=" + std::wstring(kServerIpResend.begin(), kServerIpResend.end()) +
+            L":" + std::to_wstring(kServerPortResend));
+    DebugLog(L"[NetConfig] CLIENT(bandwidth dst)=" + std::wstring(kClientIpBandwidth.begin(), kClientIpBandwidth.end()) +
+            L":" + std::to_wstring(kClientPortBw));
+}
 #define BANDWIDTH_DATA_SIZE 60 * 1024  // 60KB(帯域幅測定時のデータサイズ)
 #define DATA_PACKET_SIZE 1400 // UDPパケットサイズ
 #define WSARECV_BUFFER_SIZE 65000
@@ -602,8 +635,10 @@ void ListenForResendRequests() {
 
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(SERVER_PORT_RESEND); // ポート8120で待機
-    inet_pton(AF_INET, SERVER_IP_RESEND, &serverAddr.sin_addr); // 127.0.0.1で待機
+    serverAddr.sin_port   = htons(kServerPortResend);
+
+    // Bind to ANY so remote hosts can reach us; preserve comment style.
+    serverAddr.sin_addr.s_addr = htonl(INADDR_ANY);
 
     if (bind(udpSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) == SOCKET_ERROR) {
         DebugLog(L"Failed to bind socket.");
@@ -667,8 +702,8 @@ void CountBandW() {
 
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(CLIENT_PORT_BANDWIDTH);
-    inet_pton(AF_INET, CLIENT_IP_BANDWIDTH, &serverAddr.sin_addr);
+    serverAddr.sin_port   = htons(kClientPortBw);
+    inet_pton(AF_INET, kClientIpBandwidth.c_str(), &serverAddr.sin_addr);
 
     std::vector<char> data(BANDWIDTH_DATA_SIZE, 'A');
 
@@ -718,7 +753,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
     ENetAddress address;
 
     address.host = ENET_HOST_ANY; // Listen on all available interfaces
-    address.port = static_cast<enet_uint16>(SERVER_PORT_DATA + threadId); // Each thread listens on a different port
+    address.port = static_cast<enet_uint16>(kServerPortData + threadId); // Each thread listens on a different port
 
     server_host = enet_host_create(&address /* the address to bind the server host to */,
                                    32      /* allow up to 32 clients and/or outgoing connections */,
@@ -1243,6 +1278,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         WSACleanup();
         return 1;
     }
+
+    LogResolvedNetConfig();
 
     timeBeginPeriod(1);
 
