@@ -69,6 +69,52 @@ extern std::atomic<int> currentResolutionWidth;  // Assumed to be in window.cpp 
 extern std::atomic<int> currentResolutionHeight; // Assumed to be in window.cpp per instructions
 
 
+// === Network configuration (replaces hard-coded #define IPs/ports) ===
+// Keep layout/comments; default to current behavior if env not set.
+
+static std::string GetEnvUtf8(const char* name) {
+    wchar_t wbuf[256] = {0};
+    DWORD n = GetEnvironmentVariableW(std::wstring(name, name + strlen(name)).c_str(), wbuf, (DWORD)(sizeof(wbuf)/sizeof(wbuf[0])));
+    if (n == 0 || n >= (DWORD)(sizeof(wbuf)/sizeof(wbuf[0]))) return {};
+    std::wstring ws(wbuf);
+    return std::string(ws.begin(), ws.end());
+}
+static uint16_t ParseU16Or(const std::string& s, uint16_t defv) {
+    if (s.empty()) return defv;
+    try {
+        unsigned long v = std::stoul(s);
+        if (v > 65535) return defv;
+        return (uint16_t)v;
+    } catch (...) { return defv; }
+}
+
+// Defaults preserve current behavior
+static std::string kServerIpData = []{
+    auto v = GetEnvUtf8("VIEWER_SERVER_IP");
+    return v.empty() ? std::string("127.0.0.1") : v;
+}();
+static std::string kServerIpResend = []{
+    auto v = GetEnvUtf8("VIEWER_SERVER_IP_RESEND");
+    return v.empty() ? kServerIpData : v;
+}();
+static std::string kClientIpBandwidth = []{
+    auto v = GetEnvUtf8("VIEWER_CLIENT_IP_BANDWIDTH");
+    return v.empty() ? std::string("127.0.0.1") : v;
+}();
+
+static uint16_t kServerPortData   = ParseU16Or(GetEnvUtf8("VIEWER_SERVER_PORT_DATA"),   8130);
+static uint16_t kServerPortResend = ParseU16Or(GetEnvUtf8("VIEWER_SERVER_PORT_RESEND"), 8120);
+static uint16_t kClientPortBw     = ParseU16Or(GetEnvUtf8("VIEWER_CLIENT_PORT_BW"),     8200);
+
+// Optional: Log resolved endpoints (keep timing/logging style intact)
+static void LogResolvedNetConfig() {
+    DebugLog(L"[NetConfig] SERVER(data)=" + std::wstring(kServerIpData.begin(), kServerIpData.end()) +
+            L":" + std::to_wstring(kServerPortData));
+    DebugLog(L"[NetConfig] SERVER(resend)=" + std::wstring(kServerIpResend.begin(), kServerIpResend.end()) +
+            L":" + std::to_wstring(kServerPortResend));
+    DebugLog(L"[NetConfig] CLIENT(bandwidth dst)=" + std::wstring(kClientIpBandwidth.begin(), kClientIpBandwidth.end()) +
+            L":" + std::to_wstring(kClientPortBw));
+}
 
 // 失敗しても致命傷にしない（ベストエフォート）
 void RequestIDRNow()
@@ -314,52 +360,6 @@ static bool EnforceGpuPolicyOrExit() {
 #include <ShellScalingApi.h>
 #pragma comment(lib, "Shcore.lib")
 
-// === Network configuration (replaces hard-coded #define IPs/ports) ===
-// Keep layout/comments; default to current behavior if env not set.
-
-static std::string GetEnvUtf8(const char* name) {
-    wchar_t wbuf[256] = {0};
-    DWORD n = GetEnvironmentVariableW(std::wstring(name, name + strlen(name)).c_str(), wbuf, (DWORD)(sizeof(wbuf)/sizeof(wbuf[0])));
-    if (n == 0 || n >= (DWORD)(sizeof(wbuf)/sizeof(wbuf[0]))) return {};
-    std::wstring ws(wbuf);
-    return std::string(ws.begin(), ws.end());
-}
-static uint16_t ParseU16Or(const std::string& s, uint16_t defv) {
-    if (s.empty()) return defv;
-    try {
-        unsigned long v = std::stoul(s);
-        if (v > 65535) return defv;
-        return (uint16_t)v;
-    } catch (...) { return defv; }
-}
-
-// Defaults preserve current behavior
-static std::string kServerIpData = []{
-    auto v = GetEnvUtf8("VIEWER_SERVER_IP");
-    return v.empty() ? std::string("127.0.0.1") : v;
-}();
-static std::string kServerIpResend = []{
-    auto v = GetEnvUtf8("VIEWER_SERVER_IP_RESEND");
-    return v.empty() ? kServerIpData : v;
-}();
-static std::string kClientIpBandwidth = []{
-    auto v = GetEnvUtf8("VIEWER_CLIENT_IP_BANDWIDTH");
-    return v.empty() ? std::string("127.0.0.1") : v;
-}();
-
-static uint16_t kServerPortData   = ParseU16Or(GetEnvUtf8("VIEWER_SERVER_PORT_DATA"),   8130);
-static uint16_t kServerPortResend = ParseU16Or(GetEnvUtf8("VIEWER_SERVER_PORT_RESEND"), 8120);
-static uint16_t kClientPortBw     = ParseU16Or(GetEnvUtf8("VIEWER_CLIENT_PORT_BW"),     8200);
-
-// Optional: Log resolved endpoints (keep timing/logging style intact)
-static void LogResolvedNetConfig() {
-    DebugLog(L"[NetConfig] SERVER(data)=" + std::wstring(kServerIpData.begin(), kServerIpData.end()) +
-            L":" + std::to_wstring(kServerPortData));
-    DebugLog(L"[NetConfig] SERVER(resend)=" + std::wstring(kServerIpResend.begin(), kServerIpResend.end()) +
-            L":" + std::to_wstring(kServerPortResend));
-    DebugLog(L"[NetConfig] CLIENT(bandwidth dst)=" + std::wstring(kClientIpBandwidth.begin(), kClientIpBandwidth.end()) +
-            L":" + std::to_wstring(kClientPortBw));
-}
 #define BANDWIDTH_DATA_SIZE 60 * 1024  // 60KB(帯域幅測定時のデータサイズ)
 #define DATA_PACKET_SIZE 1400 // UDPパケットサイズ
 #define WSARECV_BUFFER_SIZE 65000
