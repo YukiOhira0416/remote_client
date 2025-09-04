@@ -35,6 +35,8 @@
 // Forward declare to avoid cross-unit include churn.
 void RequestIDRNow(); // defined in main.cpp; used to re-sync stream after device reset
 
+static bool g_initialSizeSent = false;
+
 // CUDA includes
 #include <cuda.h>
 #include <cuda_runtime_api.h>
@@ -822,6 +824,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             g_pendingResize.has.store(true, std::memory_order_release);
             g_lastFrameRenderTimeForKick = std::chrono::high_resolution_clock::now(); // render kick
 
+            if (!g_initialSizeSent) {
+                int tw, th;
+                SnapToKnownResolution(width, height, tw, th);
+                OnResolutionChanged_GatedSend(tw, th, /*force=*/true);
+                g_initialSizeSent = true;
+            }
             return 0;
         }
 
@@ -896,7 +904,6 @@ bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
     // Notify the server with the *video* resolution only.
     // The swap-chain resize to the padded client size will be triggered by the WM_SIZE
     // message that SetWindowPos generates, which is handled by the render thread.
-    OnResolutionChanged_GatedSend(tw, th, /*force=*/true);
     return true;
 }
 

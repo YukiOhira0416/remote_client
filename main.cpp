@@ -1272,7 +1272,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     g_pendingResize.has.store(true, std::memory_order_release);
 
     // Force-send to server now (single gate): advertise *video* size (tw x th), unchanged
-    OnResolutionChanged_GatedSend(tw, th, /*force=*/true);
 
     // Initialize CUDA and NVDEC
     // Per Yuki's recommendation, use the primary context to ensure Runtime and Driver APIs work together.
