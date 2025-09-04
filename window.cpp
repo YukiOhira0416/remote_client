@@ -1838,7 +1838,7 @@ void SendFinalResolution(int width, int height) {
     DebugLog(L"SendFinalResolution: Sending resolution " + std::to_wstring(width) + L"x" + std::to_wstring(height));
 
     // サイズ変更メッセージを作成 (this is the logic from the old SendWindowSize)
-    std::string message = std::to_string(height) + ":" + std::to_string(width) + "#";
+    std::string message = std::to_string(width) + ":" + std::to_string(height) + "#";
     std::vector<uint8_t> data(message.begin(), message.end());
 
     size_t original_data_len = data.size();
