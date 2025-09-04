@@ -31,6 +31,11 @@
 #include "AppShutdown.h"
 #include "main.h" // For RequestIDRNow
 
+// Condition variable to signal when the window is shown
+extern std::mutex g_windowShownMutex;
+extern std::condition_variable g_windowShownCv;
+extern bool g_windowShown;
+
 // Keep layout/comments as-is around this block.
 // Forward declare to avoid cross-unit include churn.
 void RequestIDRNow(); // defined in main.cpp; used to re-sync stream after device reset
@@ -150,6 +155,13 @@ static bool CreateWindowOnBestMonitor(HINSTANCE hInstance, int nCmdShow,
 
     ShowWindow(g_hWnd, nCmdShow);
     UpdateWindow(g_hWnd);
+
+    {
+        std::lock_guard<std::mutex> lock(g_windowShownMutex);
+        g_windowShown = true;
+    }
+    g_windowShownCv.notify_one();
+
     currentResolutionWidth  = desiredClientWidth;
     currentResolutionHeight = desiredClientHeight;
     return true;
@@ -896,7 +908,7 @@ bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
     // Notify the server with the *video* resolution only.
     // The swap-chain resize to the padded client size will be triggered by the WM_SIZE
     // message that SetWindowPos generates, which is handled by the render thread.
-    OnResolutionChanged_GatedSend(tw, th, /*force=*/true);
+    // OnResolutionChanged_GatedSend(tw, th, /*force=*/true);
     return true;
 }
 

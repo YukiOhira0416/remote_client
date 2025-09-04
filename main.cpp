@@ -61,6 +61,11 @@ std::atomic<bool> g_didInitialAnnounce{false};
 // Render kick global
 std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
 
+// Condition variable to signal when the window is shown
+std::mutex g_windowShownMutex;
+std::condition_variable g_windowShownCv;
+bool g_windowShown = false;
+
 
 // window.cpp 側で実装されている既存API（エクスポート）
 void SendFinalResolution(int width, int height); // Existing function from window.h
@@ -659,6 +664,11 @@ void ListenForResendRequests() {
 }
 
 void CountBandW() {
+    {
+        std::unique_lock<std::mutex> lock(g_windowShownMutex);
+        g_windowShownCv.wait(lock, [] { return g_windowShown; });
+    }
+
     SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (udpSocket == INVALID_SOCKET) {
         DebugLog(L"Failed to create socket.");
@@ -673,6 +683,15 @@ void CountBandW() {
     std::vector<char> data(BANDWIDTH_DATA_SIZE, 'A');
 
     //DebugLog("Start bandwidth measurement loop.");
+
+    const char* endMessage = "END";
+    sendto(udpSocket, endMessage, strlen(endMessage), 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    int w = currentResolutionWidth.load();
+    int h = currentResolutionHeight.load();
+    SendFinalResolution(w, h);
 
     while (send_bandw_Running) {
         const char* startMessage = "START";
@@ -1270,9 +1289,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     g_pendingResize.w.store(cw, std::memory_order_relaxed);
     g_pendingResize.h.store(ch, std::memory_order_relaxed);
     g_pendingResize.has.store(true, std::memory_order_release);
-
-    // Force-send to server now (single gate): advertise *video* size (tw x th), unchanged
-    OnResolutionChanged_GatedSend(tw, th, /*force=*/true);
 
     // Initialize CUDA and NVDEC
     // Per Yuki's recommendation, use the primary context to ensure Runtime and Driver APIs work together.
