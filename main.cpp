@@ -333,7 +333,7 @@ static bool EnforceGpuPolicyOrExit() {
 #define SERVER_PORT_DATA 8130 // パケット受信用のポート番号
 #define CLIENT_PORT_BANDWIDTH 8200// 帯域幅測定用のポート番号
 #define BANDWIDTH_DATA_SIZE 60 * 1024  // 60KB(帯域幅測定時のデータサイズ)
-#define DATA_PACKET_SIZE 1400 // UDPパケットサイズ
+#define DATA_PACKET_SIZE 1300 // UDPパケットサイズ
 #define WSARECV_BUFFER_SIZE 65000
 
 // Keep layout/comments around this block.
@@ -538,12 +538,6 @@ void SaveH264ToFile_NUM(const std::vector<uint8_t>& prepared_h264Buffer, const s
     DebugLog(L"Saved " + std::to_wstring(prepared_h264Buffer.size()) + L" bytes to " + std::wstring(numberedFilename.begin(), numberedFilename.end()));
 }
 
-// NALユニットの先頭バイトからタイプを抽出する関数
-int getNALType(const uint8_t* data, size_t size) {
-    if (size < 1) return -1;
-    // H.264 の NAL ヘッダー (1バイト): 0b[forbidden_zero_bit][nal_ref_idc][nal_unit_type]
-    return data[0] & 0x1F;
-}
 
 void InitializeRSMatrix() {
     std::call_once(g_matrix_init_flag, []() {
