@@ -699,13 +699,10 @@ void CountBandW() {
             offset += packetSize;
         }
 
-        //DebugLog("Sent 2MB payload.");
-
         const char* endMessage = "END";
         sendto(udpSocket, endMessage, strlen(endMessage), 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
-        //DebugLog("Sent END message");
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
     closesocket(udpSocket);
