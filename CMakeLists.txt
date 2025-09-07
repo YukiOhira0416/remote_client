@@ -215,3 +215,10 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/enet_x64-windows/lib/enet.dll")
         $<TARGET_FILE_DIR:${PROJECT_NAME}>)
 endif()
 
+# --- Shaderフォルダを実行ファイルと同じ場所にコピー（最低限） ---
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_SOURCE_DIR}/Shader"
+    $<TARGET_FILE_DIR:${PROJECT_NAME}>/Shader
+)
+
