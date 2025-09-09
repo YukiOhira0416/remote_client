@@ -1019,7 +1019,7 @@ bool InitD3D() {
     scd1.Scaling = DXGI_SCALING_NONE;   // 既存は DXGI_SCALING_STRETCH
     scd1.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD; // Recommended for D3D12
     scd1.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
-    scd1.Flags = g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+    scd1.Flags = (g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0) | DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
     Microsoft::WRL::ComPtr<IDXGISwapChain1> tempSwapChain;
     hr = dxgiFactory->CreateSwapChainForHwnd(g_d3d12CommandQueue.Get(), g_hWnd, &scd1, nullptr, nullptr, &tempSwapChain);
@@ -1531,7 +1531,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 
     HRESULT hr = g_swapChain->ResizeBuffers(
         kSwapChainBufferCount, newW, newH, DXGI_FORMAT_R8G8B8A8_UNORM,
-        g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
+        (g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0) | DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
     if (FAILED(hr)) {
         if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
             DebugLog(L"RenderThread: Device removed/reset on ResizeBuffers. HR: " + HResultToHexWString(hr));
@@ -1541,7 +1541,7 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
         DebugLog(L"RenderThread: ResizeBuffers failed. HR: " + HResultToHexWString(hr));
         // As a fallback, try automatic size:
         hr = g_swapChain->ResizeBuffers(kSwapChainBufferCount, 0, 0, DXGI_FORMAT_R8G8B8A8_UNORM,
-                                        g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
+                                        (g_allowTearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0) | DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
         if (FAILED(hr)) {
             DebugLog(L"RenderThread: ResizeBuffers(0,0) also failed. HR: " + HResultToHexWString(hr));
             return;
