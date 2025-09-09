@@ -668,6 +668,10 @@ D3D12_VERTEX_BUFFER_VIEW g_vertexBufferView;
 Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_srvHeap; // For Y and UV textures
 UINT g_srvDescriptorSize;
 
+// [FIX] SRV Heap Ring Buffer
+static const UINT kSrvHeapSize = 256;
+static UINT g_srvDescriptorHeapIndex = 0;
+
 std::atomic<uint32_t> g_globalFrameNumber(0);// FEC用フレーム番号
 
 // 各シャードパケットに付与するヘッダー
@@ -1130,14 +1134,14 @@ if (FAILED(hr) || !g_copyFenceSharedHandle) {
     srvRanges[0].NumDescriptors = 1; // For Y Texture
     srvRanges[0].BaseShaderRegister = 0; // t0
     srvRanges[0].RegisterSpace = 0;
-    srvRanges[0].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    srvRanges[0].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
     srvRanges[0].OffsetInDescriptorsFromTableStart = 0;
 
     srvRanges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     srvRanges[1].NumDescriptors = 1; // For UV Texture
     srvRanges[1].BaseShaderRegister = 1; // t1
     srvRanges[1].RegisterSpace = 0;
-    srvRanges[1].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    srvRanges[1].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
     srvRanges[1].OffsetInDescriptorsFromTableStart = 1;
 
     D3D12_ROOT_PARAMETER1 rootParameters[1];
@@ -1231,7 +1235,7 @@ if (FAILED(hr) || !g_copyFenceSharedHandle) {
                                         // So, 2 descriptors are enough if we update them each frame.
                                         // If we pre-create for all decoder surfaces, it'd be NUM_DECODE_SURFACES_IN_POOL * 2.
                                         // Let's start with 2, for the current frame's Y and UV.
-    srvHeapDesc.NumDescriptors = 2; // One for Y, one for UV of the current frame to render
+    srvHeapDesc.NumDescriptors = kSrvHeapSize; // [FIX] Use a large ring buffer for SRVs to avoid overwriting descriptors in-flight.
     srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     hr = g_d3d12Device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&g_srvHeap));
@@ -1416,32 +1420,37 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             SetLetterboxViewport(g_commandList.Get(), backbuffer->GetDesc(), videoW, videoH);
         }
 
-        static ID3D12Resource* s_lastY = nullptr;
-        static ID3D12Resource* s_lastUV = nullptr;
-        CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleCpu(g_srvHeap->GetCPUDescriptorHandleForHeapStart());
-        if (frameToDraw.hw_decoded_texture_Y.Get() != s_lastY) {
-            D3D12_SHADER_RESOURCE_VIEW_DESC srvDescY = {};
-            srvDescY.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            srvDescY.Format = DXGI_FORMAT_R8_UNORM;
-            srvDescY.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            srvDescY.Texture2D.MipLevels = 1;
-            g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_Y.Get(), &srvDescY, srvHandleCpu);
-            s_lastY = frameToDraw.hw_decoded_texture_Y.Get();
-        }
-        srvHandleCpu.Offset(1, g_srvDescriptorSize);
-        if (frameToDraw.hw_decoded_texture_UV.Get() != s_lastUV) {
-            D3D12_SHADER_RESOURCE_VIEW_DESC srvDescUV = {};
-            srvDescUV.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            srvDescUV.Format = DXGI_FORMAT_R8G8_UNORM;
-            srvDescUV.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            srvDescUV.Texture2D.MipLevels = 1;
-            g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_UV.Get(), &srvDescUV, srvHandleCpu);
-            s_lastUV = frameToDraw.hw_decoded_texture_UV.Get();
-        }
+        // [FIX] Use SRV heap as a ring buffer.
+        // Calculate the descriptor handles for the current slot in the ring buffer.
+        CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleCpu(g_srvHeap->GetCPUDescriptorHandleForHeapStart(), g_srvDescriptorHeapIndex, g_srvDescriptorSize);
+        CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandleGpu(g_srvHeap->GetGPUDescriptorHandleForHeapStart(), g_srvDescriptorHeapIndex, g_srvDescriptorSize);
 
+        // Create the SRV for the Y plane.
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDescY = {};
+        srvDescY.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDescY.Format = DXGI_FORMAT_R8_UNORM;
+        srvDescY.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDescY.Texture2D.MipLevels = 1;
+        g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_Y.Get(), &srvDescY, srvHandleCpu);
+
+        // Offset to the next descriptor for the UV plane.
+        srvHandleCpu.Offset(1, g_srvDescriptorSize);
+
+        // Create the SRV for the UV plane.
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDescUV = {};
+        srvDescUV.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDescUV.Format = DXGI_FORMAT_R8G8_UNORM;
+        srvDescUV.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDescUV.Texture2D.MipLevels = 1;
+        g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_UV.Get(), &srvDescUV, srvHandleCpu);
+
+        // Set the descriptor heap and the root descriptor table for the current frame.
         ID3D12DescriptorHeap* ppHeaps[] = { g_srvHeap.Get() };
         g_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
-        g_commandList->SetGraphicsRootDescriptorTable(0, g_srvHeap->GetGPUDescriptorHandleForHeapStart());
+        g_commandList->SetGraphicsRootDescriptorTable(0, srvHandleGpu);
+
+        // Move to the next slot in the ring buffer for the next frame.
+        g_srvDescriptorHeapIndex = (g_srvDescriptorHeapIndex + 2) % kSrvHeapSize;
         g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         {
             nvtx3::scoped_range_in<d3d12_domain> r{ "Draw" };
