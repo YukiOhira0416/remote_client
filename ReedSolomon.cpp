@@ -2,8 +2,10 @@
 
 #include <vector>
 #include <map>     // ※ std::map を使用するためにインクルード
+#include <unordered_map> // ※ std::unordered_map を使用するためにインクルード
 #include <cstdint>
 #include <cstring> // for memcpy
+#include <algorithm> // for std::max
 #include "DebugLog.h"
 #include <gf_complete.h>
 #include <jerasure.h>
@@ -29,7 +31,7 @@ namespace {
             }
         }
     };
-    static FECContext g_fecctx; // reuse across calls
+    static thread_local FECContext g_fecctx; // reuse across calls
 }
 
 // Jerasure を使った FEC エンコード関数
@@ -88,19 +90,34 @@ bool DecodeFEC_Jerasure(
                  std::to_wstring(receivedShards.size()) + L" < " + std::to_wstring(k) + L")");
         return false;
     }
+    if (!bitmatrix) {
+        DebugLog(L"DecodeFEC_Jerasure Error: Jerasure bitmatrix not provided for decoding.");
+        return false;
+    }
 
-    // Derive shard_len from first present shard
+    // === shard_len を堅牢に決定 ===
     size_t shard_len = 0;
     if (!receivedShards.empty()) {
-        shard_len = receivedShards.begin()->second.size();
+        // 長さの頻度を数え、多数派（mode）を採用。引き分け時は最大値。
+        std::unordered_map<size_t, size_t> freq;
+        size_t mode_len = 0, mode_cnt = 0, max_len = 0;
+        for (auto& kv : receivedShards) {
+            size_t len = kv.second.size();
+            if (len > 0) {
+                size_t c = ++freq[len];
+                if (c > mode_cnt) { mode_cnt = c; mode_len = len; }
+                if (len > max_len) max_len = len;
+            }
+        }
+        shard_len = (mode_cnt > 0) ? mode_len : 0;
+        if (shard_len == 0) shard_len = max_len; // 全部0は異常系だが一応最大にフォールバック
     }
     if (shard_len == 0) {
         DebugLog(L"DecodeFEC_Jerasure Error: Invalid shard length (0)");
         return false;
     }
-
-    if (!bitmatrix) {
-        DebugLog(L"DecodeFEC_Jerasure Error: Jerasure bitmatrix not provided for decoding.");
+    if (static_cast<uint64_t>(k) * static_cast<uint64_t>(shard_len) < static_cast<uint64_t>(originalDataLen)) {
+        DebugLog(L"DecodeFEC_Jerasure Error: originalDataLen exceeds k*shard_len.");
         return false;
     }
 
@@ -163,6 +180,9 @@ bool DecodeFEC_Jerasure(
     }
     g_fecctx.erasures[erasure_count] = -1; // Null-terminate the erasures list for Jerasure.
 
+    // packetsize は最低 1 に丸める（極端な shard_len にも耐える）
+    const int packetsize = std::max(1, static_cast<int>(shard_len / 8));
+
     // 5) Decode — recovered bytes go straight into decodedData via data_ptrs.
     const int ret = jerasure_bitmatrix_decode(
         k, m, 8, const_cast<int*>(bitmatrix),
@@ -171,7 +191,7 @@ bool DecodeFEC_Jerasure(
         g_fecctx.data_ptrs.data(),
         g_fecctx.coding_ptrs.data(),
         static_cast<int>(shard_len),
-        static_cast<int>(shard_len / 8)
+        packetsize
     );
     if (ret == -1) {
         DebugLog(L"DecodeFEC_Jerasure Error: jerasure_matrix_decode failed (matrix not invertible?).");
