@@ -246,6 +246,7 @@ static void TryExcludeThisWindowFromCapture(HWND hwnd)
 #pragma comment(lib, "d3d12.lib") // Link D3D12 lib
 #pragma comment(lib, "dxgi.lib") // DXGI is still used
 #pragma comment(lib, "d3dcompiler.lib")
+#pragma comment(lib, "dxguid.lib")
 
 // Renders the video with its aspect ratio preserved, adding black bars (letterboxing/pillarboxing).
 static void SetLetterboxViewport(ID3D12GraphicsCommandList* cmd, D3D12_RESOURCE_DESC backbufferDesc, int videoWidthInt, int videoHeightInt)
