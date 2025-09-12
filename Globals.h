@@ -67,6 +67,7 @@ void NvdecThread(int threadId);
 
 extern std::atomic<bool> g_fec_worker_Running;
 extern std::atomic<bool> g_decode_worker_Running;
+extern std::atomic<bool> reboot_listener_running;
 extern std::atomic<int> currentResolutionWidth;
 extern std::atomic<int> currentResolutionHeight;
 extern HWND g_hWnd;
@@ -143,6 +144,7 @@ struct H264Frame {
 // Global running flag for wWinMain loop
 extern std::atomic<bool> app_running_atomic;
 extern std::atomic<bool> g_isSizing;
+extern std::atomic<bool> g_showRebootOverlay;
 extern std::atomic<bool> g_forcePresentOnce; // Present at least once even if no new decoded frame
 
 // Global queues and synchronization for frame management

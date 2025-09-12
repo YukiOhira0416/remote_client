@@ -1164,6 +1164,125 @@ ThreadConfig getOptimalThreadConfig(){
     return config;
 }
 
+void ListenForRebootCommands() {
+    DebugLog(L"ListenForRebootCommands thread started.");
+
+    SOCKET listenSocketStart = INVALID_SOCKET;
+    SOCKET listenSocketEnd = INVALID_SOCKET;
+    SOCKET clientSocket = INVALID_SOCKET;
+
+    struct sockaddr_in serverAddr;
+    int addrLen = sizeof(serverAddr);
+
+    // Create and bind the REBOOTSTART socket
+    listenSocketStart = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listenSocketStart == INVALID_SOCKET) {
+        DebugLog(L"ListenForRebootCommands: socket() failed for START socket with error: " + std::to_wstring(WSAGetLastError()));
+        return;
+    }
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    serverAddr.sin_port = htons(8150);
+    if (bind(listenSocketStart, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+        DebugLog(L"ListenForRebootCommands: bind() failed for START socket with error: " + std::to_wstring(WSAGetLastError()));
+        closesocket(listenSocketStart);
+        return;
+    }
+    if (listen(listenSocketStart, SOMAXCONN) == SOCKET_ERROR) {
+        DebugLog(L"ListenForRebootCommands: listen() failed for START socket with error: " + std::to_wstring(WSAGetLastError()));
+        closesocket(listenSocketStart);
+        return;
+    }
+
+    // Create and bind the REBOOTEND socket
+    listenSocketEnd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listenSocketEnd == INVALID_SOCKET) {
+        DebugLog(L"ListenForRebootCommands: socket() failed for END socket with error: " + std::to_wstring(WSAGetLastError()));
+        closesocket(listenSocketStart);
+        return;
+    }
+    serverAddr.sin_port = htons(8151);
+    if (bind(listenSocketEnd, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+        DebugLog(L"ListenForRebootCommands: bind() failed for END socket with error: " + std::to_wstring(WSAGetLastError()));
+        closesocket(listenSocketStart);
+        closesocket(listenSocketEnd);
+        return;
+    }
+    if (listen(listenSocketEnd, SOMAXCONN) == SOCKET_ERROR) {
+        DebugLog(L"ListenForRebootCommands: listen() failed for END socket with error: " + std::to_wstring(WSAGetLastError()));
+        closesocket(listenSocketStart);
+        closesocket(listenSocketEnd);
+        return;
+    }
+
+    DebugLog(L"ListenForRebootCommands: Sockets bound and listening on ports 8150 and 8151.");
+
+    fd_set readSet;
+
+    while (reboot_listener_running) {
+        FD_ZERO(&readSet);
+        FD_SET(listenSocketStart, &readSet);
+        FD_SET(listenSocketEnd, &readSet);
+
+        // Set a timeout so the loop can check the running flag periodically
+        timeval timeout;
+        timeout.tv_sec = 1;
+        timeout.tv_usec = 0;
+
+        int total = select(0, &readSet, NULL, NULL, &timeout);
+        if (total == SOCKET_ERROR) {
+            DebugLog(L"ListenForRebootCommands: select() failed with error: " + std::to_wstring(WSAGetLastError()));
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
+
+        if (total == 0) {
+            // Timeout, loop again
+            continue;
+        }
+
+        // Check for REBOOTSTART connection
+        if (FD_ISSET(listenSocketStart, &readSet)) {
+            clientSocket = accept(listenSocketStart, NULL, NULL);
+            if (clientSocket != INVALID_SOCKET) {
+                char recvbuf[32] = {0};
+                int iResult = recv(clientSocket, recvbuf, sizeof(recvbuf) -1, 0);
+                if (iResult > 0) {
+                    recvbuf[iResult] = '\0';
+                    if (strcmp(recvbuf, "REBOOTSTART") == 0) {
+                        DebugLog(L"ListenForRebootCommands: Received REBOOTSTART.");
+                        g_showRebootOverlay = true;
+                    }
+                }
+                closesocket(clientSocket);
+            }
+        }
+
+        // Check for REBOOTEND connection
+        if (FD_ISSET(listenSocketEnd, &readSet)) {
+            clientSocket = accept(listenSocketEnd, NULL, NULL);
+            if (clientSocket != INVALID_SOCKET) {
+                char recvbuf[32] = {0};
+                int iResult = recv(clientSocket, recvbuf, sizeof(recvbuf) - 1, 0);
+                if (iResult > 0) {
+                     recvbuf[iResult] = '\0';
+                    if (strcmp(recvbuf, "REBOOTEND") == 0) {
+                        DebugLog(L"ListenForRebootCommands: Received REBOOTEND.");
+                        g_showRebootOverlay = false;
+                        // Call the existing function to send window size
+                        SendFinalResolution(currentResolutionWidth.load(std::memory_order_relaxed), currentResolutionHeight.load(std::memory_order_relaxed));
+                    }
+                }
+                closesocket(clientSocket);
+            }
+        }
+    }
+
+    closesocket(listenSocketStart);
+    closesocket(listenSocketEnd);
+    DebugLog(L"ListenForRebootCommands thread stopped.");
+}
+
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
     // Enforce GPU policy first
     if (!EnforceGpuPolicyOrExit()) {
@@ -1298,6 +1417,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     // Start worker threads
     std::thread bandwidthThread(CountBandW);
     std::thread resendThread(ListenForResendRequests);
+    std::thread rebootListenerThread(ListenForRebootCommands);
 
     std::vector<std::thread> receiverThreads;
     for (int i = 0; i < getOptimalThreadConfig().receiver; ++i) {
@@ -1367,10 +1487,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     AppThreads appThreads{};
     appThreads.bandwidthThread = &bandwidthThread;
     appThreads.resendThread = &resendThread;
+    appThreads.rebootListenerThread = &rebootListenerThread;
     appThreads.receiverThreads = &receiverThreads;
     appThreads.fecWorkerThreads = &fecWorkerThreads;
     appThreads.nvdecThreads = &nvdecThreads;
-    // appThreads.windowSenderThread is removed
 
     // This single call handles joining all threads and releasing all resources idempotently.
     ReleaseAllResources(appThreads);

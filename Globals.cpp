@@ -35,8 +35,10 @@ std::condition_variable g_readyGpuFrameQueueCV;
 // Global running flags
 std::atomic<bool> g_fec_worker_Running(true);
 std::atomic<bool> g_decode_worker_Running(true);
+std::atomic<bool> reboot_listener_running(true);
 std::atomic<bool> app_running_atomic(true);
 std::atomic<bool> g_isSizing{false};
+std::atomic<bool> g_showRebootOverlay{ false };
 std::atomic<bool> g_forcePresentOnce{false};
 std::atomic<bool> dumpH264ToFiles{false};
 

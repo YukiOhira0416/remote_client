@@ -19,6 +19,7 @@
 // These are defined in main.cpp and control thread loops.
 extern std::atomic<bool> send_bandw_Running;
 extern std::atomic<bool> receive_resend_Running;
+extern std::atomic<bool> reboot_listener_running;
 extern std::atomic<bool> receive_raw_packet_Running;
 // This will be created in a future step to replace the local bool in wWinMain.
 extern std::atomic<bool> app_running_atomic;
@@ -75,6 +76,7 @@ void RequestShutdown(std::atomic<bool>* appRunningPtr) {
         // 1) Set all running flags to false to signal threads to stop.
         send_bandw_Running.store(false, std::memory_order_relaxed);
         receive_resend_Running.store(false, std::memory_order_relaxed);
+        reboot_listener_running.store(false, std::memory_order_relaxed);
         receive_raw_packet_Running.store(false, std::memory_order_relaxed);
         g_fec_worker_Running.store(false, std::memory_order_relaxed);
         g_decode_worker_Running.store(false, std::memory_order_relaxed);
@@ -104,7 +106,7 @@ void ReleaseAllResources(const AppThreads& threads) {
             SafeJoinVector(threads.receiverThreads, L"receiverThreads");
             SafeJoinVector(threads.fecWorkerThreads, L"fecWorkerThreads");
             SafeJoinVector(threads.nvdecThreads, L"nvdecThreads");
-            SafeJoin(threads.windowSenderThread, L"windowSenderThread");
+            SafeJoin(threads.rebootListenerThread, L"rebootListenerThread");
         } catch (...) {
             DebugLog(L"ReleaseAllResources: exception during thread join (ignored to continue cleanup).");
         }
