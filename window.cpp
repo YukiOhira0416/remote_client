@@ -1425,10 +1425,19 @@ bool CreateOverlayResources() {
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
     };
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC textPsoDesc = psoDesc;
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC textPsoDesc = {}; // Initialize from scratch
     textPsoDesc.pRootSignature = g_overlayRootSignature.Get();
     textPsoDesc.VS = CD3DX12_SHADER_BYTECODE(textVertexShaderBlob.Get());
     textPsoDesc.PS = CD3DX12_SHADER_BYTECODE(textPixelShaderBlob.Get());
+    textPsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    textPsoDesc.BlendState = psoDesc.BlendState; // We can safely copy the blend state
+    textPsoDesc.DepthStencilState.DepthEnable = FALSE;
+    textPsoDesc.DepthStencilState.StencilEnable = FALSE;
+    textPsoDesc.SampleMask = UINT_MAX;
+    textPsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    textPsoDesc.NumRenderTargets = 1;
+    textPsoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    textPsoDesc.SampleDesc.Count = 1;
     textPsoDesc.InputLayout = { inputElementDescs, _countof(inputElementDescs) };
     hr = g_d3d12Device->CreateGraphicsPipelineState(&textPsoDesc, IID_PPV_ARGS(&g_overlayTextPso));
     if (FAILED(hr)) {
