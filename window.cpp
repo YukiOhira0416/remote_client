@@ -326,6 +326,17 @@ static inline void SetViewportScissorToBackbuffer(
 }
 
 // D3D12 Global Variables
+// Overlay Resources
+Microsoft::WRL::ComPtr<ID3D12PipelineState> g_overlayQuadPso;
+Microsoft::WRL::ComPtr<ID3D12RootSignature> g_overlayQuadRootSignature;
+Microsoft::WRL::ComPtr<ID3D12PipelineState> g_overlayTextPso;
+Microsoft::WRL::ComPtr<ID3D12RootSignature> g_overlayRootSignature;
+Microsoft::WRL::ComPtr<ID3D12Resource> g_overlayVertexBuffer;
+D3D12_VERTEX_BUFFER_VIEW g_overlayVertexBufferView;
+Microsoft::WRL::ComPtr<ID3D12Resource> g_textTexture;
+Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_textSrvHeap;
+
+
 struct d3d12_domain { static constexpr char const* name = "D3D12"; };
 struct cuda_domain { static constexpr char const* name = "CUDA"; };
 static constexpr UINT kSwapChainBufferCount = 3; // was 2
@@ -437,6 +448,8 @@ bool g_allowTearing = false; // ティアリングを許可するかどうか
 // Forward declarations for recovery helper
 void WaitForGpu();
 void ClearReorderState();
+bool CreateOverlayResources(); // New function for overlay
+void CleanupOverlayResources(); // New function for overlay cleanup
 bool InitD3D();
 
 // ---- Device-loss recovery (no goto, preserve layout/comments) ----
@@ -1250,6 +1263,321 @@ if (FAILED(hr) || !g_copyFenceSharedHandle) {
     // but if you were to use one:
     // Create vertex buffer for a quad (or use SV_VertexID in VS to generate one)
 
+    if (!CreateOverlayResources()) {
+        DebugLog(L"InitD3D (D3D12): Failed to create overlay resources.");
+        return false;
+    }
+
+    return true;
+}
+
+void CleanupOverlayResources() {
+    g_overlayQuadPso.Reset();
+    g_overlayQuadRootSignature.Reset();
+    g_overlayTextPso.Reset();
+    g_overlayRootSignature.Reset();
+    g_overlayVertexBuffer.Reset();
+    g_textTexture.Reset();
+    g_textSrvHeap.Reset();
+    DebugLog(L"CleanupOverlayResources: Overlay resources cleaned up.");
+}
+
+bool CreateOverlayResources() {
+    HRESULT hr;
+
+    // --- Root Signature for Text ---
+    D3D12_FEATURE_DATA_ROOT_SIGNATURE featureData = {};
+    featureData.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    if (FAILED(g_d3d12Device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &featureData, sizeof(featureData)))) {
+        featureData.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
+    }
+
+    D3D12_DESCRIPTOR_RANGE1 ranges[1];
+    ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    ranges[0].NumDescriptors = 1;
+    ranges[0].BaseShaderRegister = 0;
+    ranges[0].RegisterSpace = 0;
+    ranges[0].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    ranges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER1 rootParameters[1];
+    rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rootParameters[0].DescriptorTable.NumDescriptorRanges = _countof(ranges);
+    rootParameters[0].DescriptorTable.pDescriptorRanges = ranges;
+
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.MipLODBias = 0;
+    sampler.MaxAnisotropy = 0;
+    sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+    sampler.MinLOD = 0.0f;
+    sampler.MaxLOD = D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;
+    sampler.RegisterSpace = 0;
+    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rootSignatureDesc;
+    rootSignatureDesc.Init_1_1(_countof(rootParameters), rootParameters, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+    Microsoft::WRL::ComPtr<ID3DBlob> signature;
+    Microsoft::WRL::ComPtr<ID3DBlob> error;
+    hr = D3D12SerializeVersionedRootSignature(&rootSignatureDesc, &signature, &error);
+    if (FAILED(hr)) {
+        DebugLog(L"CreateOverlayResources: D3D12SerializeVersionedRootSignature for text failed.");
+        return false;
+    }
+    hr = g_d3d12Device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&g_overlayRootSignature));
+    if (FAILED(hr)) {
+        DebugLog(L"CreateOverlayResources: CreateRootSignature for text failed.");
+        return false;
+    }
+
+    // --- Root Signature for Quad ---
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC quadRootSignatureDesc;
+    quadRootSignatureDesc.Init_1_1(0, nullptr, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+    Microsoft::WRL::ComPtr<ID3DBlob> quadSignature;
+    hr = D3D12SerializeVersionedRootSignature(&quadRootSignatureDesc, &quadSignature, &error);
+    if (FAILED(hr)) {
+        DebugLog(L"CreateOverlayResources: D3D12SerializeVersionedRootSignature for quad failed.");
+        return false;
+    }
+    hr = g_d3d12Device->CreateRootSignature(0, quadSignature->GetBufferPointer(), quadSignature->GetBufferSize(), IID_PPV_ARGS(&g_overlayQuadRootSignature));
+    if (FAILED(hr)) {
+        DebugLog(L"CreateOverlayResources: CreateRootSignature for quad failed.");
+        return false;
+    }
+
+
+    // --- PSO for Transparent Quad ---
+    Microsoft::WRL::ComPtr<ID3DBlob> vertexShaderBlob;
+    Microsoft::WRL::ComPtr<ID3DBlob> pixelShaderBlob;
+    UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;
+    #if defined(_DEBUG)
+    compileFlags |= D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+    #endif
+
+    hr = D3DCompileFromFile(L"Shader/FullScreenQuadVS.hlsl", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "vs_5_1", compileFlags, 0, &vertexShaderBlob, &error);
+    if (FAILED(hr)) {
+         if (error) DebugLog(L"CreateOverlayResources: FullScreenQuadVS.hlsl compilation failed.");
+        return false;
+    }
+    hr = D3DCompileFromFile(L"Shader/TransparentQuadPS.hlsl", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "ps_5_1", compileFlags, 0, &pixelShaderBlob, &error);
+    if (FAILED(hr)) {
+        if (error) DebugLog(L"CreateOverlayResources: TransparentQuadPS.hlsl compilation failed.");
+        return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.pRootSignature = g_overlayQuadRootSignature.Get();
+    psoDesc.VS = CD3DX12_SHADER_BYTECODE(vertexShaderBlob.Get());
+    psoDesc.PS = CD3DX12_SHADER_BYTECODE(pixelShaderBlob.Get());
+    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+
+    D3D12_BLEND_DESC blendDesc = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    blendDesc.RenderTarget[0].BlendEnable = TRUE;
+    blendDesc.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    blendDesc.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    blendDesc.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    blendDesc.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    blendDesc.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+    blendDesc.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    psoDesc.BlendState = blendDesc;
+
+    psoDesc.DepthStencilState.DepthEnable = FALSE;
+    psoDesc.DepthStencilState.StencilEnable = FALSE;
+    psoDesc.SampleMask = UINT_MAX;
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.NumRenderTargets = 1;
+    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+    psoDesc.SampleDesc.Count = 1;
+    psoDesc.InputLayout = { nullptr, 0 };
+
+    hr = g_d3d12Device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&g_overlayQuadPso));
+     if (FAILED(hr)) {
+        DebugLog(L"CreateOverlayResources: CreateGraphicsPipelineState for quad failed.");
+        return false;
+    }
+
+    // --- PSO for Text ---
+    Microsoft::WRL::ComPtr<ID3DBlob> textVertexShaderBlob;
+    Microsoft::WRL::ComPtr<ID3DBlob> textPixelShaderBlob;
+
+    hr = D3DCompileFromFile(L"Shader/OverlayVS.hlsl", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "vs_5_1", compileFlags, 0, &textVertexShaderBlob, &error);
+     if (FAILED(hr)) {
+        if (error) DebugLog(L"CreateOverlayResources: OverlayVS.hlsl compilation failed.");
+        return false;
+    }
+    hr = D3DCompileFromFile(L"Shader/OverlayPS.hlsl", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "ps_5_1", compileFlags, 0, &textPixelShaderBlob, &error);
+    if (FAILED(hr)) {
+        if (error) DebugLog(L"CreateOverlayResources: OverlayPS.hlsl compilation failed.");
+        return false;
+    }
+
+    D3D12_INPUT_ELEMENT_DESC inputElementDescs[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC textPsoDesc = psoDesc;
+    textPsoDesc.pRootSignature = g_overlayRootSignature.Get();
+    textPsoDesc.VS = CD3DX12_SHADER_BYTECODE(textVertexShaderBlob.Get());
+    textPsoDesc.PS = CD3DX12_SHADER_BYTECODE(textPixelShaderBlob.Get());
+    textPsoDesc.InputLayout = { inputElementDescs, _countof(inputElementDescs) };
+    hr = g_d3d12Device->CreateGraphicsPipelineState(&textPsoDesc, IID_PPV_ARGS(&g_overlayTextPso));
+    if (FAILED(hr)) {
+        DebugLog(L"CreateOverlayResources: CreateGraphicsPipelineState for text failed.");
+        return false;
+    }
+
+    // --- Vertex Buffer for Text Quad ---
+    VertexPosTex vertices[] = {
+        { -0.5f,  0.25f, 0.0f, 0.0f, 0.0f },
+        { -0.5f, -0.25f, 0.0f, 0.0f, 1.0f },
+        {  0.5f,  0.25f, 0.0f, 1.0f, 0.0f },
+        {  0.5f, -0.25f, 0.0f, 1.0f, 1.0f }
+    };
+    const UINT vertexBufferSize = sizeof(vertices);
+
+    auto heapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+    auto bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize);
+    hr = g_d3d12Device->CreateCommittedResource(
+        &heapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &bufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ,
+        nullptr,
+        IID_PPV_ARGS(&g_overlayVertexBuffer));
+    if (FAILED(hr)) {
+        DebugLog(L"CreateOverlayResources: CreateCommittedResource for vertex buffer failed.");
+        return false;
+    }
+
+    UINT8* pVertexDataBegin;
+    CD3DX12_RANGE readRange(0, 0);
+    hr = g_overlayVertexBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pVertexDataBegin));
+     if (FAILED(hr)) {
+        DebugLog(L"CreateOverlayResources: Map vertex buffer failed.");
+        return false;
+    }
+    memcpy(pVertexDataBegin, vertices, sizeof(vertices));
+    g_overlayVertexBuffer->Unmap(0, nullptr);
+
+    g_overlayVertexBufferView.BufferLocation = g_overlayVertexBuffer->GetGPUVirtualAddress();
+    g_overlayVertexBufferView.StrideInBytes = sizeof(VertexPosTex);
+    g_overlayVertexBufferView.SizeInBytes = vertexBufferSize;
+
+    // --- Create Text Texture using GDI ---
+    const int textureWidth = 512;
+    const int textureHeight = 128;
+    const wchar_t* text = L"System Rebooting...";
+
+    HDC hdc = CreateCompatibleDC(nullptr);
+    if (!hdc) return false;
+
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = textureWidth;
+    bmi.bmiHeader.biHeight = -textureHeight; // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* pPixels = nullptr;
+    HBITMAP hBitmap = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &pPixels, NULL, 0);
+    if (!hBitmap) {
+        DeleteDC(hdc);
+        return false;
+    }
+
+    HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdc, hBitmap);
+
+    SetBkColor(hdc, RGB(0, 0, 0));
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, RGB(255, 255, 255));
+    HFONT hFont = CreateFont(48, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
+    HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
+
+    RECT rect = { 0, 0, textureWidth, textureHeight };
+    FillRect(hdc, &rect, (HBRUSH)GetStockObject(BLACK_BRUSH)); // Fill with black for debugging
+    TextOutW(hdc, 10, 30, text, (int)wcslen(text));
+
+    // Cleanup GDI objects
+    SelectObject(hdc, hOldFont);
+    DeleteObject(hFont);
+    SelectObject(hdc, hOldBitmap);
+
+    // Create D3D12 Texture
+    auto texHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+    auto texDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_B8G8R8A8_UNORM, textureWidth, textureHeight, 1, 1);
+    hr = g_d3d12Device->CreateCommittedResource(&texHeapProps, D3D12_HEAP_FLAG_NONE, &texDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&g_textTexture));
+    if (FAILED(hr)) {
+        DebugLog(L"CreateOverlayResources: CreateCommittedResource for text texture failed.");
+        DeleteObject(hBitmap);
+        DeleteDC(hdc);
+        return false;
+    }
+
+    // Upload pixel data
+    Microsoft::WRL::ComPtr<ID3D12Resource> uploadHeap;
+    UINT64 uploadBufferSize = GetRequiredIntermediateSize(g_textTexture.Get(), 0, 1);
+    auto uploadHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+    auto uploadBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize);
+    hr = g_d3d12Device->CreateCommittedResource(&uploadHeapProps, D3D12_HEAP_FLAG_NONE, &uploadBufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadHeap));
+    if (FAILED(hr)) {
+        DebugLog(L"CreateOverlayResources: CreateCommittedResource for upload heap failed.");
+        DeleteObject(hBitmap);
+        DeleteDC(hdc);
+        return false;
+    }
+
+    D3D12_SUBRESOURCE_DATA textureData = {};
+    textureData.pData = pPixels;
+    textureData.RowPitch = textureWidth * 4;
+    textureData.SlicePitch = textureData.RowPitch * textureHeight;
+
+    // The command list needs to be open to do this
+    ID3D12CommandAllocator* allocator = g_commandAllocator[g_currentFrameBufferIndex].Get();
+    allocator->Reset();
+    g_commandList->Reset(allocator, nullptr);
+
+    UpdateSubresources(g_commandList.Get(), g_textTexture.Get(), uploadHeap.Get(), 0, 0, 1, &textureData);
+    auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(g_textTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    g_commandList->ResourceBarrier(1, &barrier);
+
+    g_commandList->Close();
+    ID3D12CommandList* ppCommandLists[] = { g_commandList.Get() };
+    g_d3d12CommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+    WaitForGpu(); // Wait for the upload to complete
+
+    // Cleanup GDI resources now that data is on GPU
+    DeleteObject(hBitmap);
+    DeleteDC(hdc);
+
+    // Create SRV for the text texture
+    D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
+    srvHeapDesc.NumDescriptors = 1;
+    srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    hr = g_d3d12Device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&g_textSrvHeap));
+    if (FAILED(hr)) {
+        DebugLog(L"CreateOverlayResources: CreateDescriptorHeap for text SRV failed.");
+        return false;
+    }
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Format = texDesc.Format;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MipLevels = 1;
+    g_d3d12Device->CreateShaderResourceView(g_textTexture.Get(), &srvDesc, g_textSrvHeap->GetCPUDescriptorHandleForHeapStart());
+
+    DebugLog(L"CreateOverlayResources: Successfully created all overlay resources.");
     return true;
 }
 
@@ -1462,6 +1790,26 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         std::lock_guard<std::mutex> rlock(g_reorderMutex);
         outFrameToRender = g_lastDrawnFrame;
     }
+
+    // --- Draw Overlay if enabled ---
+    if (g_showRebootOverlay.load(std::memory_order_relaxed)) {
+        // Draw semi-transparent black quad
+        g_commandList->SetPipelineState(g_overlayQuadPso.Get());
+        g_commandList->SetGraphicsRootSignature(g_overlayQuadRootSignature.Get());
+        g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        g_commandList->DrawInstanced(4, 1, 0, 0);
+
+        // Draw "System Rebooting..." text
+        g_commandList->SetPipelineState(g_overlayTextPso.Get());
+        g_commandList->SetGraphicsRootSignature(g_overlayRootSignature.Get());
+        ID3D12DescriptorHeap* ppHeaps[] = { g_textSrvHeap.Get() };
+        g_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
+        g_commandList->SetGraphicsRootDescriptorTable(0, g_textSrvHeap->GetGPUDescriptorHandleForHeapStart());
+        g_commandList->IASetVertexBuffers(0, 1, &g_overlayVertexBufferView);
+        g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        g_commandList->DrawInstanced(4, 1, 0, 0);
+    }
+
 
     // Transition the current back buffer from RENDER_TARGET to PRESENT.
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -1824,6 +2172,8 @@ void WaitForGpu() {
 
 void CleanupD3DRenderResources() {
     WaitForGpu(); // Ensure GPU is idle before releasing resources
+
+    CleanupOverlayResources();
 
     if (g_fenceEvent) {
         CloseHandle(g_fenceEvent);
