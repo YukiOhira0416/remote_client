@@ -1498,6 +1498,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     DebugLog(L"Cleanup complete. Exiting wWinMain.");
 
     // === 非同期ロガーを安全に停止（全ログを flush） ===
-    Shutdown();
+    DebugLogAsync::Shutdown();
     return 0;
 }
