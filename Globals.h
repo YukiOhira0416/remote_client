@@ -75,9 +75,13 @@ extern HANDLE g_frameLatencyWaitableObject;
 // D3D12 Globals (defined in window.cpp)
 extern Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;
 
-extern const int RS_K;
-extern const int RS_M;
-extern const int RS_N;
+// Reed-Solomon parameters (initialized at runtime)
+extern int RS_K;
+extern int RS_M;
+extern int RS_N;
+
+// Function to initialize RS parameters from a config
+void InitializeReedSolomonParams(const ThreadConfig& cfg) noexcept;
 extern std::once_flag g_matrix_init_flag;
 extern std::vector<uint8_t> g_encode_matrix;
 extern std::atomic<bool> g_matrix_initialized;

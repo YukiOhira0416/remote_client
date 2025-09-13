@@ -6,10 +6,18 @@
 #include "Nvdec.h"
 #include "main.h"
 
-// Reed-Solomon encoding parameters
-const int RS_K = getOptimalThreadConfig().RS_K;  // Data shards
-const int RS_M = getOptimalThreadConfig().RS_M;  // Parity shards
-const int RS_N = RS_K + RS_M;
+// Reed-Solomon encoding parameters (initialized at runtime)
+int RS_K = 0;
+int RS_M = 0;
+int RS_N = 0;
+
+// This function must be called once at startup before any FEC logic is used.
+void InitializeReedSolomonParams(const ThreadConfig& cfg) noexcept
+{
+    RS_K = cfg.RS_K;
+    RS_M = cfg.RS_M;
+    RS_N = RS_K + RS_M;
+}
 
 // Jerasure encoding matrix (bit matrix)
 int* g_jerasure_matrix = nullptr;

@@ -1303,6 +1303,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     } else {
         SetProcessDPIAware();
     }
+
+    // Initialize RS parameters before using them in the matrix generation.
+    InitializeReedSolomonParams(getOptimalThreadConfig());
     InitializeRSMatrix();
 
     // Get executable path and set up logging
@@ -1420,16 +1423,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     std::thread rebootListenerThread(ListenForRebootCommands);
 
     std::vector<std::thread> receiverThreads;
+    receiverThreads.reserve(getOptimalThreadConfig().receiver);
     for (int i = 0; i < getOptimalThreadConfig().receiver; ++i) {
         receiverThreads.emplace_back(ReceiveRawPacketsThread, i);
     }
 
     std::vector<std::thread> fecWorkerThreads;
+    fecWorkerThreads.reserve(getOptimalThreadConfig().fec);
     for (int i = 0; i < getOptimalThreadConfig().fec; ++i) {
         fecWorkerThreads.emplace_back(FecWorkerThread, i);
     }
 
     std::vector<std::thread> nvdecThreads;
+    nvdecThreads.reserve(getOptimalThreadConfig().decoder);
     for (int i = 0; i < getOptimalThreadConfig().decoder; ++i) {
         nvdecThreads.emplace_back(NvdecThread, i);
     }
