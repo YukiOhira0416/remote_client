@@ -46,7 +46,7 @@ inline void BumpStreamGeneration() {
 // Global once:
 static nvtxDomainHandle_t g_frameDomain = nvtxDomainCreateA("FRAME");
 
-#define SIZE_PACKET_SIZE 258
+#define SIZE_PACKET_SIZE 256
 
 const double TARGET_FPS = 60.0;
 const std::chrono::nanoseconds TARGET_FRAME_DURATION(static_cast<long long>(1'000'000'000.0 / TARGET_FPS));
