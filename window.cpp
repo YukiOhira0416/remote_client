@@ -2054,7 +2054,9 @@ void RenderFrame() {
         const auto log_original_frame_no = renderedFrameData.originalFrameNumber;
         const auto log_id = renderedFrameData.id;
         const uint64_t render_end_ms = SteadyNowMs();
-        const uint64_t render_total_ms = (render_end_ms >= log_render_start_ms) ? (render_end_ms - log_render_start_ms) : 0;
+        const uint64_t render_total_ms =
+            (render_end_ms >= log_render_start_ms) ? (render_end_ms - log_render_start_ms) : 0;
+
         uint64_t client_e2e_ms = 0;
         {
             std::lock_guard<std::mutex> lk(g_fecEndTimeMutex);
@@ -2069,6 +2071,8 @@ void RenderFrame() {
             DebugLog(L"RenderFrame Total (wall): " + std::to_wstring(render_total_ms) + L" ms.");
             DebugLog(L"Client FEC End->RenderEnd: " + std::to_wstring(client_e2e_ms) + L" ms.");
         }
+
+        // --- ここから WGC→RenderEnd 計測と出力条件 ---
         int64_t wgc_to_renderend_ms = 0;
         {
             uint64_t wgc_ts_ms = 0;
@@ -2082,18 +2086,33 @@ void RenderFrame() {
             }
             if (wgc_ts_ms != 0) {
                 auto frameEndSys = std::chrono::system_clock::now();
-                uint64_t frameEndMs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
+                uint64_t frameEndMs =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
                 wgc_to_renderend_ms = static_cast<int64_t>(frameEndMs) - static_cast<int64_t>(wgc_ts_ms);
             }
         }
-        if (RenderCount % 60 == 0) {
-            DebugLog(L"RenderFrame Latency (unsynced clocks): StreamFrame #"
-                + std::to_wstring(log_stream_frame_no)
-                + L", OriginalFrame #" + std::to_wstring(log_original_frame_no)
-                + L" (ID: " + std::to_wstring(log_id) + L")"
-                + L" - WGC to RenderEnd: " + std::to_wstring(wgc_to_renderend_ms) + L" ms.");
+
+        // [追加] 直近に WGC→RenderEnd をログ出力した StreamFrameNo を覚えて、同じなら再出力しない
+        static uint32_t s_lastLoggedStreamFrame = 0;
+        static bool     s_hasLastLoggedStreamFrame = false;
+        const bool isDuplicateFrameLog =
+            s_hasLastLoggedStreamFrame && (log_stream_frame_no == s_lastLoggedStreamFrame);
+
+        // 既存の 60 フレーム毎の条件は維持しつつ、(1) 同一フレームの再レンダリング、(2) 差分が 0 以下 を抑制
+        if ((RenderCount % 60) == 0) {
+            if (!isDuplicateFrameLog && wgc_to_renderend_ms > 0) {
+                DebugLog(L"RenderFrame Latency (unsynced clocks): StreamFrame #"
+                    + std::to_wstring(log_stream_frame_no)
+                    + L", OriginalFrame #" + std::to_wstring(log_original_frame_no)
+                    + L" (ID: " + std::to_wstring(log_id) + L")"
+                    + L" - WGC to RenderEnd: " + std::to_wstring(wgc_to_renderend_ms) + L" ms.");
+                // 次回以降、同じフレームでの重複出力を抑制
+                s_lastLoggedStreamFrame = log_stream_frame_no;
+                s_hasLastLoggedStreamFrame = true;
+            }
         }
 
+        // 以降は既存の NVTX range 終了処理など（変更なし）
         if (renderedFrameData.nvtx_range_id) {
             nvtxDomainRangeEnd(g_frameDomain, renderedFrameData.nvtx_range_id);
             renderedFrameData.nvtx_range_id = 0;
