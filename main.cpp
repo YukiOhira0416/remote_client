@@ -1085,7 +1085,6 @@ void FecWorkerThread(int threadId) {
 
                             // [重要] shardsForDecodeAttempt には「多数派長のシャードのみ」を詰める
                             shardsForDecodeAttempt.clear();
-                            shardsForDecodeAttempt.reserve(mode_cnt);
                             for (auto &pair_entry : frameBuf) {
                                 if (pair_entry.second.size() == mode_len) {
                                     // デコーダは map<uint32_t, vector<uint8_t>> を受け取るためコピーになる
