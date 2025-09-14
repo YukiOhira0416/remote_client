@@ -26,10 +26,29 @@
 #include <iomanip>      // Required for std::hex (for PointerToWString)
 #include <chrono> // For time measurement
 #include <map>
+#include <unordered_map>
 #include <queue>
 #include "Globals.h"
 #include "AppShutdown.h"
 #include "main.h" // For RequestIDRNow
+
+// --- Render-side cache for WGC timestamps (small, bounded) ---
+namespace {
+    std::mutex g_wgcDisplayedCacheMutex;
+    std::unordered_map<uint32_t, uint64_t> g_wgcTsCacheForDisplayed;
+    // キャッシュ上限（再描画ウィンドウ想定。必要に応じて調整可）
+    static constexpr size_t kDisplayedCacheMax = 1024;
+
+    inline void PruneDisplayedCacheIfNeeded() {
+        if (g_wgcTsCacheForDisplayed.size() <= kDisplayedCacheMax) return;
+        // 厳密LRUは不要。性能優先で先頭から数件落とす簡易実装でOK
+        size_t to_remove = g_wgcTsCacheForDisplayed.size() - kDisplayedCacheMax;
+        for (auto it = g_wgcTsCacheForDisplayed.begin(); it != g_wgcTsCacheForDisplayed.end() && to_remove > 0; ) {
+            it = g_wgcTsCacheForDisplayed.erase(it);
+            --to_remove;
+        }
+    }
+}
 
 // Condition variable to signal when the window is shown
 extern std::mutex g_windowShownMutex;
@@ -2072,17 +2091,40 @@ void RenderFrame() {
         int64_t wgc_to_renderend_ms = 0;
         {
             uint64_t wgc_ts_ms = 0;
+
+            // 追加：まずはレンダー側キャッシュを確認（再描画で効く）
             {
+                std::lock_guard<std::mutex> lk_disp(g_wgcDisplayedCacheMutex);
+                auto itc = g_wgcTsCacheForDisplayed.find(log_stream_frame_no);
+                if (itc != g_wgcTsCacheForDisplayed.end()) {
+                    wgc_ts_ms = itc->second;
+                }
+            }
+
+            // 従来どおりの取得（キャッシュに無かった場合のみ）
+            if (wgc_ts_ms == 0) {
                 std::lock_guard<std::mutex> lk(g_wgcTsMutex);
                 auto it = g_wgcCaptureTimestampByStreamFrame.find(log_stream_frame_no);
                 if (it != g_wgcCaptureTimestampByStreamFrame.end()) {
                     wgc_ts_ms = it->second;
+
+                    // ★A案のポイント：今後の再描画のためにレンダー側キャッシュへコピー
+                    {
+                        std::lock_guard<std::mutex> lk_disp(g_wgcDisplayedCacheMutex);
+                        g_wgcTsCacheForDisplayed[log_stream_frame_no] = wgc_ts_ms;
+                        PruneDisplayedCacheIfNeeded();
+                    }
+
+                    // グローバルは従来どおり erase（無制限増加を防ぐ）
                     g_wgcCaptureTimestampByStreamFrame.erase(it);
                 }
             }
+
+            // 以下は既存ロジック維持（wgc_ts_ms!=0のときのみ差分計算）
             if (wgc_ts_ms != 0) {
                 auto frameEndSys = std::chrono::system_clock::now();
-                uint64_t frameEndMs = std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
+                uint64_t frameEndMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          frameEndSys.time_since_epoch()).count();
                 wgc_to_renderend_ms = static_cast<int64_t>(frameEndMs) - static_cast<int64_t>(wgc_ts_ms);
             }
         }
