@@ -1059,75 +1059,114 @@ void FecWorkerThread(int threadId) {
                     // DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: Added Shard F#" + std::to_wstring(frameNumber) + L" Idx:" + std::to_wstring(shardIndex) + L". Current count: " + std::to_wstring(g_frameBuffer[frameNumber].size()));
                 }
 
-                if (g_frameBuffer.count(frameNumber) && g_frameBuffer[frameNumber].size() >= RS_K) {
-                    std::lock_guard<std::mutex> metaLock(g_frameMetadataMutex); // Lock metadata while accessing
-                    if (g_frameMetadata.count(frameNumber)) {
-                        currentFrameMetaForAttempt = g_frameMetadata[frameNumber]; // This is a copy
-                        for (auto& pair_entry : g_frameBuffer[frameNumber]) {
-                            shardsForDecodeAttempt[static_cast<uint32_t>(pair_entry.first)] = std::move(pair_entry.second);
-                        }
-                        g_frameBuffer.erase(frameNumber);
-                        g_frameMetadata.erase(frameNumber);
-                        tryDecode = true;
-                    } else {
-                        DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: Metadata missing for F#" + std::to_wstring(frameNumber) + L" when K shards reached. Cleaning buffer.");
-                        g_frameBuffer.erase(frameNumber);
-                    }
-                } else if (g_frameBuffer.count(frameNumber)) {
-                    bool is_expired = false;
-                    {
-                        std::lock_guard<std::mutex> metaLock(g_frameMetadataMutex);
-                        auto metaIt = g_frameMetadata.find(frameNumber);
-                        if (metaIt != g_frameMetadata.end()) {
-                            const uint64_t now = SteadyNowMs();
-                            const uint64_t time_since_first_shard = now - metaIt->second.first_seen_time_ms;
-                            const uint64_t assembly_timeout_ms = 300;
+                if (g_frameBuffer.count(frameNumber)) {
+                    auto &frameBuf = g_frameBuffer[frameNumber];
 
-                            if (time_since_first_shard > assembly_timeout_ms) {
-                                is_expired = true;
-                                DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: Pruning expired frame assembly for F#" + std::to_wstring(frameNumber) + L" after " + std::to_wstring(time_since_first_shard) + L"ms.");
-                                g_frameMetadata.erase(metaIt);
+                    // 既存: ユニーク shardIndex 数が K 以上かどうか
+                    const size_t uniqueShardCount = frameBuf.size();
+
+                    // [追加] シャード長の頻度分布をとり、多数派長(mode_len)を決定
+                    size_t mode_len = 0;
+                    size_t mode_cnt = 0;
+                    std::map<size_t, size_t> lenFreq;
+                    for (const auto &kv : frameBuf) {
+                        const size_t len = kv.second.size();
+                        if (len == 0) continue;
+                        size_t c = ++lenFreq[len];
+                        if (c > mode_cnt) { mode_cnt = c; mode_len = len; }
+                    }
+
+                    // [条件強化] 「多数派長のシャードが K 個以上」になったらだけ試行
+                    if (uniqueShardCount >= static_cast<size_t>(RS_K) && mode_cnt >= static_cast<size_t>(RS_K)) {
+                        // 既存: メタデータの取得
+                        std::lock_guard<std::mutex> metaLock(g_frameMetadataMutex);
+                        if (g_frameMetadata.count(frameNumber)) {
+                            currentFrameMetaForAttempt = g_frameMetadata[frameNumber]; // コピー
+
+                            // [重要] shardsForDecodeAttempt には「多数派長のシャードのみ」を詰める
+                            shardsForDecodeAttempt.clear();
+                            shardsForDecodeAttempt.reserve(mode_cnt);
+                            for (auto &pair_entry : frameBuf) {
+                                if (pair_entry.second.size() == mode_len) {
+                                    // デコーダは map<uint32_t, vector<uint8_t>> を受け取るためコピーになる
+                                    // ※ move すると frameBuf が空になり再収集できなくなるのでコピーで良い
+                                    shardsForDecodeAttempt[static_cast<uint32_t>(pair_entry.first)] = pair_entry.second;
+                                }
+                            }
+
+                            // [ポイント] ここでは g_frameBuffer/g_frameMetadata を **消さない**
+                            // デコード成功時のみ消去し、失敗時は追加入荷を待つ
+                            tryDecode = !shardsForDecodeAttempt.empty();
+                        } else {
+                            DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: Metadata missing for F#"
+                                     + std::to_wstring(frameNumber) + L" when K shards reached. Cleaning buffer.");
+                            // 既存動作と同じ：メタが無ければクリーニング
+                            g_frameBuffer.erase(frameNumber);
+                        }
+                    } else {
+                        // Not enough shards with the same length, check for timeout.
+                        bool is_expired = false;
+                        {
+                            std::lock_guard<std::mutex> metaLock(g_frameMetadataMutex);
+                            auto metaIt = g_frameMetadata.find(frameNumber);
+                            if (metaIt != g_frameMetadata.end()) {
+                                const uint64_t now = SteadyNowMs();
+                                const uint64_t time_since_first_shard = now - metaIt->second.first_seen_time_ms;
+                                const uint64_t assembly_timeout_ms = 300;
+
+                                if (time_since_first_shard > assembly_timeout_ms) {
+                                    is_expired = true;
+                                    DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: Pruning expired frame assembly for F#" + std::to_wstring(frameNumber) + L" after " + std::to_wstring(time_since_first_shard) + L"ms.");
+                                    g_frameMetadata.erase(metaIt);
+                                }
                             }
                         }
-                    }
-                    if (is_expired) {
-                        g_frameBuffer.erase(frameNumber);
-                    } else {
-                        if(count % 200 == 0)DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: F#" + std::to_wstring(frameNumber) + L" has " + std::to_wstring(g_frameBuffer[frameNumber].size()) + L" shards, (less than K=" + std::to_wstring(RS_K) + L") waiting for more.");
+                        if (is_expired) {
+                            g_frameBuffer.erase(frameNumber);
+                        } else {
+                            if (count % 200 == 0) {
+                                DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: F#"
+                                         + std::to_wstring(frameNumber) + L" has "
+                                         + std::to_wstring(uniqueShardCount)
+                                         + L" shards, (less than K=" + std::to_wstring(RS_K)
+                                         + L" or not enough same-sized shards) waiting for more.");
+                            }
+                        }
                     }
                 }
             } // End Metadata and FrameBuffer scope
 
             if (tryDecode && !shardsForDecodeAttempt.empty()) {
                 std::vector<uint8_t> decodedFrameData;
-                // currentFrameMetaForAttempt.originalDataLen is already host order
                 uint32_t originalLenForDecode = currentFrameMetaForAttempt.originalDataLen;
 
-                if (g_matrix_initialized && DecodeFEC_Jerasure(shardsForDecodeAttempt, RS_K, RS_M, originalLenForDecode, decodedFrameData, g_jerasure_matrix)) {
-                    // Save H264 file after successful FEC decode, before enqueue
-                    // SaveH264ToFile_NUM(decodedFrameData, "decoded_frame");
+                if (g_matrix_initialized && DecodeFEC_Jerasure(
+                        shardsForDecodeAttempt, RS_K, RS_M, originalLenForDecode, decodedFrameData, g_jerasure_matrix)) {
 
                     H264Frame frame_to_decode;
                     frame_to_decode.timestamp = currentFrameMetaForAttempt.firstTimestamp;
                     frame_to_decode.frameNumber = frameNumber;
                     frame_to_decode.data = std::move(decodedFrameData);
-
-                    // Mark the precise receive-complete timestamp for end-to-end latency.
                     frame_to_decode.rx_done_ms = SteadyNowMs();
-
-                    // NEW: record FEC end time keyed by this frame's stream frame number
                     {
                         std::lock_guard<std::mutex> lk(g_fecEndTimeMutex);
                         g_fecEndTimeByStreamFrame[frame_to_decode.frameNumber] = frame_to_decode.rx_done_ms;
                     }
-
-                    // NEW: record server WGC capture timestamp keyed by this frame's stream frame number
                     {
                         std::lock_guard<std::mutex> lk(g_wgcTsMutex);
-                        g_wgcCaptureTimestampByStreamFrame[frame_to_decode.frameNumber] = frame_to_decode.timestamp; // server system_clock ms
+                        g_wgcCaptureTimestampByStreamFrame[frame_to_decode.frameNumber] = frame_to_decode.timestamp;
                     }
-
                     g_h264FrameQueue.enqueue(std::move(frame_to_decode));
+
+                    // [ここで初めて] 成功したフレームのバッファ/メタデータを消去
+                    {
+                        std::lock_guard<std::mutex> bufferLock(g_frameBufferMutex);
+                        g_frameBuffer.erase(frameNumber);
+                    }
+                    {
+                        std::lock_guard<std::mutex> metaLock(g_frameMetadataMutex);
+                        g_frameMetadata.erase(frameNumber);
+                    }
                     
                     // 追加のデバッグログ
                     auto fec_worker_thread_end = std::chrono::system_clock::now();
@@ -1135,7 +1174,10 @@ void FecWorkerThread(int threadId) {
                     int64_t elapsed_fec_worker_thread = static_cast<int64_t>(fec_worker_thread_end_ts) - static_cast<int64_t>(parsedInfo.server_fec_timestamp);
                     if(count % 120 == 0)DebugLog(L"Server FEC Worker Start to Client FEC Worker End Process Time: " + std::to_wstring(elapsed_fec_worker_thread) + L" ms");
                 } else {
-                    DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: FEC Decode failed for frame " + std::to_wstring(frameNumber));
+                    // 失敗時は何も消さず、追加入荷を待つ（既存ログ・計測は維持）
+                    if (g_matrix_initialized) {
+                        DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: FEC Decode failed for frame " + std::to_wstring(frameNumber) + L", will wait for more shards.");
+                    }
                 }
             }
             count++;
