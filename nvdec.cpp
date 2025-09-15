@@ -217,7 +217,7 @@ bool FrameDecoder::Init() {
     CUDA_CHECK(cuCtxPushCurrent(m_cuContext));
 
     CUVIDPARSERPARAMS videoParserParameters = {};
-    videoParserParameters.CodecType = cudaVideoCodec_H264;
+    videoParserParameters.CodecType = cudaVideoCodec_AV1; // AV1に切替（低遅延/ログ/計測は維持）
     videoParserParameters.ulMaxNumDecodeSurfaces = FrameDecoder::NUM_DECODE_SURFACES;
     videoParserParameters.ulMaxDisplayDelay = 0; // Low latency
     videoParserParameters.pUserData = this;
@@ -420,6 +420,17 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
     m_frameWidth = pVideoFormat->coded_width;
     m_frameHeight = pVideoFormat->coded_height;
 
+    // ---- AV1 bit depth ガード（現行は8-bit NV12のみ対応）----
+    // 既存の描画は NV12 (R8/R8G8) & NV12ToRGBPS.hlsl 固定のため、
+    // 10-bit(P016) はここで拒否してログを出す（余分な改修を避ける）。
+    // ※ 10-bit対応は別PRで R16/R16G16 テクスチャ + P016用PSO追加で行う。
+    if (pVideoFormat->bit_depth_luma_minus8 > 0 /* 10-bit以上 */) {
+        DebugLog(L"AV1 stream is >8-bit. Current build supports only 8-bit AV1 (NV12). "
+                 L"Please configure encoder to 8-bit or implement P016 path in a separate change.");
+        return false;
+    }
+    // -------------------------------------------------------
+
     // The rest of the function initializes the decoder with the *actual* stream
     // dimensions, but allocates buffers for the *target* dimensions.
     memset(&m_videoDecoderCreateInfo, 0, sizeof(m_videoDecoderCreateInfo));
@@ -435,7 +446,7 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
     m_videoDecoderCreateInfo.ulTargetWidth = pVideoFormat->coded_width;
     m_videoDecoderCreateInfo.ulTargetHeight = pVideoFormat->coded_height;
     m_videoDecoderCreateInfo.ulNumOutputSurfaces = 12; // more headroom during resize/IDR
-    m_videoDecoderCreateInfo.OutputFormat = cudaVideoSurfaceFormat_NV12;
+    m_videoDecoderCreateInfo.OutputFormat      = cudaVideoSurfaceFormat_NV12; // 8-bit前提（変更なし）
 
     CUDA_CHECK(cuvidCreateDecoder(&m_hDecoder, &m_videoDecoderCreateInfo));
 
