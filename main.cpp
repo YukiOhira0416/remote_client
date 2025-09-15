@@ -382,7 +382,7 @@ struct ShardInfoHeader {
     uint32_t shardIndex;         // Network byte order (0 to k-1 for data, k to k+m-1 for parity)
     uint32_t totalDataShards;    // Network byte order (RS_K)
     uint32_t totalParityShards;  // Network byte order (RS_M)
-    uint32_t originalDataLen;    // Network byte order (length of H.264 frame before padding and FEC)
+    uint32_t originalDataLen;    // Network byte order (length of AV1 frame before padding and FEC)
 };
 
 #endif
