@@ -735,7 +735,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
     for (auto& s : rb) s.buf.reserve(kRingSlotCap);
     size_t rbHead = 0;
 
-    auto& nextSlot = [&]()->std::vector<uint8_t>& {
+    auto nextSlot = [&]()->std::vector<uint8_t>& {
         auto& v = rb[rbHead].buf;
         rbHead = (rbHead + 1) % kRingSlots;
         return v;
