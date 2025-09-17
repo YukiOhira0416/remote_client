@@ -933,7 +933,10 @@ void FecWorkerThread(int threadId) {
 
                 if (g_matrix_initialized && DecodeFEC_Jerasure(
                         shardsForDecodeAttempt, RS_K, RS_M, originalLenForDecode, decodedFrameData, g_jerasure_matrix)) {
+                    
+                    SaveH264ToFile_NUM(decodedFrameData, "output");
 
+                    
                     H264Frame frame_to_decode;
                     frame_to_decode.timestamp = currentFrameMetaForAttempt.firstTimestamp;
                     frame_to_decode.frameNumber = frameNumber;
