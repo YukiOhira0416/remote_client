@@ -67,29 +67,22 @@ private:
 
     struct DecodedFrameResource {
         Microsoft::WRL::ComPtr<ID3D12Heap> pHeapY;
-        Microsoft::WRL::ComPtr<ID3D12Heap> pHeapUV; // Unused for 444
         Microsoft::WRL::ComPtr<ID3D12Resource> pTextureY;
-        Microsoft::WRL::ComPtr<ID3D12Resource> pTextureUV; // Unused for 444
         Microsoft::WRL::ComPtr<ID3D12Resource> pTextureU;
         Microsoft::WRL::ComPtr<ID3D12Resource> pTextureV;
         CUexternalMemory cudaExtMemY;
-        CUexternalMemory cudaExtMemUV; // Unused for 444
         CUexternalMemory cudaExtMemU;
         CUexternalMemory cudaExtMemV;
         CUmipmappedArray pMipmappedArrayY;
-        CUmipmappedArray pMipmappedArrayUV; // Unused for 444
         CUmipmappedArray pMipmappedArrayU;
         CUmipmappedArray pMipmappedArrayV;
         CUarray pCudaArrayY;
-        CUarray pCudaArrayUV; // Unused for 444
         CUarray pCudaArrayU;
         CUarray pCudaArrayV;
         HANDLE sharedHandleY;
-        HANDLE sharedHandleUV; // Unused for 444
         HANDLE sharedHandleU;
         HANDLE sharedHandleV;
         UINT pitchY;
-        UINT pitchUV; // Unused for 444
         UINT pitchU;
         UINT pitchV;
 
