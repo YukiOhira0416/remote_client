@@ -368,7 +368,9 @@ static std::atomic<bool> g_deviceResetInProgress{false};
 // Keep layout/comments as-is around this block.
 struct RetiredGpuResources {
     Microsoft::WRL::ComPtr<ID3D12Resource> y;
-    Microsoft::WRL::ComPtr<ID3D12Resource> uv;
+    Microsoft::WRL::ComPtr<ID3D12Resource> u;
+    Microsoft::WRL::ComPtr<ID3D12Resource> v;
+    Microsoft::WRL::ComPtr<ID3D12Resource> uv; // Keep for now
     CUevent copyDone;         // may be nullptr
     UINT64 fenceValue;        // render-queue fence that must be completed before release
     RetiredGpuResources() : copyDone(nullptr), fenceValue(0) {}
@@ -422,6 +424,8 @@ static void DrainRetireBin() {
 
         // Final release now that both queues are quiesced for this resource set.
         r.y.Reset();
+        r.u.Reset();
+        r.v.Reset();
         r.uv.Reset();
 
         g_retireBin.pop_front();
@@ -620,7 +624,8 @@ void ClearReorderState()
 
             RetiredGpuResources r;
             r.y = std::move(rf.hw_decoded_texture_Y);
-            r.uv = std::move(rf.hw_decoded_texture_UV);
+            r.u = std::move(rf.hw_decoded_texture_U);
+            r.v = std::move(rf.hw_decoded_texture_V);
             r.copyDone = rf.copyDone;      // hand the event to retire bin
             r.fenceValue = retireFence;    // conservative: release after this fence
 
@@ -639,13 +644,14 @@ void ClearReorderState()
             g_lastDrawnFrame.nvtx_range_id = 0;
         }
         r.y = std::move(g_lastDrawnFrame.hw_decoded_texture_Y);
-        r.uv = std::move(g_lastDrawnFrame.hw_decoded_texture_UV);
+        r.u = std::move(g_lastDrawnFrame.hw_decoded_texture_U);
+        r.v = std::move(g_lastDrawnFrame.hw_decoded_texture_V);
         r.copyDone = g_lastDrawnFrame.copyDone;
         r.fenceValue = retireFence;
         g_lastDrawnFrame.copyDone = nullptr;
         g_lastDrawnFrame = {}; // keep existing layout/behavior
 
-        if (r.y || r.uv || r.copyDone) {
+        if (r.y || r.u || r.v || r.copyDone) {
             std::lock_guard<std::mutex> gb(g_retireBinMutex);
             g_retireBin.emplace_back(std::move(r));
         }
@@ -1135,7 +1141,7 @@ if (FAILED(hr) || !g_copyFenceSharedHandle) {
     // --- Create rendering resources (Root Signature, PSO, Vertex Buffer, SRV Heap) ---
 
     // 9. Create Root Signature
-    D3D12_DESCRIPTOR_RANGE1 srvRanges[2];
+    D3D12_DESCRIPTOR_RANGE1 srvRanges[3];
     srvRanges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     srvRanges[0].NumDescriptors = 1; // For Y Texture
     srvRanges[0].BaseShaderRegister = 0; // t0
@@ -1144,11 +1150,18 @@ if (FAILED(hr) || !g_copyFenceSharedHandle) {
     srvRanges[0].OffsetInDescriptorsFromTableStart = 0;
 
     srvRanges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    srvRanges[1].NumDescriptors = 1; // For UV Texture
+    srvRanges[1].NumDescriptors = 1; // For U Texture
     srvRanges[1].BaseShaderRegister = 1; // t1
     srvRanges[1].RegisterSpace = 0;
     srvRanges[1].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
     srvRanges[1].OffsetInDescriptorsFromTableStart = 1;
+
+    srvRanges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srvRanges[2].NumDescriptors = 1; // For V Texture
+    srvRanges[2].BaseShaderRegister = 2; // t2
+    srvRanges[2].RegisterSpace = 0;
+    srvRanges[2].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
+    srvRanges[2].OffsetInDescriptorsFromTableStart = 2;
 
     D3D12_ROOT_PARAMETER1 rootParameters[1];
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
@@ -1204,7 +1217,7 @@ if (FAILED(hr) || !g_copyFenceSharedHandle) {
         else DebugLog(L"InitD3D (D3D12): Vertex shader compilation failed. HR: " + HResultToHexWString(hr));
         return false;
     }
-    hr = D3DCompileFromFile(L"Shader/NV12ToRGBPS.hlsl", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "ps_5_1", compileFlags, 0, &pixelShaderBlob, &errorBlob);
+    hr = D3DCompileFromFile(L"Shader/YUV444ToRGBA709Full.hlsl", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "ps_5_1", compileFlags, 0, &pixelShaderBlob, &errorBlob);
     if (FAILED(hr)) {
         if (errorBlob) DebugLog(L"InitD3D (D3D12): Pixel shader compilation failed: " + std::wstring(static_cast<wchar_t*>(errorBlob->GetBufferPointer()), static_cast<wchar_t*>(errorBlob->GetBufferPointer()) + errorBlob->GetBufferSize() / sizeof(wchar_t)));
         else DebugLog(L"InitD3D (D3D12): Pixel shader compilation failed. HR: " + HResultToHexWString(hr));
@@ -1726,7 +1739,8 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     }
 
     // 3. Draw the selected frame.
-    if (frameToDraw.hw_decoded_texture_Y && frameToDraw.hw_decoded_texture_UV) {
+    bool is444 = frameToDraw.hw_decoded_texture_U && frameToDraw.hw_decoded_texture_V;
+    if (frameToDraw.hw_decoded_texture_Y && (is444 || frameToDraw.hw_decoded_texture_UV)) {
         if (isNewFrame) {
             frameToDraw.render_start_ms = SteadyNowMs();
             // We must wait on the event from the master copy in the cache.
@@ -1734,7 +1748,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             // Propagate the render-start time to the master cached frame, so that
             // latency stats are correct.
             g_lastDrawnFrame.render_start_ms = frameToDraw.render_start_ms;
-            // GPU-GPU sync: ensure render queue does not sample Y/UV until CUDA copy signaled completion.
+            // GPU-GPU sync: ensure render queue does not sample until CUDA copy signaled completion.
             if (frameToDraw.fenceValue != 0 && g_copyFence) {
                 g_d3d12CommandQueue->Wait(g_copyFence.Get(), static_cast<UINT64>(frameToDraw.fenceValue));
             } else if (g_lastDrawnFrame.copyDone) {
@@ -1750,37 +1764,38 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             SetLetterboxViewport(g_commandList.Get(), backbuffer->GetDesc(), videoW, videoH);
         }
 
-        // [FIX] Use SRV heap as a ring buffer.
-        // Calculate the descriptor handles for the current slot in the ring buffer.
         CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleCpu(g_srvHeap->GetCPUDescriptorHandleForHeapStart(), g_srvDescriptorHeapIndex, g_srvDescriptorSize);
         CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandleGpu(g_srvHeap->GetGPUDescriptorHandleForHeapStart(), g_srvDescriptorHeapIndex, g_srvDescriptorSize);
 
-        // Create the SRV for the Y plane.
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDescY = {};
-        srvDescY.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDescY.Format = DXGI_FORMAT_R8_UNORM;
-        srvDescY.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDescY.Texture2D.MipLevels = 1;
-        g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_Y.Get(), &srvDescY, srvHandleCpu);
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Texture2D.MipLevels = 1;
 
-        // Offset to the next descriptor for the UV plane.
+        // Y plane
+        srvDesc.Format = frameToDraw.hw_decoded_texture_Y->GetDesc().Format;
+        g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_Y.Get(), &srvDesc, srvHandleCpu);
         srvHandleCpu.Offset(1, g_srvDescriptorSize);
 
-        // Create the SRV for the UV plane.
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDescUV = {};
-        srvDescUV.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDescUV.Format = DXGI_FORMAT_R8G8_UNORM;
-        srvDescUV.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDescUV.Texture2D.MipLevels = 1;
-        g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_UV.Get(), &srvDescUV, srvHandleCpu);
+        if (is444) {
+            // U plane
+            srvDesc.Format = frameToDraw.hw_decoded_texture_U->GetDesc().Format;
+            g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_U.Get(), &srvDesc, srvHandleCpu);
+            srvHandleCpu.Offset(1, g_srvDescriptorSize);
+            // V plane
+            srvDesc.Format = frameToDraw.hw_decoded_texture_V->GetDesc().Format;
+            g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_V.Get(), &srvDesc, srvHandleCpu);
+        } else {
+            // UV plane
+            srvDesc.Format = frameToDraw.hw_decoded_texture_UV->GetDesc().Format;
+            g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_UV.Get(), &srvDesc, srvHandleCpu);
+        }
 
-        // Set the descriptor heap and the root descriptor table for the current frame.
         ID3D12DescriptorHeap* ppHeaps[] = { g_srvHeap.Get() };
         g_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
         g_commandList->SetGraphicsRootDescriptorTable(0, srvHandleGpu);
 
-        // Move to the next slot in the ring buffer for the next frame.
-        g_srvDescriptorHeapIndex = (g_srvDescriptorHeapIndex + 2) % kSrvHeapSize;
+        g_srvDescriptorHeapIndex = (g_srvDescriptorHeapIndex + (is444 ? 3 : 2)) % kSrvHeapSize;
         g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         {
             nvtx3::scoped_range_in<d3d12_domain> r{ "Draw" };
