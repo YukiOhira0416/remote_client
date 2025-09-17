@@ -29,16 +29,12 @@
 #include <queue>
 #include "Globals.h"
 #include "AppShutdown.h"
-#include "main.h" // For RequestIDRNow
+#include "main.h"
 
 // Condition variable to signal when the window is shown
 extern std::mutex g_windowShownMutex;
 extern std::condition_variable g_windowShownCv;
 extern bool g_windowShown;
-
-// Keep layout/comments as-is around this block.
-// Forward declare to avoid cross-unit include churn.
-void RequestIDRNow(); // defined in main.cpp; used to re-sync stream after device reset
 
 // CUDA includes
 #include <cuda.h>
@@ -495,9 +491,6 @@ static void HandleDeviceRemovedAndReinit() noexcept {
     // Force at least one Present to refresh the screen after reset
     g_forcePresentOnce.store(true, std::memory_order_release);
 
-    // Ask the server to send an IDR to re-sync decoder/render textures
-    RequestIDRNow();
-
     DebugLog(L"HandleDeviceRemovedAndReinit: D3D12 re-initialized successfully.");
     g_deviceResetInProgress.store(false, std::memory_order_release);
 }
@@ -793,7 +786,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             // 2) Resume the streaming pipeline even if the snapped size didn’t change.
             BumpStreamGeneration();
             ClearReorderState();
-            RequestIDRNow();
 
             // 3) Kick the render loop once so we draw immediately.
             g_lastFrameRenderTimeForKick = std::chrono::high_resolution_clock::now() - TARGET_FRAME_DURATION;
