@@ -156,10 +156,6 @@ set(VERTEX_SHADERS
     "${SHADER_SOURCE_DIR}/FullScreenQuadVS.hlsl"
 )
 
-set(PIXEL_SHADERS
-    "${SHADER_SOURCE_DIR}/NV12ToRGBPS.hlsl"
-)
-
 # 出力ディレクトリを作成
 file(MAKE_DIRECTORY ${SHADER_OUTPUT_DIR})
 
