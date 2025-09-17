@@ -74,61 +74,6 @@ void ClearReorderState();                        // New function to be implement
 extern std::atomic<int> currentResolutionWidth;  // Assumed to be in window.cpp per instructions
 extern std::atomic<int> currentResolutionHeight; // Assumed to be in window.cpp per instructions
 
-
-// 既存定義を流用（main.cpp 冒頭にある定数と同じもの）
-#ifndef SERVER_IP_RESEND
-#define SERVER_IP_RESEND "127.0.0.1"
-#endif
-#ifndef SERVER_PORT_RESEND
-#define SERVER_PORT_RESEND 8120
-#endif
-
-// 失敗しても致命傷にしない（ベストエフォート）
-void RequestIDRNow()
-{
-    const uint64_t now = SteadyNowMs();
-    if (now - g_lastIdrMs.load(std::memory_order_acquire) < 200) {
-        DebugLog(L"RequestIDRNow: suppressed (throttle)");
-        return;
-    }
-    g_lastIdrMs.store(now, std::memory_order_release);
-
-    SOCKET sock = INVALID_SOCKET;
-    ADDRINFOA hints{};
-    ADDRINFOA* result = nullptr;
-
-    try {
-        hints.ai_family   = AF_INET;
-        hints.ai_socktype = SOCK_DGRAM;
-        hints.ai_protocol = IPPROTO_UDP;
-
-        if (getaddrinfo(SERVER_IP_RESEND, std::to_string(SERVER_PORT_RESEND).c_str(), &hints, &result) != 0 || !result) {
-            DebugLog(L"RequestIDRNow: getaddrinfo failed.");
-            return;
-        }
-
-        sock = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-        if (sock == INVALID_SOCKET) {
-            DebugLog(L"RequestIDRNow: socket() failed.");
-            freeaddrinfo(result);
-            return;
-        }
-
-        const char* msg = "REQUEST_IDR#";
-        int sent = sendto(sock, msg, (int)strlen(msg), 0, result->ai_addr, (int)result->ai_addrlen);
-        if (sent <= 0) {
-            DebugLog(L"RequestIDRNow: sendto failed.");
-        } else {
-            DebugLog(L"RequestIDRNow: sent REQUEST_IDR#");
-        }
-        freeaddrinfo(result);
-    } catch (...) {
-        DebugLog(L"RequestIDRNow: unexpected exception.");
-    }
-
-    if (sock != INVALID_SOCKET) closesocket(sock);
-}
-
 // どこからでも呼べるように：解像度が確定/変更されたときの通知
 void OnResolutionChanged_GatedSend(int w, int h, bool forceResendNow = false)
 {
@@ -143,7 +88,6 @@ void OnResolutionChanged_GatedSend(int w, int h, bool forceResendNow = false)
         DebugLog(L"OnResolutionChanged_GatedSend: sending now.");
         SendFinalResolution(w, h);
         ClearReorderState();
-        RequestIDRNow();
 
         g_pendingResolutionValid = false;
     } else {
@@ -168,7 +112,6 @@ void OnNetworkReady()
         DebugLog(L"OnNetworkReady: flushing pending resolution.");
         SendFinalResolution(w, h);
         ClearReorderState();
-        RequestIDRNow();
         g_pendingResolutionValid = false;
     }
 
@@ -180,7 +123,6 @@ void OnNetworkReady()
             int w = currentResolutionWidth.load(), h = currentResolutionHeight.load();
             if (w > 0 && h > 0) {
                 SendFinalResolution(w, h);
-                RequestIDRNow();
             }
         }
     }).detach();
@@ -191,125 +133,6 @@ void OnNetworkReady()
 #pragma comment(lib, "dxgi.lib")
 #include <vector>
 #include <string>
-
-struct DetectedAdapter {
-    DXGI_ADAPTER_DESC1 desc{};
-    bool isSoftware = false;
-    bool isDiscrete = false;   // Heuristic: DedicatedVideoMemory > 0
-    bool isIntegrated = false; // Heuristic: Intel iGPU (Vendor 0x8086) 等
-    bool isNvidia = false;     // Vendor 0x10DE
-};
-
-static std::vector<DetectedAdapter> EnumerateAdaptersDXGI() {
-    std::vector<DetectedAdapter> out;
-    Microsoft::WRL::ComPtr<IDXGIFactory6> factory;
-    UINT flags = 0;
-#if defined(_DEBUG)
-    flags |= DXGI_CREATE_FACTORY_DEBUG;
-#endif
-    HRESULT hr = CreateDXGIFactory2(flags, IID_PPV_ARGS(&factory));
-    if (FAILED(hr) || !factory) {
-        // 取得失敗時は空リスト（上位で扱う）
-        return out;
-    }
-
-    for (UINT i = 0;; ++i) {
-        Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter1;
-        if (factory->EnumAdapters1(i, &adapter1) == DXGI_ERROR_NOT_FOUND) break;
-
-        DXGI_ADAPTER_DESC1 desc{};
-        if (FAILED(adapter1->GetDesc1(&desc))) continue;
-
-        DetectedAdapter a{};
-        a.desc = desc;
-        a.isSoftware = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
-        if (a.isSoftware) continue; // WARP等は除外
-
-        a.isNvidia    = (desc.VendorId == 0x10DE);
-        const bool isIntel = (desc.VendorId == 0x8086);
-        // 離散/統合の簡易判定（DXGIだけでは厳密にeGPU判定不可）
-        a.isDiscrete   = (desc.DedicatedVideoMemory > 0);
-        a.isIntegrated = (!a.isDiscrete) || isIntel;
-
-        out.push_back(a);
-    }
-    return out;
-}
-
-static bool EvaluateGpuPolicy(const std::vector<DetectedAdapter>& adapters,
-                              std::wstring& outUserMessage) {
-    // ルール適用のため、離散GPUのみ抽出
-    int discreteCount = 0;
-    int nvidiaDiscrete = 0;
-    int nonNvidiaDiscrete = 0;
-    bool hasIntegrated = false;
-
-    for (auto& a : adapters) {
-        if (a.isDiscrete) {
-            ++discreteCount;
-            if (a.isNvidia) ++nvidiaDiscrete;
-            else ++nonNvidiaDiscrete;
-        } else {
-            // ヘuristic: Intel等を統合扱い
-            if (a.isIntegrated) hasIntegrated = true;
-        }
-    }
-
-    // 判定
-    if (discreteCount >= 2) {
-        outUserMessage = L"Multiple discrete (external) GPUs were detected. "
-                         L"This app supports exactly one NVIDIA GPU. Click OK to exit.";
-        return false;
-    }
-    if (discreteCount == 1 && nonNvidiaDiscrete == 1 && hasIntegrated) {
-        outUserMessage = L"A non-NVIDIA discrete GPU and an integrated GPU were detected. "
-                         L"This app requires a single NVIDIA GPU. Click OK to exit.";
-        return false;
-    }
-    if (discreteCount == 1 && nvidiaDiscrete == 1 && hasIntegrated) {
-        outUserMessage = L"An NVIDIA discrete GPU and an integrated GPU were detected. "
-                         L"This build requires a single NVIDIA GPU only (no integrated GPU present). Click OK to exit.";
-        return false;
-    }
-    if (discreteCount == 1 && nvidiaDiscrete == 1 && !hasIntegrated) {
-        // 唯一の許可パターン
-        return true;
-    }
-
-    // その他（離散なし、NVIDIA不在 等）
-    outUserMessage = L"No supported GPU configuration was found. "
-                     L"This app requires exactly one discrete NVIDIA GPU. Click OK to exit.";
-    return false;
-}
-
-static bool EnforceGpuPolicyOrExit() {
-    try {
-        auto adapters = EnumerateAdaptersDXGI();
-        if (adapters.empty()) {
-            MessageBoxW(nullptr,
-                L"Could not enumerate GPUs (DXGI factory failed). "
-                L"This app requires exactly one discrete NVIDIA GPU. Click OK to exit.",
-                L"GPU Requirement",
-                MB_OK | MB_ICONINFORMATION);
-            return false;
-        }
-        std::wstring msg;
-        const bool allow = EvaluateGpuPolicy(adapters, msg);
-        if (!allow) {
-            MessageBoxW(nullptr, msg.c_str(), L"GPU Requirement", MB_OK | MB_ICONINFORMATION);
-            return false;
-        }
-        return true;
-    } catch (...) {
-        MessageBoxW(nullptr,
-            L"An unexpected error occurred while checking GPU configuration. "
-            L"This app requires exactly one discrete NVIDIA GPU. Click OK to exit.",
-            L"GPU Requirement",
-            MB_OK | MB_ICONINFORMATION);
-        return false;
-    }
-}
-// ==== [GPU Policy Support - END] ====
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "cuda.lib")
 #pragma comment(lib, "Mswsock.lib")          // For WSARecvMsg, WSASendMsg
@@ -326,13 +149,9 @@ static bool EnforceGpuPolicyOrExit() {
 #pragma comment(lib, "secur32.lib")
 #include <ShellScalingApi.h>
 #pragma comment(lib, "Shcore.lib")
-
-#define SERVER_IP_DATA "127.0.0.1"
-#define SERVER_IP_RESEND "127.0.0.1"// 再送信要求用のIPアドレス
-#define CLIENT_IP_BANDWIDTH "127.0.0.1"
-#define SERVER_PORT_RESEND 8120 // 再送信要求用のポート番号
-#define SERVER_PORT_DATA 8130 // パケット受信用のポート番号
-#define CLIENT_PORT_BANDWIDTH 8200// 帯域幅測定用のポート番号
+#define SEND_IP_BANDWIDTH "192.168.0.2"
+#define RECEIVE_PORT_DATA 8130 // パケット受信用のポート番号
+#define SEND_PORT_BANDWIDTH 8200// 帯域幅測定用のポート番号
 #define BANDWIDTH_DATA_SIZE 60 * 1024  // 60KB(帯域幅測定時のデータサイズ)
 #define DATA_PACKET_SIZE 1300 // UDPパケットサイズ
 #define WSARECV_BUFFER_SIZE 65000
@@ -591,73 +410,6 @@ void InitializeRSMatrix() {
     });
 }
 
-void ListenForResendRequests() {
-    DebugLog(L"ListenForResendRequests thread started.");
-
-    SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (udpSocket == INVALID_SOCKET) {
-        DebugLog(L"Failed to create socket.");
-        return;
-    }
-
-    sockaddr_in serverAddr{};
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(SERVER_PORT_RESEND); // ポート8120で待機
-    inet_pton(AF_INET, SERVER_IP_RESEND, &serverAddr.sin_addr); // 127.0.0.1で待機
-
-    if (bind(udpSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) == SOCKET_ERROR) {
-        DebugLog(L"Failed to bind socket.");
-        closesocket(udpSocket);
-        return;
-    }
-
-    DebugLog(L"Waiting for RESEND signal...");
-
-    while (receive_resend_Running) {
-        try {
-            char buffer[SIZE_PACKET_SIZE] = {0};
-            sockaddr_in clientAddr{};
-            int clientAddrSize = sizeof(clientAddr);
-
-            // データ受信
-            int bytesReceived = recvfrom(udpSocket, buffer, sizeof(buffer) - 1, 0,
-                                         reinterpret_cast<sockaddr*>(&clientAddr), &clientAddrSize);
-            if (bytesReceived == SOCKET_ERROR) {
-                if (WSAGetLastError() == WSAEINTR || WSAGetLastError() == WSAECONNRESET) {
-                    DebugLog(L"recvfrom interrupted or connection reset in ListenForResendRequests.");
-                    continue;
-                }
-                DebugLog(L"Failed to receive data in ListenForResendRequests. Error: " + std::to_wstring(WSAGetLastError()));
-                std::this_thread::sleep_for(std::chrono::milliseconds(10)); // Avoid busy loop on error
-                continue;
-            }
-
-            buffer[bytesReceived] = '\0'; // Null-terminate
-            std::string narrowReceivedData(buffer);
-            std::wstring receivedData(narrowReceivedData.begin(), narrowReceivedData.end());
-
-
-            // デバッグログ
-            DebugLog(L"Received data: " + receivedData);
-
-            // 該当のメッセージを受信した場合の処理
-            if (receivedData == L"RESEND_DATA") {
-                // SendWindowSize(); // This is obsolete. The client now proactively sends its final resolution.
-                DebugLog(L"Received obsolete RESEND_DATA command. Ignoring.");
-            }
-        } catch (const std::exception& ex) {
-            std::string narrowExceptionMsg(ex.what());
-            std::wstring wideExceptionMsg(narrowExceptionMsg.begin(), narrowExceptionMsg.end());
-            DebugLog(L"Exception in ListenForResendRequests: " + wideExceptionMsg);
-            continue;
-        }
-    }
-
-    // ソケットのクローズとWSAのクリーンアップ
-    closesocket(udpSocket);
-    DebugLog(L"ListenForResendRequests thread stopped.");
-}
-
 void CountBandW() {
     {
         std::unique_lock<std::mutex> lock(g_windowShownMutex);
@@ -672,8 +424,8 @@ void CountBandW() {
 
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(CLIENT_PORT_BANDWIDTH);
-    inet_pton(AF_INET, CLIENT_IP_BANDWIDTH, &serverAddr.sin_addr);
+    serverAddr.sin_port = htons(SEND_PORT_BANDWIDTH);
+    inet_pton(AF_INET, SEND_IP_BANDWIDTH, &serverAddr.sin_addr);
 
     std::vector<char> data(BANDWIDTH_DATA_SIZE, 'A');
 
@@ -749,7 +501,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
     ENetAddress address;
 
     address.host = ENET_HOST_ANY; // Listen on all available interfaces
-    address.port = static_cast<enet_uint16>(SERVER_PORT_DATA + threadId); // Each thread listens on a different port
+    address.port = static_cast<enet_uint16>(RECEIVE_PORT_DATA + threadId); // Each thread listens on a different port
 
     server_host = enet_host_create(&address /* the address to bind the server host to */,
                                    32      /* allow up to 32 clients and/or outgoing connections */,
@@ -1245,6 +997,10 @@ ThreadConfig getOptimalThreadConfig(){
     return config;
 }
 
+#define RECEIVE_IP_REBOOT "0.0.0.0"
+#define RECEIVE_PORT_REBOOT_START 8150
+#define RECEIVE_PORT_REBOT_END 8151
+
 void ListenForRebootCommands() {
     DebugLog(L"ListenForRebootCommands thread started.");
 
@@ -1262,8 +1018,8 @@ void ListenForRebootCommands() {
         return;
     }
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-    serverAddr.sin_port = htons(8150);
+    serverAddr.sin_addr.s_addr = inet_addr(RECEIVE_IP_REBOOT);
+    serverAddr.sin_port = htons(RECEIVE_PORT_REBOOT_START);
     if (bind(listenSocketStart, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
         DebugLog(L"ListenForRebootCommands: bind() failed for START socket with error: " + std::to_wstring(WSAGetLastError()));
         closesocket(listenSocketStart);
@@ -1282,7 +1038,7 @@ void ListenForRebootCommands() {
         closesocket(listenSocketStart);
         return;
     }
-    serverAddr.sin_port = htons(8151);
+    serverAddr.sin_port = htons(RECEIVE_PORT_REBOT_END);
     if (bind(listenSocketEnd, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
         DebugLog(L"ListenForRebootCommands: bind() failed for END socket with error: " + std::to_wstring(WSAGetLastError()));
         closesocket(listenSocketStart);
@@ -1365,11 +1121,6 @@ void ListenForRebootCommands() {
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
-    // Enforce GPU policy first
-    if (!EnforceGpuPolicyOrExit()) {
-        return 0; // Exit early per policy
-    }
-
     // SetProcessDpiAwarenessContextが使えない場合はSetProcessDPIAwareを使う
     HMODULE hUser32 = LoadLibraryA("user32.dll");
     if (hUser32) {
@@ -1497,7 +1248,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
     // Start worker threads
     std::thread bandwidthThread(CountBandW);
-    std::thread resendThread(ListenForResendRequests);
     std::thread rebootListenerThread(ListenForRebootCommands);
 
     std::vector<std::thread> receiverThreads;
@@ -1567,7 +1317,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     DebugLog(L"Exited message loop. Initiating final resource cleanup...");
     AppThreads appThreads{};
     appThreads.bandwidthThread = &bandwidthThread;
-    appThreads.resendThread = &resendThread;
     appThreads.rebootListenerThread = &rebootListenerThread;
     appThreads.receiverThreads = &receiverThreads;
     appThreads.fecWorkerThreads = &fecWorkerThreads;

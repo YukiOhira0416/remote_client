@@ -441,8 +441,8 @@ static void DrainRetireBin() {
 // ==== [Deferred resource retire - END] ====
 
 // D3D11 specific globals (to be removed or replaced)
-#define CLIENT_PORT_FEC 8080// FEC用ポート番号
-#define CLIENT_IP_FEC "127.0.0.1"// FEC用IPアドレス
+#define SEND_PORT_FEC 8080// FEC用ポート番号
+#define SEND_IP_FEC "192.168.0.2"// FEC用IPアドレス
 
 bool g_allowTearing = false; // ティアリングを許可するかどうか
 
@@ -2291,8 +2291,8 @@ void SendFinalResolution(int width, int height) {
 
     sockaddr_in serverAddr{};
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(CLIENT_PORT_FEC);
-    inet_pton(AF_INET, CLIENT_IP_FEC, &serverAddr.sin_addr);
+    serverAddr.sin_port = htons(SEND_PORT_FEC);
+    inet_pton(AF_INET, SEND_IP_FEC, &serverAddr.sin_addr);
 
     if (fec_success && original_data_len > 0) {
         uint32_t currentFrameNumber = g_globalFrameNumber.fetch_add(1);
