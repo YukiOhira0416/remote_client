@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <unordered_map>
 #include <queue>
 #include <condition_variable>
 #include "DebugLog.h"
@@ -350,15 +351,15 @@ std::mutex processvideosequenceMutex;
 std::mutex g_frameBufferMutex;
 
 // Frame and fragment related data structures
-std::map<int, std::map<int, std::vector<uint8_t>>> g_frameBuffer;
-std::map<int, int> expectedFrameCounts;
+std::unordered_map<int, std::unordered_map<int, std::vector<uint8_t>>> g_frameBuffer;
+std::unordered_map<int, int> expectedFrameCounts;
 
 // Fragment assembly data structures
-std::map<uint64_t, std::map<uint16_t, std::vector<uint8_t>>> g_fragmentAssemblyBuffer;
+std::unordered_map<uint64_t, std::unordered_map<uint16_t, std::vector<uint8_t>>> g_fragmentAssemblyBuffer;
 std::mutex g_fragmentAssemblyMutex;
-std::map<uint64_t, uint16_t> g_expectedFragmentsCount;
-std::map<uint64_t, uint16_t> g_receivedFragmentsCount;
-std::map<uint64_t, size_t> g_accumulatedFragmentDataSize;
+std::unordered_map<uint64_t, uint16_t> g_expectedFragmentsCount;
+std::unordered_map<uint64_t, uint16_t> g_receivedFragmentsCount;
+std::unordered_map<uint64_t, size_t> g_accumulatedFragmentDataSize;
 
 // Frame metadata structure and management
 struct FrameMetadata {
@@ -366,11 +367,11 @@ struct FrameMetadata {
     uint32_t originalDataLen = 0;
     uint64_t first_seen_time_ms = 0;
 };
-std::map<int, FrameMetadata> g_frameMetadata;
+std::unordered_map<int, FrameMetadata> g_frameMetadata;
 std::mutex g_frameMetadataMutex;
 
 // Fragment timing and frame ID management
-std::map<uint64_t, std::chrono::steady_clock::time_point> g_fragmentFirstPacketTime;
+std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> g_fragmentFirstPacketTime;
 std::atomic<uint64_t> g_rgbaFrameIdCounter{0};
 
 // Structures (assuming they are defined in Globals.h or a shared header, replicating here for clarity if not)
@@ -399,7 +400,7 @@ struct ENetAppFragmentHeader {
 }; // Size: 4 + 2 + 2 = 8 bytes
 
 struct AppFragmentAssemblyState {
-    std::map<uint16_t, std::vector<uint8_t>> fragments; // key: fragment_index (host byte order)
+    std::unordered_map<uint16_t, std::vector<uint8_t>> fragments; // key: fragment_index (host byte order)
     uint16_t total_fragments = 0;
     std::chrono::steady_clock::time_point first_fragment_received_time;
 };
@@ -411,7 +412,7 @@ const std::chrono::seconds APP_FRAGMENT_ASSEMBLY_TIMEOUT(5);
 extern std::atomic<bool> receive_raw_packet_Running; // Controls the main loop
 
 // Buffer for reassembling application-level ENet fragments
-std::map<uint32_t, AppFragmentAssemblyState> appFragmentBuffers; // key: original_packet_id (host byte order)
+std::unordered_map<uint32_t, AppFragmentAssemblyState> appFragmentBuffers; // key: original_packet_id (host byte order)
 std::mutex g_appFragmentBuffersMutex; // Mutex to protect appFragmentBuffers
 
 // New struct for parsed shard information
@@ -721,6 +722,26 @@ namespace my_nvtx_domains {
 void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsThread would be clearer
     DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"] started.");
 
+    // === 追加: 再構成作業用リングバッファ（このスレッド専用） ===
+    // 断片再構成後の最大想定サイズに合わせて reserve。
+    // 値は運用環境に応じて調整。まずは安全側で 128 KiB。
+    static constexpr size_t kRingSlots = 256;
+    static constexpr size_t kRingSlotCap = 128 * 1024;
+
+    struct ReassembleSlot {
+        std::vector<uint8_t> buf; // 一度だけ確保して使い回す
+    };
+    std::vector<ReassembleSlot> rb(kRingSlots);
+    for (auto& s : rb) s.buf.reserve(kRingSlotCap);
+    size_t rbHead = 0;
+
+    auto& nextSlot = [&]()->std::vector<uint8_t>& {
+        auto& v = rb[rbHead].buf;
+        rbHead = (rbHead + 1) % kRingSlots;
+        return v;
+    };
+    // === 追加ここまで ===
+
     // ENet should be initialized in wWinMain before starting this thread.
     // And deinitialized in wWinMain after this thread stops.
 
@@ -811,7 +832,10 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
 
                                     size_t shardDataSize_parse = data_after_worker_ts + size_after_worker_ts - current_ptr_parse;//shardDataSize_parseは[Data]のサイズ
                                     if (shardDataSize_parse > 0) {
-                                        parsedInfoLocal.shardData.assign(current_ptr_parse, current_ptr_parse + shardDataSize_parse);
+                                        parsedInfoLocal.shardData.resize(shardDataSize_parse);
+                                        std::memcpy(parsedInfoLocal.shardData.data(),
+                                                    current_ptr_parse,
+                                                    shardDataSize_parse);
                                     }
                                     parsedInfoLocal.generation = g_streamGeneration.load(std::memory_order_acquire);
                                     g_parsedShardQueue.enqueue(std::move(parsedInfoLocal));
@@ -843,7 +867,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                         size_t fragment_actual_data_size = payload_size - sizeof(ENetAppFragmentHeader);
 
                         // Data needed for reassembly, to be populated under lock
-                        std::map<uint16_t, std::vector<uint8_t>> fragments_for_reassembly;
+                        std::unordered_map<uint16_t, std::vector<uint8_t>> fragments_for_reassembly;
                         uint16_t total_fragments_for_reassembly = 0;
                         bool ready_for_reassembly = false;
 
@@ -876,71 +900,87 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
 
                         // Reassembly logic moved outside the lock
                         if (ready_for_reassembly) {
-                            std::vector<uint8_t> reassembled_packet;
+                            // === 変更: 一時 reassembled_packet の生成をやめ、リングバッファを使う ===
+                            // 合計サイズを先に算出（既存処理と同じ）
                             size_t total_reassembled_size = 0;
-                            for(const auto& frag_pair : fragments_for_reassembly) {
-                                total_reassembled_size += frag_pair.second.size();
-                            }
-                            reassembled_packet.reserve(total_reassembled_size);
+                            for (const auto& kv : fragments_for_reassembly)
+                                total_reassembled_size += kv.second.size();
 
+                            std::vector<uint8_t>& reassembled = nextSlot();
+                            if (reassembled.capacity() < total_reassembled_size) {
+                                // まれに閾値超えた場合のみ再確保（ログは残す）
+                                DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) +
+                                         L"]: ring slot grow from " + std::to_wstring(reassembled.capacity()) +
+                                         L" to " + std::to_wstring(total_reassembled_size));
+                                reassembled.reserve(total_reassembled_size);
+                            }
+                            reassembled.resize(total_reassembled_size);
+
+                            size_t off = 0;
                             bool reassembly_ok = true;
                             for (uint16_t i = 0; i < total_fragments_for_reassembly; ++i) {
-                                auto it_frag = fragments_for_reassembly.find(i);
-                                if (it_frag != fragments_for_reassembly.end()) {
-                                    reassembled_packet.insert(reassembled_packet.end(), it_frag->second.begin(), it_frag->second.end());
-                                } else {
-                                    DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Missing fragment " + std::to_wstring(i) + L" for packet ID " + std::to_wstring(original_packet_id) + L" during reassembly.");
+                                auto it = fragments_for_reassembly.find(i);
+                                if (it == fragments_for_reassembly.end()) {
+                                    DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) +
+                                             L"]: Missing fragment " + std::to_wstring(i) + L" during reassembly.");
                                     reassembly_ok = false;
                                     break;
                                 }
+                                const auto& frag = it->second;
+                                std::memcpy(reassembled.data() + off, frag.data(), frag.size());
+                                off += frag.size();
                             }
-                            
-                            if (reassembly_ok && !reassembled_packet.empty()) {
-                                // reassembled_packet is [WorkerTS (8B)][WGCCaptureTS (8B)][SIH][Data]
-                                if (reassembled_packet.size() >= sizeof(uint64_t)) { // Check for WorkerTS
-                                    uint64_t worker_ts_val = *reinterpret_cast<const uint64_t*>(reassembled_packet.data());
-                                    
-                                    if (reassembled_packet.size() > sizeof(uint64_t)) { // Check for data after WorkerTS
-                                        const uint8_t* data_after_worker_ts_frag = reassembled_packet.data() + sizeof(uint64_t);
-                                        size_t size_after_worker_ts_frag = reassembled_packet.size() - sizeof(uint64_t);
 
-                                        if (size_after_worker_ts_frag >= (sizeof(uint64_t) + sizeof(ShardInfoHeader))) {
-                                            ParsedShardInfo parsedInfoLocalFrag;
-                                            const uint8_t* current_ptr_parse_frag = data_after_worker_ts_frag;
+                            if (reassembly_ok && !reassembled.empty()) {
+                                // 以降のパースは従来どおり（WorkerTS / WGCTS / SIH / Data）
+                                if (reassembled.size() >= sizeof(uint64_t)) {
+                                    uint64_t worker_ts_val = *reinterpret_cast<const uint64_t*>(reassembled.data());
+                                    if (reassembled.size() > sizeof(uint64_t)) {
+                                        const uint8_t* data_after_worker = reassembled.data() + sizeof(uint64_t);
+                                        size_t size_after_worker = reassembled.size() - sizeof(uint64_t);
 
-                                            parsedInfoLocalFrag.wgcCaptureTimestamp = *reinterpret_cast<const uint64_t*>(current_ptr_parse_frag);
-                                            current_ptr_parse_frag += sizeof(uint64_t);
+                                        if (size_after_worker >= (sizeof(uint64_t) + sizeof(ShardInfoHeader))) {
+                                            ParsedShardInfo parsed{};
+                                            const uint8_t* cur = data_after_worker;
 
-                                            const ShardInfoHeader* sih_parse_frag = reinterpret_cast<const ShardInfoHeader*>(current_ptr_parse_frag);
-                                            current_ptr_parse_frag += sizeof(ShardInfoHeader);
+                                            parsed.wgcCaptureTimestamp = *reinterpret_cast<const uint64_t*>(cur);
+                                            cur += sizeof(uint64_t);
 
-                                            parsedInfoLocalFrag.frameNumber = ntohl(sih_parse_frag->frameNumber);
-                                            parsedInfoLocalFrag.shardIndex = ntohl(sih_parse_frag->shardIndex);
-                                            parsedInfoLocalFrag.totalDataShards = ntohl(sih_parse_frag->totalDataShards);
-                                            parsedInfoLocalFrag.totalParityShards = ntohl(sih_parse_frag->totalParityShards);
-                                            parsedInfoLocalFrag.originalDataLen = ntohl(sih_parse_frag->originalDataLen);
-                                            parsedInfoLocalFrag.server_fec_timestamp = worker_ts_val;     
+                                            const ShardInfoHeader* sih = reinterpret_cast<const ShardInfoHeader*>(cur);
+                                            cur += sizeof(ShardInfoHeader);
 
-                                            size_t shardDataSize_parse_frag = data_after_worker_ts_frag + size_after_worker_ts_frag - current_ptr_parse_frag;
-                                            if (shardDataSize_parse_frag > 0) {
-                                                parsedInfoLocalFrag.shardData.assign(current_ptr_parse_frag, current_ptr_parse_frag + shardDataSize_parse_frag);
+                                            parsed.frameNumber       = ntohl(sih->frameNumber);
+                                            parsed.shardIndex        = ntohl(sih->shardIndex);
+                                            parsed.totalDataShards   = ntohl(sih->totalDataShards);
+                                            parsed.totalParityShards = ntohl(sih->totalParityShards);
+                                            parsed.originalDataLen   = ntohl(sih->originalDataLen);
+                                            parsed.server_fec_timestamp = worker_ts_val;
+                                            parsed.generation = g_streamGeneration.load(std::memory_order_acquire);
+
+                                            const size_t shardDataSize = (data_after_worker + size_after_worker) - cur;
+                                            if (shardDataSize > 0) {
+                                                // ※ここは所有権を他スレッドに渡すため従来どおり vector にコピー（安全最優先）
+                                                parsed.shardData.resize(shardDataSize);
+                                                std::memcpy(parsed.shardData.data(), cur, shardDataSize);
                                             }
-                                            parsedInfoLocalFrag.generation = g_streamGeneration.load(std::memory_order_acquire);
-                                            g_parsedShardQueue.enqueue(std::move(parsedInfoLocalFrag));
-                                        }
-                                        else {
-                                            DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Reassembled packet ID " + std::to_wstring(original_packet_id) + L" too small for WGCCaptureTS and SIH. Size: " + std::to_wstring(size_after_worker_ts_frag));
+
+                                            g_parsedShardQueue.enqueue(std::move(parsed));
+                                        } else {
+                                            DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) +
+                                                     L"]: Reassembled size too small for headers.");
                                         }
                                     } else {
-                                        DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Reassembled packet ID " + std::to_wstring(original_packet_id) + L" has WorkerTS but no further data.");
+                                        DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) +
+                                                 L"]: Reassembled has WorkerTS but no further data.");
                                     }
                                 } else {
-                                    DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Reassembled packet ID " + std::to_wstring(original_packet_id) + L" too small for WorkerTS. Size: " + std::to_wstring(reassembled_packet.size()));
+                                    DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) +
+                                             L"]: Reassembled too small for WorkerTS.");
                                 }
                             } else if (!reassembly_ok) {
                                 DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Failed to reassemble packet ID " + std::to_wstring(original_packet_id));
                             }
-                        } // End of reassembly logic (outside lock)
+                        }
                     } else {
                         DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Unknown packet type " + std::to_wstring(packet_type));
                     }
@@ -1050,7 +1090,7 @@ void FecWorkerThread(int threadId) {
 
                 std::lock_guard<std::mutex> bufferLock(g_frameBufferMutex);
                 if (g_frameBuffer.find(frameNumber) == g_frameBuffer.end()) {
-                    g_frameBuffer[frameNumber] = std::map<int, std::vector<uint8_t>>();
+                    g_frameBuffer[frameNumber] = std::unordered_map<int, std::vector<uint8_t>>();
                 }
                 // Note: arrival order can be interleaved (data/parity). We only require >=K unique shard indices.
 
@@ -1068,7 +1108,7 @@ void FecWorkerThread(int threadId) {
                     // [追加] シャード長の頻度分布をとり、多数派長(mode_len)を決定
                     size_t mode_len = 0;
                     size_t mode_cnt = 0;
-                    std::map<size_t, size_t> lenFreq;
+                    std::unordered_map<size_t, size_t> lenFreq;
                     for (const auto &kv : frameBuf) {
                         const size_t len = kv.second.size();
                         if (len == 0) continue;
