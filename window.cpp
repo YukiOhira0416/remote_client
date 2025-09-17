@@ -370,7 +370,6 @@ struct RetiredGpuResources {
     Microsoft::WRL::ComPtr<ID3D12Resource> y;
     Microsoft::WRL::ComPtr<ID3D12Resource> u;
     Microsoft::WRL::ComPtr<ID3D12Resource> v;
-    Microsoft::WRL::ComPtr<ID3D12Resource> uv; // Keep for now
     CUevent copyDone;         // may be nullptr
     UINT64 fenceValue;        // render-queue fence that must be completed before release
     RetiredGpuResources() : copyDone(nullptr), fenceValue(0) {}
@@ -426,7 +425,6 @@ static void DrainRetireBin() {
         r.y.Reset();
         r.u.Reset();
         r.v.Reset();
-        r.uv.Reset();
 
         g_retireBin.pop_front();
         ++released;
@@ -626,7 +624,6 @@ void ClearReorderState()
             r.y = std::move(rf.hw_decoded_texture_Y);
             r.u = std::move(rf.hw_decoded_texture_U);
             r.v = std::move(rf.hw_decoded_texture_V);
-            r.uv = std::move(rf.hw_decoded_texture_UV);
             r.copyDone = rf.copyDone;      // hand the event to retire bin
             r.fenceValue = retireFence;    // conservative: release after this fence
 
@@ -647,13 +644,12 @@ void ClearReorderState()
         r.y = std::move(g_lastDrawnFrame.hw_decoded_texture_Y);
         r.u = std::move(g_lastDrawnFrame.hw_decoded_texture_U);
         r.v = std::move(g_lastDrawnFrame.hw_decoded_texture_V);
-        r.uv = std::move(g_lastDrawnFrame.hw_decoded_texture_UV);
         r.copyDone = g_lastDrawnFrame.copyDone;
         r.fenceValue = retireFence;
         g_lastDrawnFrame.copyDone = nullptr;
         g_lastDrawnFrame = {}; // keep existing layout/behavior
 
-        if (r.y || r.u || r.v || r.uv || r.copyDone) {
+        if (r.y || r.u || r.v || r.copyDone) {
             std::lock_guard<std::mutex> gb(g_retireBinMutex);
             g_retireBin.emplace_back(std::move(r));
         }
@@ -1741,8 +1737,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     }
 
     // 3. Draw the selected frame.
-    bool is444 = frameToDraw.hw_decoded_texture_U && frameToDraw.hw_decoded_texture_V;
-    if (frameToDraw.hw_decoded_texture_Y && (is444 || frameToDraw.hw_decoded_texture_UV)) {
+    if (frameToDraw.hw_decoded_texture_Y && frameToDraw.hw_decoded_texture_U && frameToDraw.hw_decoded_texture_V) {
         if (isNewFrame) {
             frameToDraw.render_start_ms = SteadyNowMs();
             // We must wait on the event from the master copy in the cache.
@@ -1779,25 +1774,19 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_Y.Get(), &srvDesc, srvHandleCpu);
         srvHandleCpu.Offset(1, g_srvDescriptorSize);
 
-        if (is444) {
-            // U plane
-            srvDesc.Format = frameToDraw.hw_decoded_texture_U->GetDesc().Format;
-            g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_U.Get(), &srvDesc, srvHandleCpu);
-            srvHandleCpu.Offset(1, g_srvDescriptorSize);
-            // V plane
-            srvDesc.Format = frameToDraw.hw_decoded_texture_V->GetDesc().Format;
-            g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_V.Get(), &srvDesc, srvHandleCpu);
-        } else {
-            // UV plane
-            srvDesc.Format = frameToDraw.hw_decoded_texture_UV->GetDesc().Format;
-            g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_UV.Get(), &srvDesc, srvHandleCpu);
-        }
+        // U plane
+        srvDesc.Format = frameToDraw.hw_decoded_texture_U->GetDesc().Format;
+        g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_U.Get(), &srvDesc, srvHandleCpu);
+        srvHandleCpu.Offset(1, g_srvDescriptorSize);
+        // V plane
+        srvDesc.Format = frameToDraw.hw_decoded_texture_V->GetDesc().Format;
+        g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_V.Get(), &srvDesc, srvHandleCpu);
 
         ID3D12DescriptorHeap* ppHeaps[] = { g_srvHeap.Get() };
         g_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
         g_commandList->SetGraphicsRootDescriptorTable(0, srvHandleGpu);
 
-        g_srvDescriptorHeapIndex = (g_srvDescriptorHeapIndex + (is444 ? 3 : 2)) % kSrvHeapSize;
+        g_srvDescriptorHeapIndex = (g_srvDescriptorHeapIndex + 3) % kSrvHeapSize;
         g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         {
             nvtx3::scoped_range_in<d3d12_domain> r{ "Draw" };
