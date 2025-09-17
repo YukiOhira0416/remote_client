@@ -626,6 +626,7 @@ void ClearReorderState()
             r.y = std::move(rf.hw_decoded_texture_Y);
             r.u = std::move(rf.hw_decoded_texture_U);
             r.v = std::move(rf.hw_decoded_texture_V);
+            r.uv = std::move(rf.hw_decoded_texture_UV);
             r.copyDone = rf.copyDone;      // hand the event to retire bin
             r.fenceValue = retireFence;    // conservative: release after this fence
 
@@ -646,12 +647,13 @@ void ClearReorderState()
         r.y = std::move(g_lastDrawnFrame.hw_decoded_texture_Y);
         r.u = std::move(g_lastDrawnFrame.hw_decoded_texture_U);
         r.v = std::move(g_lastDrawnFrame.hw_decoded_texture_V);
+        r.uv = std::move(g_lastDrawnFrame.hw_decoded_texture_UV);
         r.copyDone = g_lastDrawnFrame.copyDone;
         r.fenceValue = retireFence;
         g_lastDrawnFrame.copyDone = nullptr;
         g_lastDrawnFrame = {}; // keep existing layout/behavior
 
-        if (r.y || r.u || r.v || r.copyDone) {
+        if (r.y || r.u || r.v || r.uv || r.copyDone) {
             std::lock_guard<std::mutex> gb(g_retireBinMutex);
             g_retireBin.emplace_back(std::move(r));
         }

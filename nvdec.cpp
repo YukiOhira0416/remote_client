@@ -780,7 +780,10 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     if (is444) {
         readyFrame.hw_decoded_texture_U = fr.pTextureU;
         readyFrame.hw_decoded_texture_V = fr.pTextureV;
+        readyFrame.hw_decoded_texture_UV = nullptr; // Explicitly null for 444
     } else {
+        readyFrame.hw_decoded_texture_U = nullptr;
+        readyFrame.hw_decoded_texture_V = nullptr;
         readyFrame.hw_decoded_texture_UV = fr.pTextureUV;
     }
     readyFrame.timestamp             = pDispInfo->timestamp;

@@ -108,8 +108,9 @@ inline std::wstring HResultToHexWString(HRESULT hr) {
 struct ReadyGpuFrame {
     uint64_t timestamp;    
     Microsoft::WRL::ComPtr<ID3D12Resource> hw_decoded_texture_Y;  // Y plane texture
-    Microsoft::WRL::ComPtr<ID3D12Resource> hw_decoded_texture_U; // U plane texture
-    Microsoft::WRL::ComPtr<ID3D12Resource> hw_decoded_texture_V; // V plane texture
+    Microsoft::WRL::ComPtr<ID3D12Resource> hw_decoded_texture_U; // U plane texture (for YUV444)
+    Microsoft::WRL::ComPtr<ID3D12Resource> hw_decoded_texture_V; // V plane texture (for YUV444)
+    Microsoft::WRL::ComPtr<ID3D12Resource> hw_decoded_texture_UV; // Interleaved UV plane texture (for NV12)
     int width;
     int height;
     uint32_t originalFrameNumber;
