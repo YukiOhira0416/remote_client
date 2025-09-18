@@ -131,8 +131,8 @@ struct ReadyGpuFrame {
     nvtxRangeId_t nvtx_range_id = 0;
 };
 
-// H264 Frame Data for decoder queue
-struct H264Frame {
+// Encoded Frame Data for decoder queue
+struct EncodedFrame {
     uint64_t timestamp;
     uint32_t frameNumber;
     std::vector<uint8_t> data;
@@ -147,10 +147,10 @@ extern std::atomic<bool> app_running_atomic;
 extern std::atomic<bool> g_isSizing;
 extern std::atomic<bool> g_showRebootOverlay;
 extern std::atomic<bool> g_forcePresentOnce; // Present at least once even if no new decoded frame
-extern std::atomic<bool> dumpHEVCToFiles;
+extern std::atomic<bool> dumpEncodedStreamToFiles;
 
 // Global queues and synchronization for frame management
-extern moodycamel::ConcurrentQueue<H264Frame> g_h264FrameQueue;
+extern moodycamel::ConcurrentQueue<EncodedFrame> g_encodedFrameQueue;
 extern std::deque<ReadyGpuFrame> g_readyGpuFrameQueue;
 extern std::mutex g_readyGpuFrameQueueMutex;
 extern std::condition_variable g_readyGpuFrameQueueCV;

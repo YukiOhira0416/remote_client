@@ -346,13 +346,13 @@ std::wstring ConvertToWString(const std::string& str) {
     return wstr;
 }
 
-void SaveHEVCToFile_NUM(const std::vector<uint8_t>& prepared_hevcBuffer, const std::string& baseName) {
+void SaveEncodedStreamToFile(const std::vector<uint8_t>& prepared_encodedBuffer, const std::string& baseName) {
     // ★ スレッドIDをログに追加して、どのスレッドからの呼び出しから分かるようにする
     std::wstringstream wss_log_prefix;
-    wss_log_prefix << L"SaveHEVCToFile_NUM (Thread " << std::this_thread::get_id() << L"): ";
+    wss_log_prefix << L"SaveEncodedStreamToFile (Thread " << std::this_thread::get_id() << L"): ";
 
-    if (prepared_hevcBuffer.empty()) {
-        DebugLog(wss_log_prefix.str() + L"prepared_hevcBuffer is empty. Skipping file save.");
+    if (prepared_encodedBuffer.empty()) {
+        DebugLog(wss_log_prefix.str() + L"prepared_encodedBuffer is empty. Skipping file save.");
         return;
     }
 
@@ -390,11 +390,11 @@ void SaveHEVCToFile_NUM(const std::vector<uint8_t>& prepared_hevcBuffer, const s
         DebugLog(wss_log_prefix.str() + L"Error opening file " + ConvertToWString(numberedFilename));
         return;
     }
-    ofs.write(reinterpret_cast<const char*>(prepared_hevcBuffer.data()), prepared_hevcBuffer.size());
+    ofs.write(reinterpret_cast<const char*>(prepared_encodedBuffer.data()), prepared_encodedBuffer.size());
     ofs.close();
 
     // std::cout はデバッグログには出ないので、DebugLog を使う
-    DebugLog(wss_log_prefix.str() + L"Saved " + std::to_wstring(prepared_hevcBuffer.size()) + L" bytes to " + ConvertToWString(numberedFilename) + L" (Counter: " + std::to_wstring(currentFileCounterValue) + L")");
+    DebugLog(wss_log_prefix.str() + L"Saved " + std::to_wstring(prepared_encodedBuffer.size()) + L" bytes to " + ConvertToWString(numberedFilename) + L" (Counter: " + std::to_wstring(currentFileCounterValue) + L")");
 }
 
 
@@ -964,12 +964,12 @@ void FecWorkerThread(int threadId) {
                 if (g_matrix_initialized && DecodeFEC_Jerasure(
                         shardsForDecodeAttempt, RS_K, RS_M, originalLenForDecode, decodedFrameData, g_jerasure_matrix)) {
 
-                    if (dumpHEVCToFiles.load()) {
+                    if (dumpEncodedStreamToFiles.load()) {
                         std::lock_guard<std::mutex> lock(hevcoutputMutex);
-                        SaveHEVCToFile_NUM(decodedFrameData, "output_hevc");
+                        SaveEncodedStreamToFile(decodedFrameData, "output_hevc");
                     }
                     
-                    H264Frame frame_to_decode;
+                    EncodedFrame frame_to_decode;
                     frame_to_decode.timestamp = currentFrameMetaForAttempt.firstTimestamp;
                     frame_to_decode.frameNumber = frameNumber;
                     frame_to_decode.data = std::move(decodedFrameData);
@@ -982,7 +982,7 @@ void FecWorkerThread(int threadId) {
                         std::lock_guard<std::mutex> lk(g_wgcTsMutex);
                         g_wgcCaptureTimestampByStreamFrame[frame_to_decode.frameNumber] = frame_to_decode.timestamp;
                     }
-                    g_h264FrameQueue.enqueue(std::move(frame_to_decode));
+                    g_encodedFrameQueue.enqueue(std::move(frame_to_decode));
 
                     // [ここで初めて] 成功したフレームのバッファ/メタデータを消去
                     {

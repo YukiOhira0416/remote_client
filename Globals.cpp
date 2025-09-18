@@ -40,10 +40,10 @@ std::atomic<bool> app_running_atomic(true);
 std::atomic<bool> g_isSizing{false};
 std::atomic<bool> g_showRebootOverlay{ false };
 std::atomic<bool> g_forcePresentOnce{false};
-std::atomic<bool> dumpHEVCToFiles(false);
+std::atomic<bool> dumpEncodedStreamToFiles{false};
 
-// H264 Frame queue
-moodycamel::ConcurrentQueue<H264Frame> g_h264FrameQueue;
+// Encoded Frame queue
+moodycamel::ConcurrentQueue<EncodedFrame> g_encodedFrameQueue;
 
 // FEC end times keyed by stream frame number (steady clock ms since epoch-like)
 std::unordered_map<uint32_t, uint64_t> g_fecEndTimeByStreamFrame;
