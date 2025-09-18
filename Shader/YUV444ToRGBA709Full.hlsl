@@ -7,6 +7,14 @@ Texture2D TextureU : register(t1); // R8_UNORM or R16_UNORM
 Texture2D TextureV : register(t2); // R8_UNORM or R16_UNORM
 SamplerState Sampler : register(s0); // point/clamp を推奨（D3D12 側の静的サンプラ設定）
 
+// ★ 追加: 可視領域のみをサンプリングするためのUV変換
+cbuffer CropCB : register(b0)
+{
+    float2 uvScale; // = (uvMax - uvMin)
+    float2 uvBias;  // = uvMin
+    float2 _pad;    // 16B整列維持（将来拡張用）
+};
+
 // 切替マクロ
 #ifndef FULL_RANGE
   #define FULL_RANGE 1 // このシェーダは Full Range 前提
@@ -39,10 +47,13 @@ float3 YUV709FullToRGB(float y, float u, float v)
 
 float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
 {
+    // ★ 追加: crop情報に基づくUV変換
+    float2 uv2 = uv * uvScale + uvBias;
+
     // Y, U, V はいずれもフル解像度（アップサンプル不要）
-    float y = TextureY.Sample(Sampler, uv).r;
-    float u = TextureU.Sample(Sampler, uv).r;
-    float v = TextureV.Sample(Sampler, uv).r;
+    float y = TextureY.Sample(Sampler, uv2).r;
+    float u = TextureU.Sample(Sampler, uv2).r;
+    float v = TextureV.Sample(Sampler, uv2).r;
 
 #if FULL_RANGE
     // そのまま（Y:0..1, U/V:0..1）

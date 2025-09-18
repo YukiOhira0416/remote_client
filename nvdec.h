@@ -97,6 +97,10 @@ private:
     int m_frameWidth = 0;
     int m_frameHeight = 0;
 
+    // Cropping parameters from video sequence
+    int m_cropLeft = 0, m_cropTop = 0, m_cropRight = 0, m_cropBottom = 0;
+    int m_displayWidth = 0, m_displayHeight = 0;
+
     // The CUVIDDECODECREATEINFO struct needs to be valid for the life of the decoder
     CUVIDDECODECREATEINFO m_videoDecoderCreateInfo = {};
 };
