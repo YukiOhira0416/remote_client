@@ -451,7 +451,9 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
     // as it mainly defines the raw decode buffer format. We will copy out
     // the planes manually.
     if (pVideoFormat->bit_depth_luma_minus8 > 0) {
-        m_videoDecoderCreateInfo.OutputFormat = cudaVideoSurfaceFormat_P016;
+        m_videoDecoderCreateInfo.OutputFormat = cudaVideoSurfaceFormat_YUV444_16Bit;
+    } else {
+        m_videoDecoderCreateInfo.OutputFormat = cudaVideoSurfaceFormat_YUV444;
     }
 
     CUDA_CHECK(cuvidCreateDecoder(&m_hDecoder, &m_videoDecoderCreateInfo));
@@ -490,7 +492,7 @@ if (!g_cuCopyFenceSemaphore) {
         // -----------------------------
         // 1) D3D12 Texture (Committed)
         // -----------------------------
-        bool isHighBitDepth = (m_videoDecoderCreateInfo.OutputFormat == cudaVideoSurfaceFormat_P016);
+        bool isHighBitDepth = (m_videoDecoderCreateInfo.OutputFormat == cudaVideoSurfaceFormat_YUV444_16Bit);
 
         DXGI_FORMAT format = isHighBitDepth ? DXGI_FORMAT_R16_UNORM : DXGI_FORMAT_R8_UNORM;
         CUarray_format cuFormat = isHighBitDepth ? CU_AD_FORMAT_UNSIGNED_INT16 : CU_AD_FORMAT_UNSIGNED_INT8;
