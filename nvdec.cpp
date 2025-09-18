@@ -358,26 +358,23 @@ int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoForm
     // Update crop information regardless of whether we reconfigure or not.
     self->m_cropLeft = pVideoFormat->display_area.left;
     self->m_cropTop = pVideoFormat->display_area.top;
-    self->m_cropRight = pVideoFormat->display_area.right;
-    self->m_cropBottom = pVideoFormat->display_area.bottom;
+    // The display_area struct contains the coordinates of the display rectangle.
+    // To get the number of pixels to crop from the right and bottom edges, we
+    // subtract the display_area coordinates from the coded dimensions.
+    self->m_cropRight = pVideoFormat->coded_width - pVideoFormat->display_area.right;
+    self->m_cropBottom = pVideoFormat->coded_height - pVideoFormat->display_area.bottom;
 
-    // Prefer display width/height if available, otherwise calculate from crop.
-    // Note: display_area.right/bottom can be inclusive or exclusive depending on SDK.
-    // If nDisplayWidth is valid, it's the most reliable source.
-    if (pVideoFormat->nDisplayWidth > 0 && pVideoFormat->nDisplayHeight > 0) {
-        self->m_displayWidth = pVideoFormat->nDisplayWidth;
-        self->m_displayHeight = pVideoFormat->nDisplayHeight;
-    } else {
-        self->m_displayWidth = pVideoFormat->coded_width - self->m_cropLeft - self->m_cropRight;
-        self->m_displayHeight = pVideoFormat->coded_height - self->m_cropTop - self->m_cropBottom;
-    }
+    // The display width/height is derived from the display_area struct, which is the
+    // modern and correct way to determine the output dimensions.
+    // The nDisplayWidth and nDisplayHeight fields are deprecated.
+    self->m_displayWidth = pVideoFormat->display_area.right - pVideoFormat->display_area.left;
+    self->m_displayHeight = pVideoFormat->display_area.bottom - pVideoFormat->display_area.top;
 
     // Log the received and calculated values for verification.
     std::wstringstream wss;
     wss << L"NVDEC Seq Info: Coded=" << pVideoFormat->coded_width << L"x" << pVideoFormat->coded_height
-        << L", DisplayArea(L,T,R,B)=(" << self->m_cropLeft << L"," << self->m_cropTop
-        << L"," << self->m_cropRight << L"," << self->m_cropBottom << L")"
-        << L", nDisplayW/H=" << pVideoFormat->nDisplayWidth << L"x" << pVideoFormat->nDisplayHeight
+        << L", DisplayArea(L,T,R,B)=(" << pVideoFormat->display_area.left << L"," << pVideoFormat->display_area.top
+        << L"," << pVideoFormat->display_area.right << L"," << pVideoFormat->display_area.bottom << L")"
         << L", FinalDisplay=" << self->m_displayWidth << L"x" << self->m_displayHeight;
     DebugLog(wss.str());
 
