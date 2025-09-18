@@ -21,7 +21,7 @@
 #include "DebugLog.h"
 
 // Forward declaration
-struct H264Frame;
+struct EncodedFrame;
 
 struct FrameTimings {
     uint64_t rx_done_ms = 0;
@@ -36,7 +36,7 @@ public:
     ~FrameDecoder();
 
     bool Init();
-    void Decode(const H264Frame& frame);
+    void Decode(const EncodedFrame& frame);
 
     // Static callbacks for CUVIDDECODECREATEINFO
     static int CUDAAPI HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoFormat);
