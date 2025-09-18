@@ -237,7 +237,7 @@ bool FrameDecoder::Init() {
     return true;
 }
 
-void FrameDecoder::Decode(const H264Frame& frame) {
+void FrameDecoder::Decode(const EncodedFrame& frame) {
     CUDA_CHECK(cuCtxPushCurrent(m_cuContext));
 
     // timestamp -> frameNumber を記録 (from original)
@@ -796,12 +796,12 @@ void NvdecThread(int threadId) {
     }
 
     while (g_decode_worker_Running) { // Use the same global running flag
-        H264Frame frame;
-        if (g_h264FrameQueue.try_dequeue(frame)) {
+        EncodedFrame frame;
+        if (g_encodedFrameQueue.try_dequeue(frame)) {
             nvtx3::scoped_range r("CUDA Decode");
             frame.decode_start_ms = SteadyNowMs();
             g_frameDecoder->Decode(frame);
-            if(DecoderCount++ % 200 == 0)DebugLog(L"NvdecThread: Dequeue Size " + std::to_wstring(g_h264FrameQueue.size_approx()));
+            if(DecoderCount++ % 200 == 0)DebugLog(L"NvdecThread: Dequeue Size " + std::to_wstring(g_encodedFrameQueue.size_approx()));
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
