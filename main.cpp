@@ -95,13 +95,15 @@ extern std::atomic<int> currentResolutionHeight; // Assumed to be in window.cpp 
 #pragma comment(lib, "secur32.lib")
 #include <ShellScalingApi.h>
 #pragma comment(lib, "Shcore.lib")
-#define SEND_IP_BANDWIDTH "192.168.0.2"
+//#define SEND_IP_BANDWIDTH "192.168.0.2"
+#define SEND_IP_BANDWIDTH "127.0.0.1"
 #define RECEIVE_PORT_DATA 8130 // パケット受信用のポート番号
 #define SEND_PORT_BANDWIDTH 8200// 帯域幅測定用のポート番号
 #define BANDWIDTH_DATA_SIZE 60 * 1024  // 60KB(帯域幅測定時のデータサイズ)
 #define DATA_PACKET_SIZE 1300 // UDPパケットサイズ
 #define WSARECV_BUFFER_SIZE 65000
-#define RECEIVE_IP_REBOOT "0.0.0.0"
+//#define RECEIVE_IP_REBOOT "0.0.0.0"
+#define RECEIVE_IP_REBOOT "127.0.0.1"
 #define RECEIVE_PORT_REBOOT_START 8150
 #define RECEIVE_PORT_REBOOT_END 8151
 
@@ -252,7 +254,7 @@ ThreadSafePriorityQueue<ParsedShardInfo, std::vector<ParsedShardInfo>, ParsedSha
 ThreadConfig getOptimalThreadConfig(){
     ThreadConfig config;
 
-    config.receiver = 5;
+    config.receiver = 1;
     config.fec = 4;
     config.decoder = 1;
     config.render = 1;
@@ -583,14 +585,13 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                     }
 
                     uint8_t packet_type = event.packet->data[0];
-                    const uint8_t* payload_data = event.packet->data + 1;// payload_data is [WorkerTS (8B)][WGCCaptureTS (8B)][SIH][Data]
+                    const uint8_t* payload_data = event.packet->data + 1;// payload_data is [FEC完了時タイムスタンプ]{[WGCキャプチャ時][ShardInfoHeader][実際のデータ]}
                     size_t payload_size = event.packet->dataLength - 1;
 
                     if (packet_type == PACKET_TYPE_FULL_SHARD) {
                         if (payload_size >= sizeof(uint64_t)) { // Check for WorkerTS
-                            uint64_t worker_ts_val = *reinterpret_cast<const uint64_t*>(payload_data);//worker_ts_valはFECWorkerTSの値
+                            uint64_t worker_ts_val = *reinterpret_cast<const uint64_t*>(payload_data);//worker_ts_valはFEC完了時タイムスタンプの値
                             
-
                             if (payload_size > sizeof(uint64_t)) { // Check for data after WorkerTS
                                 const uint8_t* data_after_worker_ts = payload_data + sizeof(uint64_t);//data_after_worker_tsは[WGCCaptureTS (8B)][SIH][Data]の先頭アドレス
                                 size_t size_after_worker_ts = payload_size - sizeof(uint64_t);//[WGCCaptureTS (8B)][SIH][Data]のサイズ
@@ -998,7 +999,7 @@ void FecWorkerThread(int threadId) {
                     auto fec_worker_thread_end = std::chrono::system_clock::now();
                     uint64_t fec_worker_thread_end_ts = std::chrono::duration_cast<std::chrono::milliseconds>(fec_worker_thread_end.time_since_epoch()).count();
                     int64_t elapsed_fec_worker_thread = static_cast<int64_t>(fec_worker_thread_end_ts) - static_cast<int64_t>(parsedInfo.server_fec_timestamp);
-                    if(count % 120 == 0)DebugLog(L"Server FEC Worker Start to Client FEC Worker End Process Time: " + std::to_wstring(elapsed_fec_worker_thread) + L" ms");
+                    if(count % 120 == 0)DebugLog(L"Server FEC Encode End to Client FEC Decode End Process Time: " + std::to_wstring(elapsed_fec_worker_thread) + L" ms");
                 } else {
                     // 失敗時は何も消さず、追加入荷を待つ（既存ログ・計測は維持）
                     if (g_matrix_initialized) {
