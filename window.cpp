@@ -684,6 +684,32 @@ UINT g_srvDescriptorSize;
 static const UINT kSrvHeapSize = 256;
 static UINT g_srvDescriptorHeapIndex = 0;
 
+// Constant buffer for cropping
+struct CropCBData {
+    float uvScale[2];
+    float uvBias[2];
+    float _pad[2]; // 16B-align
+};
+Microsoft::WRL::ComPtr<ID3D12Resource> g_cropCB;
+UINT8* g_cropCBMapped = nullptr;
+
+bool CreateCropCB() {
+    if (!g_d3d12Device) return false;
+    const UINT cbSize = (sizeof(CropCBData) + 255) & ~255u;
+    auto heapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+    auto resDesc = CD3DX12_RESOURCE_DESC::Buffer(cbSize);
+    HRESULT hr = g_d3d12Device->CreateCommittedResource(
+        &heapProps, D3D12_HEAP_FLAG_NONE, &resDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&g_cropCB));
+    if (FAILED(hr)) { DebugLog(L"CreateCropCB failed."); return false; }
+    // Persistently map the buffer
+    CD3DX12_RANGE readRange(0, 0); // We do not intend to read from this buffer on the CPU.
+    hr = g_cropCB->Map(0, &readRange, reinterpret_cast<void**>(&g_cropCBMapped));
+    if (FAILED(hr)) { DebugLog(L"CropCB Map failed."); return false; }
+    return true;
+}
+
+
 std::atomic<uint32_t> g_globalFrameNumber(0);// FEC用フレーム番号
 
 // 各シャードパケットに付与するヘッダー
@@ -1162,11 +1188,19 @@ if (FAILED(hr) || !g_copyFenceSharedHandle) {
     srvRanges[2].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
     srvRanges[2].OffsetInDescriptorsFromTableStart = 2;
 
-    D3D12_ROOT_PARAMETER1 rootParameters[1];
+    D3D12_ROOT_PARAMETER1 rootParameters[2]; // ★ 1 → 2
+    // [0] SRV descriptor table (既存)
     rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     rootParameters[0].DescriptorTable.NumDescriptorRanges = _countof(srvRanges);
     rootParameters[0].DescriptorTable.pDescriptorRanges = srvRanges;
+
+    // ★ [1] 追加: Crop用 CBV (b0)
+    rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    rootParameters[1].Descriptor.ShaderRegister = 0; // b0
+    rootParameters[1].Descriptor.RegisterSpace = 0;
+    rootParameters[1].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
 
     D3D12_STATIC_SAMPLER_DESC staticSampler = {};
     staticSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
@@ -1267,6 +1301,11 @@ if (FAILED(hr) || !g_copyFenceSharedHandle) {
     // Vertex buffer is not strictly needed for a full-screen triangle generated in VS,
     // but if you were to use one:
     // Create vertex buffer for a quad (or use SV_VertexID in VS to generate one)
+
+    if (!CreateCropCB()) {
+        DebugLog(L"InitD3D (D3D12): Failed to create crop constant buffer.");
+        return false;
+    }
 
     if (!CreateOverlayResources()) {
         DebugLog(L"InitD3D (D3D12): Failed to create overlay resources.");
@@ -1759,12 +1798,25 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             }
         }
 
-        const int videoW = currentResolutionWidth.load();
-        const int videoH = currentResolutionHeight.load();
+        // Use display dimensions for letterboxing, not coded dimensions or window dimensions.
+        const int videoW = frameToDraw.displayW;
+        const int videoH = frameToDraw.displayH;
         ID3D12Resource* backbuffer = g_renderTargets[g_currentFrameBufferIndex].Get();
         if (backbuffer) {
             SetLetterboxViewport(g_commandList.Get(), backbuffer->GetDesc(), videoW, videoH);
         }
+
+        // --- Update and bind crop constant buffer ---
+        if (g_cropCBMapped) {
+            CropCBData cb{};
+            cb.uvBias[0]  = frameToDraw.uvMinX;
+            cb.uvBias[1]  = frameToDraw.uvMinY;
+            cb.uvScale[0] = frameToDraw.uvMaxX - frameToDraw.uvMinX;
+            cb.uvScale[1] = frameToDraw.uvMaxY - frameToDraw.uvMinY;
+            std::memcpy(g_cropCBMapped, &cb, sizeof(cb));
+        }
+        g_commandList->SetGraphicsRootConstantBufferView(1, g_cropCB->GetGPUVirtualAddress());
+
 
         // --- SRV setup (Y, U, V) ---
         // 連続3スロットを保証するための wrap 前処理（性能影響なし）
@@ -2231,6 +2283,14 @@ void CleanupD3DRenderResources() {
     WaitForGpu(); // Ensure GPU is idle before releasing resources
 
     CleanupOverlayResources();
+
+    if (g_cropCB) {
+        if (g_cropCBMapped) {
+            g_cropCB->Unmap(0, nullptr);
+            g_cropCBMapped = nullptr;
+        }
+        g_cropCB.Reset();
+    }
 
     if (g_fenceEvent) {
         CloseHandle(g_fenceEvent);

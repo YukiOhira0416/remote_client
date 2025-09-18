@@ -114,6 +114,13 @@ struct ReadyGpuFrame {
     int height;
     uint32_t originalFrameNumber;
     uint64_t id;
+    // Coded vs Display dimensions
+    int codedW = 0, codedH = 0;
+    int displayW = 0, displayH = 0;
+    int cropL = 0, cropT = 0, cropR = 0, cropB = 0;
+    // UV coordinates for cropping in shader
+    float uvMinX = 0.0f, uvMinY = 0.0f;
+    float uvMaxX = 1.0f, uvMaxY = 1.0f;
     // 新規: 送信（ストリーム）側のフレーム番号
     uint32_t streamFrameNumber = 0;
     // Latency metric

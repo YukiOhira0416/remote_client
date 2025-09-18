@@ -355,11 +355,34 @@ int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoForm
 
     CudaCtxLocker ctxLocker(self->m_ctxLock);
 
-    try {
-        DebugLog(L"HandleVideoSequence: Codec: " + std::to_wstring(pVideoFormat->codec) +
-            L", Coded Resolution: " + std::to_wstring(pVideoFormat->coded_width) + L"x" + std::to_wstring(pVideoFormat->coded_height) +
-            L", Target Resolution: " + std::to_wstring(currentResolutionWidth.load()) + L"x" + std::to_wstring(currentResolutionHeight.load()));
+    // Update crop information regardless of whether we reconfigure or not.
+    self->m_cropLeft = pVideoFormat->display_area.left;
+    self->m_cropTop = pVideoFormat->display_area.top;
+    self->m_cropRight = pVideoFormat->display_area.right;
+    self->m_cropBottom = pVideoFormat->display_area.bottom;
 
+    // Prefer display width/height if available, otherwise calculate from crop.
+    // Note: display_area.right/bottom can be inclusive or exclusive depending on SDK.
+    // If nDisplayWidth is valid, it's the most reliable source.
+    if (pVideoFormat->nDisplayWidth > 0 && pVideoFormat->nDisplayHeight > 0) {
+        self->m_displayWidth = pVideoFormat->nDisplayWidth;
+        self->m_displayHeight = pVideoFormat->nDisplayHeight;
+    } else {
+        self->m_displayWidth = pVideoFormat->coded_width - self->m_cropLeft - self->m_cropRight;
+        self->m_displayHeight = pVideoFormat->coded_height - self->m_cropTop - self->m_cropBottom;
+    }
+
+    // Log the received and calculated values for verification.
+    std::wstringstream wss;
+    wss << L"NVDEC Seq Info: Coded=" << pVideoFormat->coded_width << L"x" << pVideoFormat->coded_height
+        << L", DisplayArea(L,T,R,B)=(" << self->m_cropLeft << L"," << self->m_cropTop
+        << L"," << self->m_cropRight << L"," << self->m_cropBottom << L")"
+        << L", nDisplayW/H=" << pVideoFormat->nDisplayWidth << L"x" << pVideoFormat->nDisplayHeight
+        << L", FinalDisplay=" << self->m_displayWidth << L"x" << self->m_displayHeight;
+    DebugLog(wss.str());
+
+
+    try {
         if (!self->m_hDecoder) {
             // First time initialization
             if (!self->createDecoder(pVideoFormat)) {
@@ -670,30 +693,36 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     const unsigned int nDecodedPitch = mappedFrame.GetPitch();
     CUstream s = fr.copyStream;
 
-    const size_t widthBytes = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulWidth);
-    const size_t heightRows = static_cast<size_t>(self->m_videoDecoderCreateInfo.ulHeight);
-    const size_t planeSize = nDecodedPitch * heightRows;
+    // Determine bytes per sample based on bit depth
+    const int bytesPerSample = (self->m_videoDecoderCreateInfo.OutputFormat == cudaVideoSurfaceFormat_YUV444_16Bit) ? 2 : 1;
+    const size_t planeSize = nDecodedPitch * self->m_videoDecoderCreateInfo.ulHeight;
+
+    // Use display dimensions for copy, not coded dimensions
+    const size_t copyWidthBytes = static_cast<size_t>(self->m_displayWidth) * bytesPerSample;
+    const size_t copyHeightRows = static_cast<size_t>(self->m_displayHeight);
 
     CUDA_MEMCPY2D cpy = {};
     cpy.srcMemoryType = CU_MEMORYTYPE_DEVICE;
-    cpy.srcPitch = nDecodedPitch;
     cpy.dstMemoryType = CU_MEMORYTYPE_ARRAY;
-    cpy.WidthInBytes = widthBytes;
-    cpy.Height = heightRows;
+    cpy.srcPitch      = nDecodedPitch;
+    cpy.srcXInBytes   = static_cast<size_t>(self->m_cropLeft) * bytesPerSample;
+    cpy.srcY          = static_cast<size_t>(self->m_cropTop);
+    cpy.WidthInBytes  = copyWidthBytes;
+    cpy.Height        = copyHeightRows;
 
     // Y plane
     cpy.srcDevice = pDecodedFrame;
-    cpy.dstArray = fr.pCudaArrayY;
+    cpy.dstArray  = fr.pCudaArrayY;
     CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&cpy, s));
 
     // U plane
     cpy.srcDevice = pDecodedFrame + planeSize;
-    cpy.dstArray = fr.pCudaArrayU;
+    cpy.dstArray  = fr.pCudaArrayU;
     CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&cpy, s));
 
     // V plane
     cpy.srcDevice = pDecodedFrame + planeSize * 2;
-    cpy.dstArray = fr.pCudaArrayV;
+    cpy.dstArray  = fr.pCudaArrayV;
     CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&cpy, s));
 
     // Record completion event for this frame
@@ -723,8 +752,31 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     readyFrame.timestamp             = pDispInfo->timestamp;
     readyFrame.originalFrameNumber   = self->m_nDecodedFrameCount++;
     readyFrame.id                    = readyFrame.originalFrameNumber;
-    readyFrame.width                 = self->m_frameWidth;
-    readyFrame.height                = self->m_frameHeight;
+    readyFrame.width                 = self->m_frameWidth; // Legacy field, keep as coded width
+    readyFrame.height                = self->m_frameHeight; // Legacy field, keep as coded height
+
+    // Populate new dimension and crop fields
+    readyFrame.codedW = self->m_frameWidth;
+    readyFrame.codedH = self->m_frameHeight;
+    readyFrame.displayW = self->m_displayWidth;
+    readyFrame.displayH = self->m_displayHeight;
+    readyFrame.cropL = self->m_cropLeft;
+    readyFrame.cropT = self->m_cropTop;
+    readyFrame.cropR = self->m_cropRight;
+    readyFrame.cropB = self->m_cropBottom;
+
+    // Calculate and set normalized UV coordinates for the shader
+    if (self->m_frameWidth > 0 && self->m_frameHeight > 0) {
+        readyFrame.uvMinX = (float)self->m_cropLeft / (float)self->m_frameWidth;
+        readyFrame.uvMinY = (float)self->m_cropTop / (float)self->m_frameHeight;
+        readyFrame.uvMaxX = (float)(self->m_frameWidth - self->m_cropRight) / (float)self->m_frameWidth;
+        readyFrame.uvMaxY = (float)(self->m_frameHeight - self->m_cropBottom) / (float)self->m_frameHeight;
+    } else {
+        readyFrame.uvMinX = 0.0f;
+        readyFrame.uvMinY = 0.0f;
+        readyFrame.uvMaxX = 1.0f;
+        readyFrame.uvMaxY = 1.0f;
+    }
     // Remove any cuCtxSynchronize() here. Do not add sleeps.
     // ---- end: NVDEC copy (async unified) ----
 
