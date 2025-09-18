@@ -1765,9 +1765,22 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             SetLetterboxViewport(g_commandList.Get(), backbuffer->GetDesc(), videoW, videoH);
         }
 
-        CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleCpu(g_srvHeap->GetCPUDescriptorHandleForHeapStart(), g_srvDescriptorHeapIndex, g_srvDescriptorSize);
-        CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandleGpu(g_srvHeap->GetGPUDescriptorHandleForHeapStart(), g_srvDescriptorHeapIndex, g_srvDescriptorSize);
+        // --- SRV setup (Y, U, V) ---
+        // 連続3スロットを保証するための wrap 前処理（性能影響なし）
+        const UINT kNeededSrv = 3;
+        if (g_srvDescriptorHeapIndex + kNeededSrv > kSrvHeapSize) {
+            // ★ wrap：ヒープ末尾近くで3連続確保できない場合は先頭に巻き戻す
+            g_srvDescriptorHeapIndex = 0;
+        }
+        const UINT startIndex = g_srvDescriptorHeapIndex;
 
+        // CPU/GPU 両方のハンドルを同じ startIndex から計算（従来コメント・NVTXは維持）
+        CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleCpu(
+            g_srvHeap->GetCPUDescriptorHandleForHeapStart(), startIndex, g_srvDescriptorSize);
+        CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandleGpu(
+            g_srvHeap->GetGPUDescriptorHandleForHeapStart(), startIndex, g_srvDescriptorSize);
+
+        // SRV 共通設定
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -1775,22 +1788,28 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
         // Y plane
         srvDesc.Format = frameToDraw.hw_decoded_texture_Y->GetDesc().Format;
-        g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_Y.Get(), &srvDesc, srvHandleCpu);
+        g_d3d12Device->CreateShaderResourceView(
+            frameToDraw.hw_decoded_texture_Y.Get(), &srvDesc, srvHandleCpu);
         srvHandleCpu.Offset(1, g_srvDescriptorSize);
 
         // U plane
         srvDesc.Format = frameToDraw.hw_decoded_texture_U->GetDesc().Format;
-        g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_U.Get(), &srvDesc, srvHandleCpu);
+        g_d3d12Device->CreateShaderResourceView(
+            frameToDraw.hw_decoded_texture_U.Get(), &srvDesc, srvHandleCpu);
         srvHandleCpu.Offset(1, g_srvDescriptorSize);
+
         // V plane
         srvDesc.Format = frameToDraw.hw_decoded_texture_V->GetDesc().Format;
-        g_d3d12Device->CreateShaderResourceView(frameToDraw.hw_decoded_texture_V.Get(), &srvDesc, srvHandleCpu);
+        g_d3d12Device->CreateShaderResourceView(
+            frameToDraw.hw_decoded_texture_V.Get(), &srvDesc, srvHandleCpu);
 
+        // シェーダ可視ヒープ設定（従来通り）
         ID3D12DescriptorHeap* ppHeaps[] = { g_srvHeap.Get() };
         g_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
         g_commandList->SetGraphicsRootDescriptorTable(0, srvHandleGpu);
 
-        g_srvDescriptorHeapIndex = (g_srvDescriptorHeapIndex + 3) % kSrvHeapSize;
+        // リングの書き込み位置を3つ進める（従来のモジュロ運用は維持）
+        g_srvDescriptorHeapIndex = (startIndex + kNeededSrv) % kSrvHeapSize;
         g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         {
             nvtx3::scoped_range_in<d3d12_domain> r{ "Draw" };
