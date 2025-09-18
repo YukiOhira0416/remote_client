@@ -147,6 +147,7 @@ extern std::atomic<bool> app_running_atomic;
 extern std::atomic<bool> g_isSizing;
 extern std::atomic<bool> g_showRebootOverlay;
 extern std::atomic<bool> g_forcePresentOnce; // Present at least once even if no new decoded frame
+extern std::atomic<bool> dumpHEVCToFiles;
 
 // Global queues and synchronization for frame management
 extern moodycamel::ConcurrentQueue<H264Frame> g_h264FrameQueue;

@@ -9,7 +9,6 @@
 #include <winsock2.h>
 #include <cstdint> // For uint64_t
 #include <chrono>
-
 #include <ws2tcpip.h>
 #include <mswsock.h> // Required for WSARecvMsg and WSASendMsg
 #include <windows.h>
@@ -34,8 +33,6 @@
 #include <queue>
 #include <condition_variable>
 #include "DebugLog.h"
-// 追加：非同期ロガー初期化/終了用
-using namespace DebugLogAsync;
 #include "ReedSolomon.h"
 #include <gf_complete.h>
 #include <jerasure.h>
@@ -52,12 +49,13 @@ using namespace DebugLogAsync;
 #include <cuda_runtime_api.h>
 #include <d3dx12.h>
 #include <d3d12.h>
+using namespace DebugLogAsync;
 
 // === 新規：ネットワーク準備・解像度ペンディング管理 ===
-std::atomic<bool> g_networkReady{false};
-std::atomic<bool> g_pendingResolutionValid{false};
-std::atomic<int>  g_pendingW{0}, g_pendingH{0};
-std::atomic<bool> g_didInitialAnnounce{false};
+std::atomic<bool> g_networkReady(false);
+std::atomic<bool> g_pendingResolutionValid(false);
+std::atomic<int>  g_pendingW(0), g_pendingH(0);
+std::atomic<bool> g_didInitialAnnounce(false);
 
 // Render kick global
 std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
@@ -67,66 +65,14 @@ std::mutex g_windowShownMutex;
 std::condition_variable g_windowShownCv;
 bool g_windowShown = false;
 
+// HEVC 出力ファイル保存用のミューテックス
+std::mutex hevcoutputMutex;
 
 // window.cpp 側で実装されている既存API（エクスポート）
 void SendFinalResolution(int width, int height); // Existing function from window.h
 void ClearReorderState();                        // New function to be implemented in window.cpp
 extern std::atomic<int> currentResolutionWidth;  // Assumed to be in window.cpp per instructions
 extern std::atomic<int> currentResolutionHeight; // Assumed to be in window.cpp per instructions
-
-// どこからでも呼べるように：解像度が確定/変更されたときの通知
-void OnResolutionChanged_GatedSend(int w, int h, bool forceResendNow = false)
-{
-    currentResolutionWidth  = w;
-    currentResolutionHeight = h;
-
-    // 常にペンディング更新（最後の値を保持）
-    g_pendingW = w; g_pendingH = h; g_pendingResolutionValid = true;
-
-    if (forceResendNow || g_networkReady.load()) {
-        // 送出してリオーダをクリア、IDR要求を発行
-        DebugLog(L"OnResolutionChanged_GatedSend: sending now.");
-        SendFinalResolution(w, h);
-        ClearReorderState();
-
-        g_pendingResolutionValid = false;
-    } else {
-        DebugLog(L"OnResolutionChanged_GatedSend: network not ready, pending.");
-    }
-}
-
-// ネットワーク（ENet受信側）が「接続完了」になったときに必ず呼ぶ
-void OnNetworkReady()
-{
-    g_networkReady = true;
-    DebugLog(L"OnNetworkReady: network is ready.");
-
-    bool already_announced = g_didInitialAnnounce.exchange(true);
-    if (already_announced) {
-        DebugLog(L"OnNetworkReady: initial announce already done, skipping.");
-        return;
-    }
-
-    if (g_pendingResolutionValid.load()) {
-        int w = g_pendingW.load(), h = g_pendingH.load();
-        DebugLog(L"OnNetworkReady: flushing pending resolution.");
-        SendFinalResolution(w, h);
-        ClearReorderState();
-        g_pendingResolutionValid = false;
-    }
-
-    // 念のためワンショット再送（取りこぼし対策）
-    std::thread([]{
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        if (g_networkReady.load()) {
-            DebugLog(L"OnNetworkReady: one-shot re-announce.");
-            int w = currentResolutionWidth.load(), h = currentResolutionHeight.load();
-            if (w > 0 && h > 0) {
-                SendFinalResolution(w, h);
-            }
-        }
-    }).detach();
-}
 
 // ==== [GPU Policy Support - BEGIN] ====
 #include <dxgi1_6.h>
@@ -155,6 +101,9 @@ void OnNetworkReady()
 #define BANDWIDTH_DATA_SIZE 60 * 1024  // 60KB(帯域幅測定時のデータサイズ)
 #define DATA_PACKET_SIZE 1300 // UDPパケットサイズ
 #define WSARECV_BUFFER_SIZE 65000
+#define RECEIVE_IP_REBOOT "0.0.0.0"
+#define RECEIVE_PORT_REBOOT_START 8150
+#define RECEIVE_PORT_REBOOT_END 8151
 
 // Keep layout/comments around this block.
 static constexpr unsigned NET_POLL_TIMEOUT_MS = 2; // was ~10; finer granularity
@@ -300,8 +249,73 @@ private:
 
 ThreadSafePriorityQueue<ParsedShardInfo, std::vector<ParsedShardInfo>, ParsedShardInfoComparator> g_parsedShardQueue;
 
-// フレーム受信時に I フレームのみを送信するかどうか
-bool sendIFrameOnly = true; // This seems like a debug/test flag, consider removing or making configurable
+ThreadConfig getOptimalThreadConfig(){
+    ThreadConfig config;
+
+    config.receiver = 5;
+    config.fec = 4;
+    config.decoder = 1;
+    config.render = 1;
+    config.RS_K = 6;
+    config.RS_M = 2;
+
+    return config;
+}
+
+// どこからでも呼べるように：解像度が確定/変更されたときの通知
+void OnResolutionChanged_GatedSend(int w, int h, bool forceResendNow = false)
+{
+    currentResolutionWidth  = w;
+    currentResolutionHeight = h;
+
+    // 常にペンディング更新（最後の値を保持）
+    g_pendingW = w; g_pendingH = h; g_pendingResolutionValid = true;
+
+    if (forceResendNow || g_networkReady.load()) {
+        DebugLog(L"OnResolutionChanged_GatedSend: sending now.");
+        SendFinalResolution(w, h);
+        ClearReorderState();
+
+        g_pendingResolutionValid = false;
+    } else {
+        DebugLog(L"OnResolutionChanged_GatedSend: network not ready, pending.");
+    }
+}
+
+// ネットワーク（ENet受信側）が「接続完了」になったときに必ず呼ぶ
+void OnNetworkReady()
+{
+    g_networkReady = true;
+    DebugLog(L"OnNetworkReady: network is ready.");
+
+    bool already_announced = g_didInitialAnnounce.exchange(true);
+    if (already_announced) {
+        DebugLog(L"OnNetworkReady: initial announce already done, skipping.");
+        return;
+    }
+
+    if (g_pendingResolutionValid.load()) {
+        int w = g_pendingW.load(), h = g_pendingH.load();
+        DebugLog(L"OnNetworkReady: flushing pending resolution.");
+        SendFinalResolution(w, h);
+        ClearReorderState();
+        g_pendingResolutionValid = false;
+    }
+
+    // 念のためワンショット再送（取りこぼし対策）
+    std::thread([]{
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        if (g_networkReady.load()) {
+            DebugLog(L"OnNetworkReady: one-shot re-announce.");
+            int w = currentResolutionWidth.load(), h = currentResolutionHeight.load();
+            if (w > 0 && h > 0) {
+                SendFinalResolution(w, h);
+            }
+        }
+    }).detach();
+}
+
+
 
 // Helper function to check for and clear timed-out fragment assembly buffers
 void ClearTimedOutAppFragments() {
@@ -319,17 +333,36 @@ void ClearTimedOutAppFragments() {
     }
 }
 
-void SaveH264ToFile_NUM(const std::vector<uint8_t>& prepared_h264Buffer, const std::string& baseName) {
-    if (prepared_h264Buffer.empty()) {
-        return;  // 0バイトの場合は何もしない
+std::wstring ConvertToWString(const std::string& str) {
+    if (str.empty()) return L"";
+    int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
+    if (size_needed <= 0) return L"(invalid UTF-8 string)";
+    std::wstring wstr(size_needed, 0);
+    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, &wstr[0], size_needed);
+    // Remove the null terminator at the end
+    if (!wstr.empty() && wstr.back() == L'\0') {
+        wstr.pop_back();
     }
-    
-    static int fileCounter = 0;
+    return wstr;
+}
 
-    // 実行ファイルのパスを取得
+void SaveHEVCToFile_NUM(const std::vector<uint8_t>& prepared_hevcBuffer, const std::string& baseName) {
+    // ★ スレッドIDをログに追加して、どのスレッドからの呼び出しから分かるようにする
+    std::wstringstream wss_log_prefix;
+    wss_log_prefix << L"SaveHEVCToFile_NUM (Thread " << std::this_thread::get_id() << L"): ";
+
+    if (prepared_hevcBuffer.empty()) {
+        DebugLog(wss_log_prefix.str() + L"prepared_hevcBuffer is empty. Skipping file save.");
+        return;
+    }
+
+    static std::atomic<int> fileCounter(0); // ★ スレッドセーフなカウンターに変更
+    int currentFileCounterValue = fileCounter.fetch_add(1); // ★ アトミックにインクリメントし、古い値を取得
+
+    // 実行ファイルのパスからディレクトリを取得
     char exePath[MAX_PATH];
     if (GetModuleFileNameA(NULL, exePath, MAX_PATH) == 0) {
-        DebugLog(L"Failed to get executable path.");
+        DebugLog(wss_log_prefix.str() + L"Failed to get executable path.");
         return;
     }
 
@@ -338,24 +371,30 @@ void SaveH264ToFile_NUM(const std::vector<uint8_t>& prepared_h264Buffer, const s
     folderPath /= "ffplay";
 
     if (!std::filesystem::exists(folderPath)) {
-        std::filesystem::create_directories(folderPath);
+        std::error_code ec;
+        if (!std::filesystem::create_directories(folderPath, ec)) {
+            DebugLog(wss_log_prefix.str() + L"Failed to create directory: " + folderPath.wstring() + L" Error: " + ConvertToWString(ec.message()));
+            return;
+        }
+
     }
 
-    // ファイル名を生成
+    // 番号付きファイル名を生成
     std::ostringstream oss;
-    oss << baseName << "_" << std::setw(4) << std::setfill('0') << fileCounter++ << ".h264";
+    oss << baseName << "_" << std::setw(4) << std::setfill('0') << currentFileCounterValue << ".hevc";
     std::string numberedFilename = (folderPath / oss.str()).string();
 
-    // タイムスタンプを付加
+    // ファイルに書き込み
     std::ofstream ofs(numberedFilename, std::ios::binary);
     if (!ofs) {
-        DebugLog(L"Error opening file " + std::wstring(numberedFilename.begin(), numberedFilename.end()));
+        DebugLog(wss_log_prefix.str() + L"Error opening file " + ConvertToWString(numberedFilename));
         return;
     }
-    ofs.write(reinterpret_cast<const char*>(prepared_h264Buffer.data()), prepared_h264Buffer.size());
+    ofs.write(reinterpret_cast<const char*>(prepared_hevcBuffer.data()), prepared_hevcBuffer.size());
     ofs.close();
 
-    DebugLog(L"Saved " + std::to_wstring(prepared_h264Buffer.size()) + L" bytes to " + std::wstring(numberedFilename.begin(), numberedFilename.end()));
+    // std::cout はデバッグログには出ないので、DebugLog を使う
+    DebugLog(wss_log_prefix.str() + L"Saved " + std::to_wstring(prepared_hevcBuffer.size()) + L" bytes to " + ConvertToWString(numberedFilename) + L" (Counter: " + std::to_wstring(currentFileCounterValue) + L")");
 }
 
 
@@ -398,15 +437,6 @@ void InitializeRSMatrix() {
         }
 
         g_matrix_initialized = true;
-        //DebugLog(L"Jerasure Cauchy-based bitmatrix generated (k=" + std::to_wstring(RS_K) + L", m=" + std::to_wstring(RS_M) + L", w=8)"); // ※ ログメッセージ修正
-
-        /*// --- [Debug] Print part of the g_vandermonde_matrix (Cauchy) after all operations ---
-        std::wstringstream wss_g_mat;
-        wss_g_mat << L"[Debug Init] g_vandermonde_matrix (Cauchy) (first 4xK or less): ";
-        for(int r=0; r<std::min(4,RS_M); ++r) for(int c=0; c<RS_K; ++c) wss_g_mat << std::hex << std::setw(2) << std::setfill(L'0') << (int)g_vandermonde_matrix[r*RS_K+c] << L" ";
-        DebugLog(wss_g_mat.str());
-        // --- [Debug] ---*/
-
     });
 }
 
@@ -933,9 +963,11 @@ void FecWorkerThread(int threadId) {
 
                 if (g_matrix_initialized && DecodeFEC_Jerasure(
                         shardsForDecodeAttempt, RS_K, RS_M, originalLenForDecode, decodedFrameData, g_jerasure_matrix)) {
-                    
-                    SaveH264ToFile_NUM(decodedFrameData, "output");
 
+                    if (dumpHEVCToFiles.load()) {
+                        std::lock_guard<std::mutex> lock(hevcoutputMutex);
+                        SaveHEVCToFile_NUM(decodedFrameData, "output_hevc");
+                    }
                     
                     H264Frame frame_to_decode;
                     frame_to_decode.timestamp = currentFrameMetaForAttempt.firstTimestamp;
@@ -986,24 +1018,6 @@ void FecWorkerThread(int threadId) {
     DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"] stopped.");
 }
 
-
-ThreadConfig getOptimalThreadConfig(){
-    ThreadConfig config;
-
-    config.receiver = 5;
-    config.fec = 4;
-    config.decoder = 1;
-    config.render = 1;
-    config.RS_K = 6;
-    config.RS_M = 2;
-
-    return config;
-}
-
-#define RECEIVE_IP_REBOOT "0.0.0.0"
-#define RECEIVE_PORT_REBOOT_START 8150
-#define RECEIVE_PORT_REBOT_END 8151
-
 void ListenForRebootCommands() {
     DebugLog(L"ListenForRebootCommands thread started.");
 
@@ -1041,7 +1055,7 @@ void ListenForRebootCommands() {
         closesocket(listenSocketStart);
         return;
     }
-    serverAddr.sin_port = htons(RECEIVE_PORT_REBOT_END);
+    serverAddr.sin_port = htons(RECEIVE_PORT_REBOOT_END);
     if (bind(listenSocketEnd, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
         DebugLog(L"ListenForRebootCommands: bind() failed for END socket with error: " + std::to_wstring(WSAGetLastError()));
         closesocket(listenSocketStart);
