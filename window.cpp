@@ -1596,6 +1596,9 @@ bool CreateOverlayResources() {
 
 UINT64 PopulateCommandListCount = 0;
 struct reorder_domain { static constexpr char const* name = "REORDER"; };
+// 修正対象ファイル: window.cpp
+
+// 既存の PopulateCommandList 関数をまるごと置き換えてください
 bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass ReadyGpuFrame by reference
     nvtx3::scoped_range_in<d3d12_domain> nvtx_populate_cmdlist{"PopulateCommandList"};
 
@@ -1644,12 +1647,13 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         g_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
     }
 
-    if (g_renderTargets[g_currentFrameBufferIndex]) {
-        SetViewportScissorToBackbuffer(g_commandList.Get(), g_renderTargets[g_currentFrameBufferIndex].Get());
-    }
-
+    // [修正点 1] レンダーターゲットをセットした直後にクリア処理を行う
     const float clearColor[4] = {0.f, 0.f, 0.f, 1.f};
     g_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+
+    // [修正点 2] クラッシュの原因となっていた冗長な SetViewportScissorToBackbuffer 呼び出しを削除
+    // この処理は、描画するフレームがある場合は SetLetterboxViewport で、
+    // ない場合は後段の else ブロックで安全に実行される。
 
     // --- Crash and Flicker Fix ---
     bool isNewFrame = false;
@@ -1791,6 +1795,12 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         {
             nvtx3::scoped_range_in<d3d12_domain> r{ "Draw" };
             g_commandList->DrawInstanced(4, 1, 0, 0);
+        }
+    } else {
+        // [修正点 3] 描画するフレームがない場合、ビューポートをバックバッファ全体に設定する
+        ID3D12Resource* backbuffer = g_renderTargets[g_currentFrameBufferIndex].Get();
+        if (backbuffer) {
+            SetViewportScissorToBackbuffer(g_commandList.Get(), backbuffer);
         }
     }
 
