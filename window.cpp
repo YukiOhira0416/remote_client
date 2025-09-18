@@ -1651,9 +1651,9 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     const float clearColor[4] = {0.f, 0.f, 0.f, 1.f};
     g_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 
-    // [修正点 2] クラッシュの原因となっていた冗長な SetViewportScissorToBackbuffer 呼び出しを削除
+    // [修正点 2] クラッシュの原因となっていた冗長な SetViewportScissorToBackbuffer 呼び出しを削除 (※このコメントは元コードの意図を汲んだものです)
     // この処理は、描画するフレームがある場合は SetLetterboxViewport で、
-    // ない場合は後段の else ブロックで安全に実行される。
+    // ない場合は後段の else ブロックで安全に実行されるため、ここでの呼び出しは不要です。
 
     // --- Crash and Flicker Fix ---
     bool isNewFrame = false;
