@@ -1219,7 +1219,7 @@ if (FAILED(hr) || !g_copyFenceSharedHandle) {
 
     hr = D3DCompileFromFile(L"Shader/NV12ToRGBA709Full.hlsl", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "ps_5_1", compileFlags, 0, &pixelShaderBlobNv12, &errorBlob);
     if (FAILED(hr)) {
-        if (errorBlob) DebugLog(L"InitD3D (D3D12): NV12 pixel shader compilation failed: " + std::wstring(static_cast<wchar_t*>(errorBlob->GetBufferPointer()), static_cast<wchar_t*>(errorBlob->GetBufferPointer()) + errorBlob->GetBufferSize() / sizeof(wchar_t))));
+        if (errorBlob) DebugLog(L"InitD3D (D3D12): NV12 pixel shader compilation failed: " + std::wstring(static_cast<wchar_t*>(errorBlob->GetBufferPointer()), static_cast<wchar_t*>(errorBlob->GetBufferPointer()) + errorBlob->GetBufferSize() / sizeof(wchar_t)));
         else DebugLog(L"InitD3D (D3D12): NV12 pixel shader compilation failed. HR: " + HResultToHexWString(hr));
         return false;
     }
