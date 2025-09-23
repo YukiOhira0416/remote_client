@@ -104,9 +104,14 @@ inline std::wstring HResultToHexWString(HRESULT hr) {
     return wss.str();
 }
 
+enum class PlaneLayout : uint32_t {
+    YUV444,
+    NV12
+};
+
 // ReadyGpuFrame struct for D3D12
 struct ReadyGpuFrame {
-    uint64_t timestamp;    
+    uint64_t timestamp;
     Microsoft::WRL::ComPtr<ID3D12Resource> hw_decoded_texture_Y;  // Y plane texture
     Microsoft::WRL::ComPtr<ID3D12Resource> hw_decoded_texture_U; // U plane texture (for YUV444)
     Microsoft::WRL::ComPtr<ID3D12Resource> hw_decoded_texture_V; // V plane texture (for YUV444)
@@ -136,6 +141,7 @@ struct ReadyGpuFrame {
     CUevent copyDone = nullptr; // NEW: signaled when NVDEC->CUDA copy has finished
     UINT64 fenceValue = 0;  // NEW (0 means “no fence” / fallback path)
     nvtxRangeId_t nvtx_range_id = 0;
+    PlaneLayout planeLayout = PlaneLayout::YUV444;
 };
 
 // Encoded Frame Data for decoder queue

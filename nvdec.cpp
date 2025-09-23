@@ -121,6 +121,8 @@ extern void ClearReorderState();
 
 FrameDecoder::FrameDecoder(CUcontext cuContext, ID3D12Device* pD3D12Device)
     : m_cuContext(cuContext), m_pD3D12Device(pD3D12Device) {
+    m_planeLayout = PlaneLayout::YUV444;
+    m_isHighBitDepth = false;
     CUDA_CHECK(cuCtxPushCurrent(m_cuContext));
     // NVDEC公式のコンテキストロックを作る（コールバック/内部スレッドと競合しないように）
     CUresult cr = cuvidCtxLockCreate(&m_ctxLock, m_cuContext);
@@ -448,12 +450,7 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
     // dimensions, but allocates buffers for the *target* dimensions.
     memset(&m_videoDecoderCreateInfo, 0, sizeof(m_videoDecoderCreateInfo));
     m_videoDecoderCreateInfo.CodecType = pVideoFormat->codec;
-    // HEVC 4:4:4 settings
-    if (pVideoFormat->codec == cudaVideoCodec_HEVC) {
-        m_videoDecoderCreateInfo.ChromaFormat = cudaVideoChromaFormat_444;
-    } else {
-        m_videoDecoderCreateInfo.ChromaFormat = pVideoFormat->chroma_format;
-    }
+    m_videoDecoderCreateInfo.ChromaFormat = pVideoFormat->chroma_format;
     m_videoDecoderCreateInfo.ulWidth = pVideoFormat->coded_width;
     m_videoDecoderCreateInfo.ulHeight = pVideoFormat->coded_height;
     m_videoDecoderCreateInfo.ulNumDecodeSurfaces = FrameDecoder::NUM_DECODE_SURFACES; // A pool of surfaces
@@ -465,16 +462,38 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
     m_videoDecoderCreateInfo.ulTargetHeight = pVideoFormat->coded_height;
     m_videoDecoderCreateInfo.ulNumOutputSurfaces = 12; // more headroom during resize/IDR
 
-    // For HEVC 4:4:4, the output format depends on bit depth.
-    // P010/P016 for 10/12-bit 4:2:0, but for 4:4:4, we receive planar data.
-    // The underlying surface format can still be NV12 for 8-bit or P016 for 10/12-bit
-    // as it mainly defines the raw decode buffer format. We will copy out
-    // the planes manually.
-    if (pVideoFormat->bit_depth_luma_minus8 > 0) {
-        m_videoDecoderCreateInfo.OutputFormat = cudaVideoSurfaceFormat_YUV444_16Bit;
-    } else {
-        m_videoDecoderCreateInfo.OutputFormat = cudaVideoSurfaceFormat_YUV444;
+    const bool isHighBitDepth = (pVideoFormat->bit_depth_luma_minus8 > 0) ||
+                                (pVideoFormat->bit_depth_chroma_minus8 > 0);
+
+    switch (pVideoFormat->chroma_format) {
+    case cudaVideoChromaFormat_444:
+        m_planeLayout = PlaneLayout::YUV444;
+        m_videoDecoderCreateInfo.OutputFormat =
+            isHighBitDepth ? cudaVideoSurfaceFormat_YUV444_16Bit
+                           : cudaVideoSurfaceFormat_YUV444;
+        break;
+    case cudaVideoChromaFormat_420:
+        m_planeLayout = PlaneLayout::NV12;
+        m_videoDecoderCreateInfo.OutputFormat =
+            isHighBitDepth ? cudaVideoSurfaceFormat_P016
+                           : cudaVideoSurfaceFormat_NV12;
+        break;
+    default:
+        m_planeLayout = PlaneLayout::YUV444;
+        m_videoDecoderCreateInfo.OutputFormat =
+            isHighBitDepth ? cudaVideoSurfaceFormat_YUV444_16Bit
+                           : cudaVideoSurfaceFormat_YUV444;
+        {
+            std::wstringstream wss;
+            wss << L"createDecoder: Unsupported chroma format " << pVideoFormat->chroma_format
+                << L". Falling back to 4:4:4 layout.";
+            DebugLog(wss.str());
+        }
+        break;
     }
+
+    m_isHighBitDepth = (m_videoDecoderCreateInfo.OutputFormat == cudaVideoSurfaceFormat_YUV444_16Bit) ||
+                       (m_videoDecoderCreateInfo.OutputFormat == cudaVideoSurfaceFormat_P016);
 
     CUDA_CHECK(cuvidCreateDecoder(&m_hDecoder, &m_videoDecoderCreateInfo));
 
@@ -512,10 +531,19 @@ if (!g_cuCopyFenceSemaphore) {
         // -----------------------------
         // 1) D3D12 Texture (Committed)
         // -----------------------------
-        bool isHighBitDepth = (m_videoDecoderCreateInfo.OutputFormat == cudaVideoSurfaceFormat_YUV444_16Bit);
+        auto& frameRes = m_frameResources[i];
+        bool isHighBitDepth = m_isHighBitDepth;
 
         DXGI_FORMAT format = isHighBitDepth ? DXGI_FORMAT_R16_UNORM : DXGI_FORMAT_R8_UNORM;
+        DXGI_FORMAT chromaFormat = format;
         CUarray_format cuFormat = isHighBitDepth ? CU_AD_FORMAT_UNSIGNED_INT16 : CU_AD_FORMAT_UNSIGNED_INT8;
+        CUarray_format cuChromaFormat = cuFormat;
+        unsigned int chromaChannels = 1;
+        if (m_planeLayout == PlaneLayout::NV12) {
+            chromaFormat = isHighBitDepth ? DXGI_FORMAT_R16G16_UNORM : DXGI_FORMAT_R8G8_UNORM;
+            cuChromaFormat = isHighBitDepth ? CU_AD_FORMAT_UNSIGNED_INT16 : CU_AD_FORMAT_UNSIGNED_INT8;
+            chromaChannels = 2;
+        }
 
         // --- Y plane ---
         D3D12_RESOURCE_DESC texDesc = {};
@@ -538,26 +566,26 @@ if (!g_cuCopyFenceSemaphore) {
                 &heapProps, D3D12_HEAP_FLAG_SHARED, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&tex));
         };
 
-        HRESULT hr = create_texture(texDesc, m_frameResources[i].pTextureY);
+        HRESULT hr = create_texture(texDesc, frameRes.pTextureY);
         if (FAILED(hr)) { DebugLog(L"allocateFrameBuffers: CreateCommittedResource(Y) failed."); return false; }
 
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT fpY = {};
         UINT numRowsY = 0; UINT64 rowSizeInBytesY = 0; UINT64 totalBytesY = 0;
         m_pD3D12Device->GetCopyableFootprints(&texDesc, 0, 1, 0, &fpY, &numRowsY, &rowSizeInBytesY, &totalBytesY);
-        m_frameResources[i].pitchY = fpY.Footprint.RowPitch;
+        frameRes.pitchY = fpY.Footprint.RowPitch;
 
         D3D12_RESOURCE_ALLOCATION_INFO allocInfoY = m_pD3D12Device->GetResourceAllocationInfo(0, 1, &texDesc);
         UINT64 yImportSize = (allocInfoY.SizeInBytes > totalBytesY) ? allocInfoY.SizeInBytes : totalBytesY;
 
-        hr = m_pD3D12Device->CreateSharedHandle(m_frameResources[i].pTextureY.Get(), nullptr, GENERIC_ALL, nullptr, &m_frameResources[i].sharedHandleY);
+        hr = m_pD3D12Device->CreateSharedHandle(frameRes.pTextureY.Get(), nullptr, GENERIC_ALL, nullptr, &frameRes.sharedHandleY);
         if (FAILED(hr)) { DebugLog(L"allocateFrameBuffers: CreateSharedHandle(Y) failed."); return false; }
 
         CUDA_EXTERNAL_MEMORY_HANDLE_DESC extY = {};
         extY.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE;
-        extY.handle.win32.handle = m_frameResources[i].sharedHandleY;
+        extY.handle.win32.handle = frameRes.sharedHandleY;
         extY.size = yImportSize;
         extY.flags = cudaExternalMemoryDedicated;
-        CUDA_CHECK(cuImportExternalMemory(&m_frameResources[i].cudaExtMemY, &extY));
+        CUDA_CHECK(cuImportExternalMemory(&frameRes.cudaExtMemY, &extY));
 
         CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC mmY = {};
         mmY.arrayDesc.Width = texDesc.Width;
@@ -567,54 +595,97 @@ if (!g_cuCopyFenceSemaphore) {
         mmY.arrayDesc.Format = cuFormat;
         mmY.arrayDesc.Flags = 0;
         mmY.numLevels = 1;
-        CUDA_CHECK(cuExternalMemoryGetMappedMipmappedArray(&m_frameResources[i].pMipmappedArrayY, m_frameResources[i].cudaExtMemY, &mmY));
-        CUDA_CHECK(cuMipmappedArrayGetLevel(&m_frameResources[i].pCudaArrayY, m_frameResources[i].pMipmappedArrayY, 0));
+        CUDA_CHECK(cuExternalMemoryGetMappedMipmappedArray(&frameRes.pMipmappedArrayY, frameRes.cudaExtMemY, &mmY));
+        CUDA_CHECK(cuMipmappedArrayGetLevel(&frameRes.pCudaArrayY, frameRes.pMipmappedArrayY, 0));
 
         // --- U plane ---
-        D3D12_RESOURCE_DESC texDescU = texDesc;
-        hr = create_texture(texDescU, m_frameResources[i].pTextureU);
-        if (FAILED(hr)) { DebugLog(L"allocateFrameBuffers: CreateCommittedResource(U) failed."); return false; }
-        m_pD3D12Device->GetCopyableFootprints(&texDescU, 0, 1, 0, &fpY, &numRowsY, &rowSizeInBytesY, &totalBytesY);
-        m_frameResources[i].pitchU = fpY.Footprint.RowPitch;
-        allocInfoY = m_pD3D12Device->GetResourceAllocationInfo(0, 1, &texDescU);
-        UINT64 uImportSize = (allocInfoY.SizeInBytes > totalBytesY) ? allocInfoY.SizeInBytes : totalBytesY;
-        hr = m_pD3D12Device->CreateSharedHandle(m_frameResources[i].pTextureU.Get(), nullptr, GENERIC_ALL, nullptr, &m_frameResources[i].sharedHandleU);
-        if (FAILED(hr)) { DebugLog(L"allocateFrameBuffers: CreateSharedHandle(U) failed."); return false; }
+        if (m_planeLayout == PlaneLayout::YUV444) {
+            D3D12_RESOURCE_DESC texDescU = texDesc;
+            hr = create_texture(texDescU, frameRes.pTextureU);
+            if (FAILED(hr)) { DebugLog(L"allocateFrameBuffers: CreateCommittedResource(U) failed."); return false; }
+            m_pD3D12Device->GetCopyableFootprints(&texDescU, 0, 1, 0, &fpY, &numRowsY, &rowSizeInBytesY, &totalBytesY);
+            frameRes.pitchU = fpY.Footprint.RowPitch;
+            allocInfoY = m_pD3D12Device->GetResourceAllocationInfo(0, 1, &texDescU);
+            UINT64 uImportSize = (allocInfoY.SizeInBytes > totalBytesY) ? allocInfoY.SizeInBytes : totalBytesY;
+            hr = m_pD3D12Device->CreateSharedHandle(frameRes.pTextureU.Get(), nullptr, GENERIC_ALL, nullptr, &frameRes.sharedHandleU);
+            if (FAILED(hr)) { DebugLog(L"allocateFrameBuffers: CreateSharedHandle(U) failed."); return false; }
 
-        CUDA_EXTERNAL_MEMORY_HANDLE_DESC extU = {};
-        extU.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE;
-        extU.handle.win32.handle = m_frameResources[i].sharedHandleU;
-        extU.size = uImportSize;
-        extU.flags = cudaExternalMemoryDedicated;
-        CUDA_CHECK(cuImportExternalMemory(&m_frameResources[i].cudaExtMemU, &extU));
+            CUDA_EXTERNAL_MEMORY_HANDLE_DESC extU = {};
+            extU.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE;
+            extU.handle.win32.handle = frameRes.sharedHandleU;
+            extU.size = uImportSize;
+            extU.flags = cudaExternalMemoryDedicated;
+            CUDA_CHECK(cuImportExternalMemory(&frameRes.cudaExtMemU, &extU));
 
-        CUDA_CHECK(cuExternalMemoryGetMappedMipmappedArray(&m_frameResources[i].pMipmappedArrayU, m_frameResources[i].cudaExtMemU, &mmY));
-        CUDA_CHECK(cuMipmappedArrayGetLevel(&m_frameResources[i].pCudaArrayU, m_frameResources[i].pMipmappedArrayU, 0));
+            CUDA_CHECK(cuExternalMemoryGetMappedMipmappedArray(&frameRes.pMipmappedArrayU, frameRes.cudaExtMemU, &mmY));
+            CUDA_CHECK(cuMipmappedArrayGetLevel(&frameRes.pCudaArrayU, frameRes.pMipmappedArrayU, 0));
 
-        // --- V plane ---
-        D3D12_RESOURCE_DESC texDescV = texDesc;
-        hr = create_texture(texDescV, m_frameResources[i].pTextureV);
-        if (FAILED(hr)) { DebugLog(L"allocateFrameBuffers: CreateCommittedResource(V) failed."); return false; }
-        m_pD3D12Device->GetCopyableFootprints(&texDescV, 0, 1, 0, &fpY, &numRowsY, &rowSizeInBytesY, &totalBytesY);
-        m_frameResources[i].pitchV = fpY.Footprint.RowPitch;
-        allocInfoY = m_pD3D12Device->GetResourceAllocationInfo(0, 1, &texDescV);
-        UINT64 vImportSize = (allocInfoY.SizeInBytes > totalBytesY) ? allocInfoY.SizeInBytes : totalBytesY;
-        hr = m_pD3D12Device->CreateSharedHandle(m_frameResources[i].pTextureV.Get(), nullptr, GENERIC_ALL, nullptr, &m_frameResources[i].sharedHandleV);
-        if (FAILED(hr)) { DebugLog(L"allocateFrameBuffers: CreateSharedHandle(V) failed."); return false; }
+            // --- V plane ---
+            D3D12_RESOURCE_DESC texDescV = texDesc;
+            hr = create_texture(texDescV, frameRes.pTextureV);
+            if (FAILED(hr)) { DebugLog(L"allocateFrameBuffers: CreateCommittedResource(V) failed."); return false; }
+            m_pD3D12Device->GetCopyableFootprints(&texDescV, 0, 1, 0, &fpY, &numRowsY, &rowSizeInBytesY, &totalBytesY);
+            frameRes.pitchV = fpY.Footprint.RowPitch;
+            allocInfoY = m_pD3D12Device->GetResourceAllocationInfo(0, 1, &texDescV);
+            UINT64 vImportSize = (allocInfoY.SizeInBytes > totalBytesY) ? allocInfoY.SizeInBytes : totalBytesY;
+            hr = m_pD3D12Device->CreateSharedHandle(frameRes.pTextureV.Get(), nullptr, GENERIC_ALL, nullptr, &frameRes.sharedHandleV);
+            if (FAILED(hr)) { DebugLog(L"allocateFrameBuffers: CreateSharedHandle(V) failed."); return false; }
 
-        CUDA_EXTERNAL_MEMORY_HANDLE_DESC extV = {};
-        extV.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE;
-        extV.handle.win32.handle = m_frameResources[i].sharedHandleV;
-        extV.size = vImportSize;
-        extV.flags = cudaExternalMemoryDedicated;
-        CUDA_CHECK(cuImportExternalMemory(&m_frameResources[i].cudaExtMemV, &extV));
+            CUDA_EXTERNAL_MEMORY_HANDLE_DESC extV = {};
+            extV.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE;
+            extV.handle.win32.handle = frameRes.sharedHandleV;
+            extV.size = vImportSize;
+            extV.flags = cudaExternalMemoryDedicated;
+            CUDA_CHECK(cuImportExternalMemory(&frameRes.cudaExtMemV, &extV));
 
-        CUDA_CHECK(cuExternalMemoryGetMappedMipmappedArray(&m_frameResources[i].pMipmappedArrayV, m_frameResources[i].cudaExtMemV, &mmY));
-        CUDA_CHECK(cuMipmappedArrayGetLevel(&m_frameResources[i].pCudaArrayV, m_frameResources[i].pMipmappedArrayV, 0));
+            CUDA_CHECK(cuExternalMemoryGetMappedMipmappedArray(&frameRes.pMipmappedArrayV, frameRes.cudaExtMemV, &mmY));
+            CUDA_CHECK(cuMipmappedArrayGetLevel(&frameRes.pCudaArrayV, frameRes.pMipmappedArrayV, 0));
+        } else {
+            D3D12_RESOURCE_DESC texDescUV = texDesc;
+            texDescUV.Width = std::max<UINT64>(1, m_videoDecoderCreateInfo.ulWidth / 2);
+            texDescUV.Height = std::max<UINT>(1u, m_videoDecoderCreateInfo.ulHeight / 2);
+            texDescUV.Format = chromaFormat;
+
+            hr = create_texture(texDescUV, frameRes.pTextureU);
+            if (FAILED(hr)) { DebugLog(L"allocateFrameBuffers: CreateCommittedResource(U) failed."); return false; }
+            D3D12_PLACED_SUBRESOURCE_FOOTPRINT fpUV = {};
+            UINT numRowsUV = 0; UINT64 rowSizeInBytesUV = 0; UINT64 totalBytesUV = 0;
+            m_pD3D12Device->GetCopyableFootprints(&texDescUV, 0, 1, 0, &fpUV, &numRowsUV, &rowSizeInBytesUV, &totalBytesUV);
+            frameRes.pitchU = fpUV.Footprint.RowPitch;
+            D3D12_RESOURCE_ALLOCATION_INFO allocInfoUV = m_pD3D12Device->GetResourceAllocationInfo(0, 1, &texDescUV);
+            UINT64 uvImportSize = (allocInfoUV.SizeInBytes > totalBytesUV) ? allocInfoUV.SizeInBytes : totalBytesUV;
+            hr = m_pD3D12Device->CreateSharedHandle(frameRes.pTextureU.Get(), nullptr, GENERIC_ALL, nullptr, &frameRes.sharedHandleU);
+            if (FAILED(hr)) { DebugLog(L"allocateFrameBuffers: CreateSharedHandle(U) failed."); return false; }
+
+            CUDA_EXTERNAL_MEMORY_HANDLE_DESC extUV = {};
+            extUV.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE;
+            extUV.handle.win32.handle = frameRes.sharedHandleU;
+            extUV.size = uvImportSize;
+            extUV.flags = cudaExternalMemoryDedicated;
+            CUDA_CHECK(cuImportExternalMemory(&frameRes.cudaExtMemU, &extUV));
+
+            CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC mmUV = {};
+            mmUV.arrayDesc.Width = static_cast<size_t>(texDescUV.Width);
+            mmUV.arrayDesc.Height = texDescUV.Height;
+            mmUV.arrayDesc.Depth = 0;
+            mmUV.arrayDesc.NumChannels = chromaChannels;
+            mmUV.arrayDesc.Format = cuChromaFormat;
+            mmUV.arrayDesc.Flags = 0;
+            mmUV.numLevels = 1;
+            CUDA_CHECK(cuExternalMemoryGetMappedMipmappedArray(&frameRes.pMipmappedArrayU, frameRes.cudaExtMemU, &mmUV));
+            CUDA_CHECK(cuMipmappedArrayGetLevel(&frameRes.pCudaArrayU, frameRes.pMipmappedArrayU, 0));
+
+            frameRes.pTextureV.Reset();
+            frameRes.cudaExtMemV = nullptr;
+            frameRes.pMipmappedArrayV = nullptr;
+            frameRes.pCudaArrayV = nullptr;
+            frameRes.sharedHandleV = nullptr;
+            frameRes.pitchV = 0;
+        }
 
         // NEW: Create async copy resources
-        CUDA_CHECK(cuStreamCreate(&m_frameResources[i].copyStream, CU_STREAM_NON_BLOCKING));
-        CUDA_CHECK(cuEventCreate(&m_frameResources[i].copyDone, CU_EVENT_DISABLE_TIMING));
+        CUDA_CHECK(cuStreamCreate(&frameRes.copyStream, CU_STREAM_NON_BLOCKING));
+        CUDA_CHECK(cuEventCreate(&frameRes.copyDone, CU_EVENT_DISABLE_TIMING));
     }
 
     DebugLog(L"Allocated D3D12/CUDA frame buffers (Committed/Dedicated).");
@@ -680,8 +751,8 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     // From here, we can return on error and the destructors will handle cleanup.
     auto& fr = self->m_frameResources[pDispInfo->picture_index];
 
-    if (!fr.pCudaArrayY || !fr.pCudaArrayU || !fr.pCudaArrayV) {
-        DebugLog(L"HandlePictureDisplay: mapped CUDA arrays for 4:4:4 are null. Aborting.");
+    if (!fr.pCudaArrayY || !fr.pCudaArrayU || (self->m_planeLayout == PlaneLayout::YUV444 && !fr.pCudaArrayV)) {
+        DebugLog(L"HandlePictureDisplay: mapped CUDA arrays are null. Aborting.");
         cuCtxPopCurrent(NULL);
         return 0;
     }
@@ -691,12 +762,18 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     CUstream s = fr.copyStream;
 
     // Determine bytes per sample based on bit depth
-    const int bytesPerSample = (self->m_videoDecoderCreateInfo.OutputFormat == cudaVideoSurfaceFormat_YUV444_16Bit) ? 2 : 1;
-    const size_t planeSize = nDecodedPitch * self->m_videoDecoderCreateInfo.ulHeight;
+    const bool output16Bit = (self->m_videoDecoderCreateInfo.OutputFormat == cudaVideoSurfaceFormat_YUV444_16Bit) ||
+                             (self->m_videoDecoderCreateInfo.OutputFormat == cudaVideoSurfaceFormat_P016);
+    const int bytesPerSample = output16Bit ? 2 : 1;
+    const size_t yPlaneSize = nDecodedPitch * self->m_videoDecoderCreateInfo.ulHeight;
 
     // Use display dimensions for copy, not coded dimensions
-    const size_t copyWidthBytes = static_cast<size_t>(self->m_displayWidth) * bytesPerSample;
+    const size_t copyWidthPixels = static_cast<size_t>(self->m_displayWidth);
+    const size_t copyWidthBytes = copyWidthPixels * bytesPerSample;
     const size_t copyHeightRows = static_cast<size_t>(self->m_displayHeight);
+    const size_t chromaWidthSamples = (copyWidthPixels + 1) / 2;
+    const size_t copyWidthBytesChroma = chromaWidthSamples * 2 * bytesPerSample;
+    const size_t chromaHeightRows = (copyHeightRows + 1) / 2;
 
     CUDA_MEMCPY2D cpy = {};
     cpy.srcMemoryType = CU_MEMORYTYPE_DEVICE;
@@ -712,15 +789,29 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     cpy.dstArray  = fr.pCudaArrayY;
     CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&cpy, s));
 
-    // U plane
-    cpy.srcDevice = pDecodedFrame + planeSize;
-    cpy.dstArray  = fr.pCudaArrayU;
-    CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&cpy, s));
+    if (self->m_planeLayout == PlaneLayout::YUV444) {
+        // U plane
+        cpy.srcDevice = pDecodedFrame + yPlaneSize;
+        cpy.dstArray  = fr.pCudaArrayU;
+        CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&cpy, s));
 
-    // V plane
-    cpy.srcDevice = pDecodedFrame + planeSize * 2;
-    cpy.dstArray  = fr.pCudaArrayV;
-    CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&cpy, s));
+        // V plane
+        cpy.srcDevice = pDecodedFrame + yPlaneSize * 2;
+        cpy.dstArray  = fr.pCudaArrayV;
+        CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&cpy, s));
+    } else {
+        cpy.srcDevice = pDecodedFrame + yPlaneSize;
+        cpy.dstArray  = fr.pCudaArrayU;
+        cpy.srcXInBytes = (static_cast<size_t>(self->m_cropLeft) / 2) * 2 * bytesPerSample;
+        cpy.srcY = static_cast<size_t>(self->m_cropTop) / 2;
+        cpy.WidthInBytes = copyWidthBytesChroma;
+        cpy.Height = chromaHeightRows;
+        CUDA_CHECK_CALLBACK(cuMemcpy2DAsync(&cpy, s));
+        cpy.srcXInBytes = static_cast<size_t>(self->m_cropLeft) * bytesPerSample;
+        cpy.srcY = static_cast<size_t>(self->m_cropTop);
+        cpy.WidthInBytes = copyWidthBytes;
+        cpy.Height = copyHeightRows;
+    }
 
     // Record completion event for this frame
     CUevent frameCopyDone = nullptr;
@@ -745,7 +836,8 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     readyFrame.fenceValue = fenceValue;
     readyFrame.hw_decoded_texture_Y = fr.pTextureY;
     readyFrame.hw_decoded_texture_U = fr.pTextureU;
-    readyFrame.hw_decoded_texture_V = fr.pTextureV;
+    readyFrame.hw_decoded_texture_V = (self->m_planeLayout == PlaneLayout::YUV444) ? fr.pTextureV : nullptr;
+    readyFrame.planeLayout = self->m_planeLayout;
     readyFrame.timestamp             = pDispInfo->timestamp;
     readyFrame.originalFrameNumber   = self->m_nDecodedFrameCount++;
     readyFrame.id                    = readyFrame.originalFrameNumber;

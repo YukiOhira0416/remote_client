@@ -631,7 +631,8 @@ static std::chrono::steady_clock::time_point g_lastReorderDecision = std::chrono
 
 // Rendering specific D3D12 globals
 Microsoft::WRL::ComPtr<ID3D12RootSignature> g_rootSignature;
-Microsoft::WRL::ComPtr<ID3D12PipelineState> g_pipelineState;
+Microsoft::WRL::ComPtr<ID3D12PipelineState> g_pipelineStateYuv444;
+Microsoft::WRL::ComPtr<ID3D12PipelineState> g_pipelineStateNv12;
 Microsoft::WRL::ComPtr<ID3D12Resource> g_vertexBuffer;
 D3D12_VERTEX_BUFFER_VIEW g_vertexBufferView;
 Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_srvHeap; // For Y and UV textures
@@ -930,7 +931,8 @@ bool InitD3D() {
     // Release rendering specific resources
     if (g_srvHeap) g_srvHeap.Reset();
     if (g_vertexBuffer) g_vertexBuffer.Reset();
-    if (g_pipelineState) g_pipelineState.Reset();
+    if (g_pipelineStateYuv444) g_pipelineStateYuv444.Reset();
+    if (g_pipelineStateNv12) g_pipelineStateNv12.Reset();
     if (g_rootSignature) g_rootSignature.Reset();
     if (g_d3d12Device) g_d3d12Device.Reset();
     if (g_fenceEvent) { CloseHandle(g_fenceEvent); g_fenceEvent = nullptr; }
@@ -1194,7 +1196,8 @@ if (FAILED(hr) || !g_copyFenceSharedHandle) {
 
     // 10. Create PSO
     Microsoft::WRL::ComPtr<ID3DBlob> vertexShaderBlob;
-    Microsoft::WRL::ComPtr<ID3DBlob> pixelShaderBlob;
+    Microsoft::WRL::ComPtr<ID3DBlob> pixelShaderBlobYuv444;
+    Microsoft::WRL::ComPtr<ID3DBlob> pixelShaderBlobNv12;
 
     UINT compileFlags = D3DCOMPILE_ENABLE_STRICTNESS;
 #if defined(_DEBUG)
@@ -1207,17 +1210,24 @@ if (FAILED(hr) || !g_copyFenceSharedHandle) {
         else DebugLog(L"InitD3D (D3D12): Vertex shader compilation failed. HR: " + HResultToHexWString(hr));
         return false;
     }
-    hr = D3DCompileFromFile(L"Shader/YUV444ToRGBA709Full.hlsl", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "ps_5_1", compileFlags, 0, &pixelShaderBlob, &errorBlob);
+    hr = D3DCompileFromFile(L"Shader/YUV444ToRGBA709Full.hlsl", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "ps_5_1", compileFlags, 0, &pixelShaderBlobYuv444, &errorBlob);
     if (FAILED(hr)) {
         if (errorBlob) DebugLog(L"InitD3D (D3D12): Pixel shader compilation failed: " + std::wstring(static_cast<wchar_t*>(errorBlob->GetBufferPointer()), static_cast<wchar_t*>(errorBlob->GetBufferPointer()) + errorBlob->GetBufferSize() / sizeof(wchar_t)));
         else DebugLog(L"InitD3D (D3D12): Pixel shader compilation failed. HR: " + HResultToHexWString(hr));
         return false;
     }
 
+    hr = D3DCompileFromFile(L"Shader/NV12ToRGBA709Full.hlsl", nullptr, D3D_COMPILE_STANDARD_FILE_INCLUDE, "main", "ps_5_1", compileFlags, 0, &pixelShaderBlobNv12, &errorBlob);
+    if (FAILED(hr)) {
+        if (errorBlob) DebugLog(L"InitD3D (D3D12): NV12 pixel shader compilation failed: " + std::wstring(static_cast<wchar_t*>(errorBlob->GetBufferPointer()), static_cast<wchar_t*>(errorBlob->GetBufferPointer()) + errorBlob->GetBufferSize() / sizeof(wchar_t))));
+        else DebugLog(L"InitD3D (D3D12): NV12 pixel shader compilation failed. HR: " + HResultToHexWString(hr));
+        return false;
+    }
+
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
     psoDesc.pRootSignature = g_rootSignature.Get();
     psoDesc.VS = CD3DX12_SHADER_BYTECODE(vertexShaderBlob.Get());
-    psoDesc.PS = CD3DX12_SHADER_BYTECODE(pixelShaderBlob.Get());
+    psoDesc.PS = CD3DX12_SHADER_BYTECODE(pixelShaderBlobYuv444.Get());
     psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
     psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
     psoDesc.DepthStencilState.DepthEnable = FALSE;
@@ -1230,12 +1240,21 @@ if (FAILED(hr) || !g_copyFenceSharedHandle) {
     // No input layout for full-screen quad generated in VS
     psoDesc.InputLayout = { nullptr, 0 };
 
-    hr = g_d3d12Device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&g_pipelineState));
+    hr = g_d3d12Device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&g_pipelineStateYuv444));
     if (FAILED(hr)) {
         DebugLog(L"InitD3D (D3D12): Failed to create PSO. HR: " + HResultToHexWString(hr));
         return false;
     }
     DebugLog(L"InitD3D (D3D12): PSO created.");
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC nv12Desc = psoDesc;
+    nv12Desc.PS = CD3DX12_SHADER_BYTECODE(pixelShaderBlobNv12.Get());
+    hr = g_d3d12Device->CreateGraphicsPipelineState(&nv12Desc, IID_PPV_ARGS(&g_pipelineStateNv12));
+    if (FAILED(hr)) {
+        DebugLog(L"InitD3D (D3D12): Failed to create NV12 PSO. HR: " + HResultToHexWString(hr));
+        return false;
+    }
+    DebugLog(L"InitD3D (D3D12): NV12 PSO created.");
 
     // 11. Create SRV Descriptor Heap (for Y and UV textures)
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
@@ -1636,7 +1655,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     }
 
     // Set RTV
-    g_commandList->SetPipelineState(g_pipelineState.Get());
+    g_commandList->SetPipelineState(g_pipelineStateYuv444.Get());
     g_commandList->SetGraphicsRootSignature(g_rootSignature.Get());
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart(), g_currentFrameBufferIndex, g_rtvDescriptorSize);
     {
@@ -1738,7 +1757,11 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     }
 
     // 3. Draw the selected frame.
-    if (frameToDraw.hw_decoded_texture_Y && frameToDraw.hw_decoded_texture_U && frameToDraw.hw_decoded_texture_V) {
+    const bool isNv12Layout = (frameToDraw.planeLayout == PlaneLayout::NV12);
+    const bool isYuv444Layout = (frameToDraw.planeLayout == PlaneLayout::YUV444);
+    const bool canDrawFrame = frameToDraw.hw_decoded_texture_Y && frameToDraw.hw_decoded_texture_U &&
+        ((isYuv444Layout && frameToDraw.hw_decoded_texture_V) || isNv12Layout);
+    if (canDrawFrame) {
         if (isNewFrame) {
             frameToDraw.render_start_ms = SteadyNowMs();
             // We must wait on the event from the master copy in the cache.
@@ -1754,6 +1777,8 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
                 (void)cuEventQuery(g_lastDrawnFrame.copyDone);
             }
         }
+
+        g_commandList->SetPipelineState(isNv12Layout ? g_pipelineStateNv12.Get() : g_pipelineStateYuv444.Get());
 
         // Use display dimensions for letterboxing, not coded dimensions or window dimensions.
         const int videoW = frameToDraw.displayW;
@@ -1775,9 +1800,9 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         g_commandList->SetGraphicsRootConstantBufferView(1, g_cropCB->GetGPUVirtualAddress());
 
 
-        // --- SRV setup (Y, U, V) ---
-        // 連続3スロットを保証するための wrap 前処理（性能影響なし）
-        const UINT kNeededSrv = 3;
+        // --- SRV setup (Y, U[, V]) ---
+        // 連続スロットを保証するための wrap 前処理（性能影響なし）
+        const UINT kNeededSrv = isNv12Layout ? 2u : 3u;
         if (g_srvDescriptorHeapIndex + kNeededSrv > kSrvHeapSize) {
             // ★ wrap：ヒープ末尾近くで3連続確保できない場合は先頭に巻き戻す
             g_srvDescriptorHeapIndex = 0;
@@ -1806,19 +1831,21 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         srvDesc.Format = frameToDraw.hw_decoded_texture_U->GetDesc().Format;
         g_d3d12Device->CreateShaderResourceView(
             frameToDraw.hw_decoded_texture_U.Get(), &srvDesc, srvHandleCpu);
-        srvHandleCpu.Offset(1, g_srvDescriptorSize);
+        if (!isNv12Layout) {
+            srvHandleCpu.Offset(1, g_srvDescriptorSize);
 
-        // V plane
-        srvDesc.Format = frameToDraw.hw_decoded_texture_V->GetDesc().Format;
-        g_d3d12Device->CreateShaderResourceView(
-            frameToDraw.hw_decoded_texture_V.Get(), &srvDesc, srvHandleCpu);
+            // V plane
+            srvDesc.Format = frameToDraw.hw_decoded_texture_V->GetDesc().Format;
+            g_d3d12Device->CreateShaderResourceView(
+                frameToDraw.hw_decoded_texture_V.Get(), &srvDesc, srvHandleCpu);
+        }
 
         // シェーダ可視ヒープ設定（従来通り）
         ID3D12DescriptorHeap* ppHeaps[] = { g_srvHeap.Get() };
         g_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
         g_commandList->SetGraphicsRootDescriptorTable(0, srvHandleGpu);
 
-        // リングの書き込み位置を3つ進める（従来のモジュロ運用は維持）
+        // リングの書き込み位置を必要数進める（従来のモジュロ運用は維持）
         g_srvDescriptorHeapIndex = (startIndex + kNeededSrv) % kSrvHeapSize;
         g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         {
@@ -2269,7 +2296,8 @@ g_copyFence.Reset();
     if (g_d3d12CommandQueue) g_d3d12CommandQueue.Reset();
     if (g_srvHeap) g_srvHeap.Reset();
     if (g_vertexBuffer) g_vertexBuffer.Reset();
-    if (g_pipelineState) g_pipelineState.Reset();
+    if (g_pipelineStateYuv444) g_pipelineStateYuv444.Reset();
+    if (g_pipelineStateNv12) g_pipelineStateNv12.Reset();
     if (g_rootSignature) g_rootSignature.Reset();
     if (g_d3d12Device) g_d3d12Device.Reset();
 
