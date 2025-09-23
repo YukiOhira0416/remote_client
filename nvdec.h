@@ -22,6 +22,7 @@
 
 // Forward declaration
 struct EncodedFrame;
+enum class PlaneLayout : uint32_t;
 
 struct FrameTimings {
     uint64_t rx_done_ms = 0;
@@ -96,6 +97,8 @@ private:
     int m_nDecodePicCnt = 0;
     int m_frameWidth = 0;
     int m_frameHeight = 0;
+    PlaneLayout m_planeLayout;
+    bool m_isHighBitDepth = false;
 
     // Cropping parameters from video sequence
     int m_cropLeft = 0, m_cropTop = 0, m_cropRight = 0, m_cropBottom = 0;
