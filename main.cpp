@@ -95,15 +95,15 @@ extern std::atomic<int> currentResolutionHeight; // Assumed to be in window.cpp 
 #pragma comment(lib, "secur32.lib")
 #include <ShellScalingApi.h>
 #pragma comment(lib, "Shcore.lib")
-//#define SEND_IP_BANDWIDTH "192.168.0.2"
-#define SEND_IP_BANDWIDTH "127.0.0.1"
+#define SEND_IP_BANDWIDTH "192.168.0.2"
+//#define SEND_IP_BANDWIDTH "127.0.0.1"
 #define RECEIVE_PORT_DATA 8130 // パケット受信用のポート番号
 #define SEND_PORT_BANDWIDTH 8200// 帯域幅測定用のポート番号
 #define BANDWIDTH_DATA_SIZE 60 * 1024  // 60KB(帯域幅測定時のデータサイズ)
 #define DATA_PACKET_SIZE 1300 // UDPパケットサイズ
 #define WSARECV_BUFFER_SIZE 65000
-//#define RECEIVE_IP_REBOOT "0.0.0.0"
-#define RECEIVE_IP_REBOOT "127.0.0.1"
+#define RECEIVE_IP_REBOOT "0.0.0.0"
+//#define RECEIVE_IP_REBOOT "127.0.0.1"
 #define RECEIVE_PORT_REBOOT_START 8150
 #define RECEIVE_PORT_REBOOT_END 8151
 

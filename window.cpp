@@ -440,8 +440,8 @@ static void DrainRetireBin() {
 
 // D3D11 specific globals (to be removed or replaced)
 #define SEND_PORT_FEC 8080// FEC用ポート番号
-//#define SEND_IP_FEC "192.168.0.2"// FEC用IPアドレス
-#define SEND_IP_FEC "127.0.0.1"// FEC用IPアドレス
+#define SEND_IP_FEC "192.168.0.2"// FEC用IPアドレス
+//#define SEND_IP_FEC "127.0.0.1"// FEC用IPアドレス
 
 bool g_allowTearing = false; // ティアリングを許可するかどうか
 
