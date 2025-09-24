@@ -36,41 +36,6 @@ include_directories(
     "C:/Program Files/NVIDIA Corporation/Video_Codec_SDK_13.0.19/Interface"
 )
 
-# Intel ISA-L library
-set(ISAL_ROOT "" CACHE PATH "Path to Intel ISA-L installation root")
-
-if(ISAL_ROOT)
-    list(APPEND CMAKE_PREFIX_PATH "${ISAL_ROOT}")
-endif()
-
-find_path(ISAL_INCLUDE_DIR NAMES isa-l/erasure_code.h
-    HINTS
-        "${ISAL_ROOT}/include"
-        "$ENV{ISAL_ROOT}/include"
-        "C:/Program Files/isa-l/include"
-        "C:/Program Files (x86)/isa-l/include"
-)
-
-if(NOT ISAL_INCLUDE_DIR)
-    message(FATAL_ERROR "Intel ISA-L headers not found. Set ISAL_ROOT or ISAL_INCLUDE_DIR.")
-endif()
-
-include_directories(${ISAL_INCLUDE_DIR})
-
-find_library(ISAL_LIBRARY NAMES isa-l isal
-    HINTS
-        "${ISAL_ROOT}/lib"
-        "${ISAL_ROOT}/lib64"
-        "$ENV{ISAL_ROOT}/lib"
-        "$ENV{ISAL_ROOT}/lib64"
-        "C:/Program Files/isa-l/lib"
-        "C:/Program Files (x86)/isa-l/lib"
-)
-
-if(NOT ISAL_LIBRARY)
-    message(FATAL_ERROR "Intel ISA-L library not found. Set ISAL_ROOT or ISAL_LIBRARY.")
-endif()
-
 # プリコンパイル済みヘッダー対応のため必要
 set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 
@@ -135,10 +100,6 @@ target_link_libraries(${PROJECT_NAME}
     # ENetライブラリ
     ${CMAKE_SOURCE_DIR}/enet_x64-windows/lib/enet.lib
 
-    # Intel ISA-L ライブラリ
-    ${ISAL_LIBRARY}
-    
-    
 )
 
 
