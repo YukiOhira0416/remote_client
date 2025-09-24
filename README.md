@@ -51,7 +51,7 @@ cmake --build build --config Release
 - `directx/` : DirectX 12 headers
 - `enet_x64-windows/` : ENet networking library (prebuilt)
 - `concurrentqueue_x64-windows/` : moodycamel concurrent queue (prebuilt)
-- `gf-complete/`, `Jerasure/` : FEC libraries
+- Intel ISA-L (external dependency for FEC)
 - `src/NvCodec/` : NVIDIA Codec SDK headers
 
 ## Features
@@ -69,8 +69,7 @@ cmake --build build --config Release
 - [DirectX 12](https://docs.microsoft.com/en-us/windows/win32/direct3d12/direct3d-12-graphics)
 - [ENet](http://enet.bespin.org/)
 - [moodycamel concurrentqueue](https://github.com/cameron314/concurrentqueue)
-- [gf-complete](https://lab.jerasure.org/jerasure/gf-complete)
-- [Jerasure](https://lab.jerasure.org/jerasure/jerasure)
+- [Intel ISA-L](https://github.com/intel/isa-l)
 
 ---
 

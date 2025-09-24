@@ -2319,37 +2319,25 @@ void SendFinalResolution(int width, int height) {
     size_t shard_len = 0; // シャードの長さ
     bool fec_success = false;
     std::vector<std::vector<uint8_t>> parityShards;
+    std::vector<uint8_t> paddedData;
     if (original_data_len > 0) { // データが存在する場合は FEC を適用
-        size_t min_shard_len = (original_data_len + RS_K - 1) / RS_K; // 最小シャード長を計算
-
-        const int w = 8; // シャードの幅
-        const int alignment = w * sizeof(long); // 8 * 8 = 64 (64bit 整数の場合)
-        shard_len = (min_shard_len + alignment - 1) / alignment * alignment;
-
-        size_t padded_data_len = shard_len * RS_K;
-        if (original_data_len < padded_data_len) {
-            data.resize(padded_data_len, 0); // 0 でパディング
-        } else if (original_data_len > padded_data_len) {
-            DebugLog(L"Warning: original_data_len > padded_data_len. This should not happen.");
-            data.resize(padded_data_len);
-        }
-
-        if (g_matrix_initialized) {
-            fec_success = EncodeFEC_Jerasure(
-                data.data(),
-                padded_data_len,
-                parityShards,
-                RS_K,
-                RS_M,
-                g_jerasure_matrix,
-                shard_len
-            );
-            if (!fec_success) {
-                DebugLog(L"SendFinalResolution: EncodeFEC_Jerasure failed.");
-            }
+        // ISA-L によるエンコード：パディング長は関数で決定（64B アライン）
+        fec_success = EncodeFEC_ISAL(
+            data.data(),
+            original_data_len,
+            parityShards,
+            shard_len,
+            RS_K,
+            RS_M
+        );
+        if (!fec_success) {
+            DebugLog(L"SendFinalResolution: EncodeFEC_ISAL failed.");
         } else {
-            DebugLog(L"SendFinalResolution: Jerasure matrix not initialized. Skipping FEC.");
-            fec_success = false;
+            const size_t padded_data_len = shard_len * static_cast<size_t>(RS_K);
+            paddedData.assign(padded_data_len, 0);
+            if (!data.empty() && !paddedData.empty()) {
+                std::memcpy(paddedData.data(), data.data(), std::min(padded_data_len, original_data_len));
+            }
         }
     } else {
         DebugLog(L"SendFinalResolution: original_data_len is 0. Skipping FEC.");
@@ -2384,7 +2372,7 @@ void SendFinalResolution(int width, int height) {
             header.originalDataLen = htonl(static_cast<uint32_t>(original_data_len));
 
             packetData.insert(packetData.end(), reinterpret_cast<uint8_t*>(&header), reinterpret_cast<uint8_t*>(&header) + shardHeaderSize);
-            const uint8_t* shardStart = data.data() + i * shard_len;
+            const uint8_t* shardStart = paddedData.data() + static_cast<size_t>(i) * shard_len;
             packetData.insert(packetData.end(), shardStart, shardStart + shard_len);
 
             if (packetData.data() != nullptr && packetData.size() > 0 && packetData.size() <= SIZE_PACKET_SIZE) {

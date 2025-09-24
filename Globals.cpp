@@ -11,13 +11,6 @@ const int RS_K = getOptimalThreadConfig().RS_K;  // Data shards
 const int RS_M = getOptimalThreadConfig().RS_M;  // Parity shards
 const int RS_N = RS_K + RS_M;
 
-// Jerasure encoding matrix (bit matrix)
-int* g_jerasure_matrix = nullptr;
-std::vector<uint8_t> g_encode_matrix(RS_N * RS_K);
-int* g_vandermonde_matrix = nullptr;
-std::once_flag g_matrix_init_flag;
-std::atomic<bool> g_matrix_initialized(false);
-
 // Window and resolution management
 std::atomic<int> currentResolutionWidth(1920);
 std::atomic<int> currentResolutionHeight(1080);

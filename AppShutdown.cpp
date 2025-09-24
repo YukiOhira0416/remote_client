@@ -138,14 +138,6 @@ void ReleaseAllResources(const AppThreads& threads) {
             DebugLog(L"ReleaseAllResources: exception during network/timer cleanup (ignored).");
         }
 
-        // 5) Release Reed-Solomon matrices.
-        try {
-            if (g_vandermonde_matrix) { free(g_vandermonde_matrix); g_vandermonde_matrix = nullptr; }
-            if (g_jerasure_matrix)    { free(g_jerasure_matrix);    g_jerasure_matrix    = nullptr; }
-        } catch (...) {
-            DebugLog(L"ReleaseAllResources: exception during matrix cleanup (ignored).");
-        }
-
         DebugLog(L"ReleaseAllResources: Done");
     });
 }
