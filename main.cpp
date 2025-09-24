@@ -34,10 +34,6 @@
 #include <condition_variable>
 #include "DebugLog.h"
 #include "ReedSolomon.h"
-#include <gf_complete.h>
-#include <jerasure.h>
-#include <reed_sol.h>
-#include <cauchy.h>
 #include <sstream>
 #include "concurrentqueue/concurrentqueue.h"
 #include <enet/enet.h>
@@ -399,48 +395,6 @@ void SaveEncodedStreamToFile(const std::vector<uint8_t>& prepared_encodedBuffer,
     DebugLog(wss_log_prefix.str() + L"Saved " + std::to_wstring(prepared_encodedBuffer.size()) + L" bytes to " + ConvertToWString(numberedFilename) + L" (Counter: " + std::to_wstring(currentFileCounterValue) + L")");
 }
 
-
-void InitializeRSMatrix() {
-    std::call_once(g_matrix_init_flag, []() {
-        // 1. 従来の Vandermonde ベースのエンコード行列を生成
-        // → Cauchy ベースのエンコード行列を生成するよう変更 ←
-        g_vandermonde_matrix = cauchy_original_coding_matrix(RS_K, RS_M, 8);
-        if (g_vandermonde_matrix == nullptr) { // ※ g_vandermonde_matrix を直接使用
-            DebugLog(L"ERROR: cauchy_original_coding_matrix failed."); // ※ ログメッセージ修正
-            g_matrix_initialized = false;
-            return;
-        }
-        // 2. Vandermonde 行列をビット行列に変換
-        //g_jerasure_matrix = jerasure_matrix_to_bitmatrix(RS_K, RS_M, 8, g_vandermonde_matrix);
-        // free(vandermonde_matrix); // ※ g_vandermonde_matrix として保持するので、ここでは解放しない
-
-        // ※ デバッグ用の g_vandermonde_matrix のコピーを作成し jerasure_matrix_to_bitmatrix に渡す ※
-        int* temp_cauchy_for_bitmatrix = (int*)malloc(sizeof(int) * RS_M * RS_K); // m x k 行列
-        if (temp_cauchy_for_bitmatrix == nullptr) {
-            DebugLog(L"ERROR: Failed to allocate memory for temp_cauchy_for_bitmatrix.");
-            free(g_vandermonde_matrix);
-            g_vandermonde_matrix = nullptr;
-            g_matrix_initialized = false;
-            return;
-        }
-        memcpy(temp_cauchy_for_bitmatrix, g_vandermonde_matrix, sizeof(int) * RS_M * RS_K);
-        g_jerasure_matrix = jerasure_matrix_to_bitmatrix(RS_K, RS_M, 8, temp_cauchy_for_bitmatrix);
-        free(temp_cauchy_for_bitmatrix); // コピーはここで解放
-
-        if (g_jerasure_matrix == nullptr) {
-            DebugLog(L"ERROR: jerasure_matrix_to_bitmatrix failed."); // エラーログ修正
-            // ※ g_vandermonde_matrix も解放しておく
-            if (g_vandermonde_matrix != nullptr) {
-                free(g_vandermonde_matrix);
-                g_vandermonde_matrix = nullptr;
-            }
-            g_matrix_initialized = false;
-            return;
-        }
-
-        g_matrix_initialized = true;
-    });
-}
 
 void CountBandW() {
     {
@@ -962,8 +916,8 @@ void FecWorkerThread(int threadId) {
                 std::vector<uint8_t> decodedFrameData;
                 uint32_t originalLenForDecode = currentFrameMetaForAttempt.originalDataLen;
 
-                if (g_matrix_initialized && DecodeFEC_Jerasure(
-                        shardsForDecodeAttempt, RS_K, RS_M, originalLenForDecode, decodedFrameData, g_jerasure_matrix)) {
+                if (DecodeFEC_ISAL(
+                        shardsForDecodeAttempt, RS_K, RS_M, originalLenForDecode, decodedFrameData)) {
 
                     if (dumpEncodedStreamToFiles.load()) {
                         std::lock_guard<std::mutex> lock(hevcoutputMutex);
@@ -1002,9 +956,7 @@ void FecWorkerThread(int threadId) {
                     if(count % 120 == 0)DebugLog(L"Server FEC Encode End to Client FEC Decode End Process Time: " + std::to_wstring(elapsed_fec_worker_thread) + L" ms");
                 } else {
                     // 失敗時は何も消さず、追加入荷を待つ（既存ログ・計測は維持）
-                    if (g_matrix_initialized) {
-                        DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: FEC Decode failed for frame " + std::to_wstring(frameNumber) + L", will wait for more shards.");
-                    }
+                    DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: FEC Decode failed for frame " + std::to_wstring(frameNumber) + L", will wait for more shards.");
                 }
             }
             count++;
@@ -1153,8 +1105,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     } else {
         SetProcessDPIAware();
     }
-    InitializeRSMatrix();
-
     // Get executable path and set up logging
     char exePath[MAX_PATH];
     GetModuleFileNameA(nullptr, exePath, MAX_PATH);

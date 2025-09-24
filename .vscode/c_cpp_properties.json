@@ -8,8 +8,7 @@
                 "${workspaceFolder}/directx",
                 "${workspaceFolder}/concurrentqueue_x64-windows/include",
                 "${workspaceFolder}/enet_x64-windows/include",
-                "${workspaceFolder}/gf-complete/include",
-                "${workspaceFolder}/Jerasure/include",
+                "${env:ISAL_ROOT}/include",
                 "${workspaceFolder}/nvtx/c/include",
                 "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/include",
                 "C:/Program Files/NVIDIA Corporation/Video_Codec_SDK_13.0.19/Interface"

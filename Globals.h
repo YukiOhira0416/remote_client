@@ -78,11 +78,6 @@ extern Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;
 extern const int RS_K;
 extern const int RS_M;
 extern const int RS_N;
-extern std::once_flag g_matrix_init_flag;
-extern std::vector<uint8_t> g_encode_matrix;
-extern std::atomic<bool> g_matrix_initialized;
-extern int* g_jerasure_matrix;
-extern int* g_vandermonde_matrix;
 
 // Helper to convert pointer to wstring (moved from window.cpp)
 template <typename T>
