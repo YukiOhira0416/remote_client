@@ -1,7 +1,7 @@
 // ISA-L ベースの Reed-Solomon 実装
 
 // Jerasure/GFcomplete 由来の include は削除。
-#include <isa-l/erasure_code.h>
+#include <isa-l/include/erasure_code.h>
 #include <cstring>
 #include <limits>
 #include <map>

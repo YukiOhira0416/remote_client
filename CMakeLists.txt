@@ -46,12 +46,12 @@ endif()
 set(ISAL_SUBMODULE_DIR "${CMAKE_SOURCE_DIR}/isa-l")
 set(ISAL_SUBMODULE_INCLUDE "${ISAL_SUBMODULE_DIR}/include")
 
-if(NOT ISAL_INCLUDE_DIR AND EXISTS "${ISAL_SUBMODULE_INCLUDE}/isa-l/erasure_code.h")
+if(NOT ISAL_INCLUDE_DIR AND EXISTS "${ISAL_SUBMODULE_INCLUDE}/erasure_code.h")
     set(ISAL_INCLUDE_DIR "${ISAL_SUBMODULE_INCLUDE}")
 endif()
 
 if(NOT ISAL_INCLUDE_DIR)
-    find_path(ISAL_INCLUDE_DIR NAMES isa-l/erasure_code.h
+    find_path(ISAL_INCLUDE_DIR NAMES erasure_code.h
         HINTS
             "${ISAL_ROOT}/include"
             "$ENV{ISAL_ROOT}/include"
@@ -68,6 +68,7 @@ endif()
 include_directories(${ISAL_INCLUDE_DIR})
 
 set(ISAL_SUBMODULE_LIB_DIRS
+    "${ISAL_SUBMODULE_DIR}"
     "${ISAL_SUBMODULE_DIR}/bin"
     "${ISAL_SUBMODULE_DIR}/lib"
     "${ISAL_SUBMODULE_DIR}/lib64"
