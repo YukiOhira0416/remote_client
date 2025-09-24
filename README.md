@@ -51,7 +51,6 @@ cmake --build build --config Release
 - `directx/` : DirectX 12 headers
 - `enet_x64-windows/` : ENet networking library (prebuilt)
 - `concurrentqueue_x64-windows/` : moodycamel concurrent queue (prebuilt)
-- Intel ISA-L (external dependency for FEC)
 - `src/NvCodec/` : NVIDIA Codec SDK headers
 
 ## Features
@@ -59,6 +58,7 @@ cmake --build build --config Release
 - GPU-accelerated H.264 decoding (NVDEC)
 - Direct3D 12 rendering
 - Forward Error Correction (FEC) for packet loss recovery
+- Built-in Reed-Solomon FEC implementation (no Intel ISA-L dependency)
 - Asynchronous logging
 - Multi-threaded networking and decoding
 - Customizable window resolution
@@ -69,7 +69,6 @@ cmake --build build --config Release
 - [DirectX 12](https://docs.microsoft.com/en-us/windows/win32/direct3d12/direct3d-12-graphics)
 - [ENet](http://enet.bespin.org/)
 - [moodycamel concurrentqueue](https://github.com/cameron314/concurrentqueue)
-- [Intel ISA-L](https://github.com/intel/isa-l)
 
 ---
 
