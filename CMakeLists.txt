@@ -43,19 +43,39 @@ if(ISAL_ROOT)
     list(APPEND CMAKE_PREFIX_PATH "${ISAL_ROOT}")
 endif()
 
-find_path(ISAL_INCLUDE_DIR NAMES isa-l/erasure_code.h
-    HINTS
-        "${ISAL_ROOT}/include"
-        "$ENV{ISAL_ROOT}/include"
-        "C:/Program Files/isa-l/include"
-        "C:/Program Files (x86)/isa-l/include"
-)
+set(ISAL_SUBMODULE_DIR "${CMAKE_SOURCE_DIR}/isa-l")
+set(ISAL_SUBMODULE_INCLUDE "${ISAL_SUBMODULE_DIR}/include")
+
+if(NOT ISAL_INCLUDE_DIR AND EXISTS "${ISAL_SUBMODULE_INCLUDE}/isa-l/erasure_code.h")
+    set(ISAL_INCLUDE_DIR "${ISAL_SUBMODULE_INCLUDE}")
+endif()
+
+if(NOT ISAL_INCLUDE_DIR)
+    find_path(ISAL_INCLUDE_DIR NAMES isa-l/erasure_code.h
+        HINTS
+            "${ISAL_ROOT}/include"
+            "$ENV{ISAL_ROOT}/include"
+            "C:/Program Files/isa-l/include"
+            "C:/Program Files (x86)/isa-l/include"
+            "${ISAL_SUBMODULE_INCLUDE}"
+    )
+endif()
 
 if(NOT ISAL_INCLUDE_DIR)
     message(FATAL_ERROR "Intel ISA-L headers not found. Set ISAL_ROOT or ISAL_INCLUDE_DIR.")
 endif()
 
 include_directories(${ISAL_INCLUDE_DIR})
+
+set(ISAL_SUBMODULE_LIB_DIRS
+    "${ISAL_SUBMODULE_DIR}/bin"
+    "${ISAL_SUBMODULE_DIR}/lib"
+    "${ISAL_SUBMODULE_DIR}/lib64"
+    "${ISAL_SUBMODULE_DIR}/windows/bin"
+    "${ISAL_SUBMODULE_DIR}/windows/lib"
+    "${ISAL_SUBMODULE_DIR}/windows/bin64"
+    "${ISAL_SUBMODULE_DIR}/windows/lib64"
+)
 
 find_library(ISAL_LIBRARY NAMES isa-l isal
     HINTS
@@ -65,6 +85,7 @@ find_library(ISAL_LIBRARY NAMES isa-l isal
         "$ENV{ISAL_ROOT}/lib64"
         "C:/Program Files/isa-l/lib"
         "C:/Program Files (x86)/isa-l/lib"
+        ${ISAL_SUBMODULE_LIB_DIRS}
 )
 
 if(NOT ISAL_LIBRARY)
