@@ -44,45 +44,12 @@ include_directories(
     "C:/Program Files/NVIDIA Corporation/Video_Codec_SDK_13.0.19/Interface"
 )
 
-# Intel ISA-L library
-set(ISAL_ROOT "" CACHE PATH "Path to Intel ISA-L installation root")
+# ISA-L サブモジュールをビルド
+add_subdirectory(isa-l)
 
-if(ISAL_ROOT)
-    list(APPEND CMAKE_PREFIX_PATH "${ISAL_ROOT}")
-endif()
-
-set(ISAL_SUBMODULE_DIR "${CMAKE_SOURCE_DIR}/isa-l")
-set(ISAL_SUBMODULE_INCLUDE "${ISAL_SUBMODULE_DIR}/include")
-
-if(NOT ISAL_INCLUDE_DIR AND EXISTS "${ISAL_SUBMODULE_INCLUDE}/erasure_code.h")
-    set(ISAL_INCLUDE_DIR "${ISAL_SUBMODULE_INCLUDE}")
-endif()
-
-if(NOT ISAL_INCLUDE_DIR)
-    find_path(ISAL_INCLUDE_DIR NAMES erasure_code.h
-        HINTS
-            "${ISAL_SUBMODULE_INCLUDE}"
-    )
-endif()
-
-if(NOT ISAL_INCLUDE_DIR)
-    message(FATAL_ERROR "Intel ISA-L headers not found. Set ISAL_ROOT or ISAL_INCLUDE_DIR.")
-endif()
-
-include_directories(${ISAL_INCLUDE_DIR})
-
-set(ISAL_SUBMODULE_LIB_DIRS
-    "${ISAL_SUBMODULE_DIR}"
-)
-
-find_library(ISAL_LIBRARY NAMES isa-l isal
-    HINTS
-        "${ISAL_SUBMODULE_DIR}"
-)
-
-if(NOT ISAL_LIBRARY)
-    message(FATAL_ERROR "Intel ISA-L library not found. Set ISAL_ROOT or ISAL_LIBRARY.")
-endif()
+# ISA-L のインクルードディレクトリを設定
+set(ISAL_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/isa-l/include")
+set(ISAL_LIBRARY "${CMAKE_SOURCE_DIR}/isa-l/isa-l_static.lib")
 
 # プリコンパイル済みヘッダー対応のため必要
 set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
@@ -259,3 +226,16 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     $<TARGET_FILE_DIR:${PROJECT_NAME}>/Shader
 )
 
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/isa-l/isa-l.dll"
+    "$<TARGET_FILE_DIR:${PROJECT_NAME}>/isa-l.dll"
+    COMMENT "Copying isa-l.dll to output directory"
+)
+
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/isa-l/isa-l.lib"
+    "$<TARGET_FILE_DIR:${PROJECT_NAME}>/isa-l.lib"
+    COMMENT "Copying isa-l.lib to output directory"
+)
