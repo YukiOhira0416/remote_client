@@ -86,6 +86,34 @@ bool DecodeFEC_ISAL(
     }
 
     const int n = k + m;
+
+    if (m == 0) {
+        decodedData.clear();
+        decodedData.reserve(static_cast<size_t>(k) * shard_len);
+
+        for (int i = 0; i < k; ++i) {
+            auto shardIt = receivedShards.find(static_cast<uint32_t>(i));
+            if (shardIt == receivedShards.end()) {
+                DebugLog(L"DecodeFEC_ISAL Error: Missing required data shard " + std::to_wstring(i)
+                         + L" when no parity shards are available.");
+                return false;
+            }
+
+            if (shardIt->second.size() != shard_len) {
+                DebugLog(L"DecodeFEC_ISAL Error: Data shard " + std::to_wstring(i) + L" has unexpected length.");
+                return false;
+            }
+
+            decodedData.insert(decodedData.end(), shardIt->second.begin(), shardIt->second.end());
+        }
+
+        if (decodedData.size() > originalDataLen) {
+            decodedData.resize(originalDataLen);
+        }
+
+        return true;
+    }
+
     std::vector<std::vector<uint8_t>> temp_shards(static_cast<size_t>(n));
     std::vector<uint8_t*> fragment_ptrs(static_cast<size_t>(n), nullptr);
 
