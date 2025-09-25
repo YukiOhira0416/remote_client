@@ -16,8 +16,16 @@ endif()
 
 # デバッグ設定
 set(CMAKE_BUILD_TYPE Debug)
-set(CMAKE_CXX_FLAGS_DEBUG "/MDd /Zi /Ob0 /Od /RTC1")
-set(CMAKE_CXX_FLAGS_RELEASE "/MD /O2 /Ob2 /DNDEBUG")
+#
+# NOTE:
+#   The previous configuration linked against the dynamic MSVC runtimes (/MD, /MDd).
+#   Those DLLs (msvcp140d.dll, vcruntime140d.dll, etc.) are not guaranteed to exist on
+#   end-user machines, which caused the executable to fail immediately at startup with
+#   exit code 0xC0000135 (STATUS_DLL_NOT_FOUND).  Switching to the static runtime keeps
+#   the required CRT inside the executable so the client can launch on systems without
+#   a Visual Studio installation.
+set(CMAKE_CXX_FLAGS_DEBUG "/MTd /Zi /Ob0 /Od /RTC1")
+set(CMAKE_CXX_FLAGS_RELEASE "/MT /O2 /Ob2 /DNDEBUG")
 
 # Unicode定義
 add_definitions(-DUNICODE -D_UNICODE)
