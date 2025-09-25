@@ -112,6 +112,13 @@ set(HEADERS
 # 実行ファイルを作成
 add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})
 
+# isa-l.dll をビルド後に実行ファイルと同じ場所へコピー
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/isa-l/isa-l.dll"
+        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/isa-l.dll"
+)
+
 # NVTX v3ヘッダを強制的にインクルードして、バージョン競合エラー(C1189)を解決する
 target_compile_options(${PROJECT_NAME} PRIVATE "/FInvtx3/nvtx3.hpp")
 
