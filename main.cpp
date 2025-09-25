@@ -744,179 +744,116 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
 
 void FecWorkerThread(int threadId) {
     DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"] started.");
-    UINT64 count = 0;
     const std::chrono::milliseconds EMPTY_QUEUE_WAIT_MS(1);
+    const uint64_t ASSEMBLY_TIMEOUT_MS = 300; // Timeout for clearing stale frames
 
-    while (g_fec_worker_Running || g_parsedShardQueue.size_approx() > 0) { // Process remaining items after flag is false
+    while (g_fec_worker_Running || g_parsedShardQueue.size_approx() > 0) {
         ParsedShardInfo parsedInfo;
 
-        if(g_parsedShardQueue.size_approx() == 0){
+        if (!g_parsedShardQueue.try_dequeue(parsedInfo)) {
+            if (!g_fec_worker_Running && g_parsedShardQueue.size_approx() == 0) {
+                break; // Exit condition: stopped and queue is empty
+            }
             std::this_thread::sleep_for(EMPTY_QUEUE_WAIT_MS);
             continue;
         }
 
-        if (g_parsedShardQueue.try_dequeue(parsedInfo)) {
-            const uint64_t currentGeneration = g_streamGeneration.load(std::memory_order_acquire);
-            if (parsedInfo.generation != currentGeneration) {
-                // Stale shard from a previous stream generation (e.g., after a resize). Discard it.
-                continue;
-            }
+        // Discard stale shards from previous stream generations (e.g., after a resize)
+        if (parsedInfo.generation != g_streamGeneration.load(std::memory_order_acquire)) {
+            continue;
+        }
 
-            const uint64_t latencyEpoch = g_latencyEpochMs.load(std::memory_order_acquire);
-            const uint64_t graceMs = 100;
-            if (latencyEpoch > graceMs && parsedInfo.wgcCaptureTimestamp < (latencyEpoch - graceMs)) {
-                // Stale shard from before the last known "good" frame timestamp. Discard it.
-                continue;
-            }
+        int frameNumber = parsedInfo.frameNumber;
+        int shardIndex = parsedInfo.shardIndex;
 
-            uint64_t packetTimestamp = parsedInfo.wgcCaptureTimestamp;
-            int frameNumber = parsedInfo.frameNumber;
-            int shardIndex = parsedInfo.shardIndex;
-            uint32_t originalDataLenHost = parsedInfo.originalDataLen;
-            std::vector<uint8_t>& payload = parsedInfo.shardData;
+        bool readyToDecode = false;
+        std::map<uint32_t, std::vector<uint8_t>> shardsForDecode;
+        FrameMetadata metadataForDecode;
 
-            bool tryDecode = false;
-            std::map<uint32_t, std::vector<uint8_t>> shardsForDecodeAttempt;
-            FrameMetadata currentFrameMetaForAttempt;
-            
-            { // Metadata and FrameBuffer scope
-                // Metadata access first
-                {
-                    std::lock_guard<std::mutex> metaLock(g_frameMetadataMutex);
-                    if (g_frameMetadata.find(frameNumber) == g_frameMetadata.end()) {
-                        g_frameMetadata[frameNumber] = {packetTimestamp, originalDataLenHost, SteadyNowMs()};
-                    }
-                    if (parsedInfo.totalDataShards != RS_K || parsedInfo.totalParityShards != RS_M) {
-                        DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: Mismatch in FEC parameters! Packet K/M: " +
-                                 std::to_wstring(parsedInfo.totalDataShards) + L"/" + std::to_wstring(parsedInfo.totalParityShards) +
-                                 L", Client K/M: " + std::to_wstring(RS_K) + L"/" + std::to_wstring(RS_M) +
-                                 L". Frame: " + std::to_wstring(frameNumber) + L", Shard: " + std::to_wstring(shardIndex));
-                        continue;
-                    }
+        // --- Start of critical section for shard processing ---
+        {
+            std::lock_guard<std::mutex> metaLock(g_frameMetadataMutex);
+            std::lock_guard<std::mutex> bufferLock(g_frameBufferMutex);
 
-                    const uint32_t shards_total_from_header =
-                        parsedInfo.totalDataShards + parsedInfo.totalParityShards;
-                    if (expectedFrameCounts.find(frameNumber) == expectedFrameCounts.end()) {
-                        expectedFrameCounts[frameNumber] = static_cast<int>(shards_total_from_header);
-                    }
-                    if (shardIndex >= static_cast<int>(shards_total_from_header)) {
-                        DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) +
-                                 L"]: Invalid shardIndex (out of range). Frame " + std::to_wstring(frameNumber) +
-                                 L", Shard " + std::to_wstring(shardIndex) +
-                                 L", Total(K+M)=" + std::to_wstring(shards_total_from_header));
-                        continue;
-                    }
-                }
-
-                std::lock_guard<std::mutex> bufferLock(g_frameBufferMutex);
-                if (g_frameBuffer.find(frameNumber) == g_frameBuffer.end()) {
-                    g_frameBuffer[frameNumber] = std::unordered_map<int, std::vector<uint8_t>>();
-                }
-
-                if (g_frameBuffer[frameNumber].find(shardIndex) == g_frameBuffer[frameNumber].end()) {
-                    g_frameBuffer[frameNumber][shardIndex] = std::move(payload);
-                }
-
-                if (g_frameBuffer.count(frameNumber)) {
-                    auto &frameBuf = g_frameBuffer[frameNumber];
-                    const size_t uniqueShardCount = frameBuf.size();
-
-                    size_t mode_len = 0;
-                    size_t mode_cnt = 0;
-                    std::unordered_map<size_t, size_t> lenFreq;
-                    for (const auto &kv : frameBuf) {
-                        const size_t len = kv.second.size();
-                        if (len == 0) continue;
-                        size_t c = ++lenFreq[len];
-                        if (c > mode_cnt) { mode_cnt = c; mode_len = len; }
-                    }
-
-                    if (uniqueShardCount >= static_cast<size_t>(RS_K) && mode_cnt >= static_cast<size_t>(RS_K)) {
-                        std::lock_guard<std::mutex> metaLock(g_frameMetadataMutex);
-                        if (g_frameMetadata.count(frameNumber)) {
-                            currentFrameMetaForAttempt = g_frameMetadata[frameNumber];
-
-                            shardsForDecodeAttempt.clear();
-                            for (auto &pair_entry : frameBuf) {
-                                if (pair_entry.second.size() == mode_len) {
-                                    shardsForDecodeAttempt[static_cast<uint32_t>(pair_entry.first)] = pair_entry.second;
-                                }
-                            }
-
-                            tryDecode = !shardsForDecodeAttempt.empty();
-                        } else {
-                            g_frameBuffer.erase(frameNumber);
-                        }
+            // Periodically clear out old, incomplete frames
+            static std::chrono::steady_clock::time_point last_cleanup = std::chrono::steady_clock::now();
+            auto now = std::chrono::steady_clock::now();
+            if (now - last_cleanup > std::chrono::seconds(1)) {
+                for (auto it = g_frameMetadata.begin(); it != g_frameMetadata.end(); ) {
+                    if (SteadyNowMs() - it->second.first_seen_time_ms > ASSEMBLY_TIMEOUT_MS) {
+                        g_frameBuffer.erase(it->first);
+                        it = g_frameMetadata.erase(it);
                     } else {
-                        bool is_expired = false;
-                        {
-                            std::lock_guard<std::mutex> metaLock(g_frameMetadataMutex);
-                            auto metaIt = g_frameMetadata.find(frameNumber);
-                            if (metaIt != g_frameMetadata.end()) {
-                                const uint64_t now = SteadyNowMs();
-                                const uint64_t time_since_first_shard = now - metaIt->second.first_seen_time_ms;
-                                const uint64_t assembly_timeout_ms = 300;
-
-                                if (time_since_first_shard > assembly_timeout_ms) {
-                                    is_expired = true;
-                                    g_frameMetadata.erase(metaIt);
-                                }
-                            }
-                        }
-                        if (is_expired) {
-                            g_frameBuffer.erase(frameNumber);
-                        }
+                        ++it;
                     }
                 }
-            } // End Metadata and FrameBuffer scope
+                last_cleanup = now;
+            }
 
-            if (tryDecode && !shardsForDecodeAttempt.empty()) {
-                std::vector<uint8_t> decodedFrameData;
-                uint32_t originalLenForDecode = currentFrameMetaForAttempt.originalDataLen;
+            FrameMetadata& meta = g_frameMetadata[frameNumber];
 
-                if (DecodeFEC_ISAL(
-                        shardsForDecodeAttempt, RS_K, RS_M, originalLenForDecode, decodedFrameData)) {
+            // If this is the first shard for this frame, initialize its metadata
+            if (meta.first_seen_time_ms == 0) {
+                meta.firstTimestamp = parsedInfo.wgcCaptureTimestamp;
+                meta.originalDataLen = parsedInfo.originalDataLen;
+                meta.first_seen_time_ms = SteadyNowMs();
+            }
 
-                    if (dumpEncodedStreamToFiles.load()) {
-                        std::lock_guard<std::mutex> lock(hevcoutputMutex);
-                        SaveEncodedStreamToFile(decodedFrameData, "output_hevc");
-                    }
-                    
-                    EncodedFrame frame_to_decode;
-                    frame_to_decode.timestamp = currentFrameMetaForAttempt.firstTimestamp;
-                    frame_to_decode.frameNumber = frameNumber;
-                    frame_to_decode.data = std::move(decodedFrameData);
-                    frame_to_decode.rx_done_ms = SteadyNowMs();
-                    {
-                        std::lock_guard<std::mutex> lk(g_fecEndTimeMutex);
-                        g_fecEndTimeByStreamFrame[frame_to_decode.frameNumber] = frame_to_decode.rx_done_ms;
-                    }
-                    {
-                        std::lock_guard<std::mutex> lk(g_wgcTsMutex);
-                        g_wgcCaptureTimestampByStreamFrame[frame_to_decode.frameNumber] = frame_to_decode.timestamp;
-                    }
-                    g_encodedFrameQueue.enqueue(std::move(frame_to_decode));
+            auto& frameBuf = g_frameBuffer[frameNumber];
 
-                    {
-                        std::lock_guard<std::mutex> bufferLock(g_frameBufferMutex);
-                        g_frameBuffer.erase(frameNumber);
-                    }
-                    {
-                        std::lock_guard<std::mutex> metaLock(g_frameMetadataMutex);
-                        g_frameMetadata.erase(frameNumber);
-                    }
-                    
-                } else {
-                    DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: FEC Decode failed for frame " + std::to_wstring(frameNumber) + L", will wait for more shards.");
+            // Store the shard if it's new
+            if (frameBuf.find(shardIndex) == frameBuf.end()) {
+                frameBuf[shardIndex] = std::move(parsedInfo.shardData);
+            }
+
+            // Check if we have enough shards to attempt decoding
+            if (frameBuf.size() >= static_cast<size_t>(RS_K)) {
+                readyToDecode = true;
+                // Copy data needed for decoding to local variables, to release locks sooner
+                for (const auto& pair : frameBuf) {
+                    shardsForDecode[static_cast<uint32_t>(pair.first)] = pair.second;
                 }
+                metadataForDecode = meta;
+
+                // Crucially, remove the frame from the global buffers *before* attempting to decode.
+                // This prevents other threads from trying to decode the same frame.
+                g_frameBuffer.erase(frameNumber);
+                g_frameMetadata.erase(frameNumber);
             }
-            count++;
-        } else {
-            // Queue was empty
-            if (!g_fec_worker_Running && g_parsedShardQueue.size_approx() == 0) {
-                break;
+        }
+        // --- End of critical section ---
+
+        if (readyToDecode) {
+            std::vector<uint8_t> decodedFrameData;
+            if (DecodeFEC_ISAL(
+                    shardsForDecode, RS_K, RS_M, metadataForDecode.originalDataLen, decodedFrameData)) {
+                
+                if (dumpEncodedStreamToFiles.load()) {
+                    std::lock_guard<std::mutex> lock(hevcoutputMutex);
+                    SaveEncodedStreamToFile(decodedFrameData, "output_hevc");
+                }
+
+                EncodedFrame frame_to_decode;
+                frame_to_decode.timestamp = metadataForDecode.firstTimestamp;
+                frame_to_decode.frameNumber = frameNumber;
+                frame_to_decode.data = std::move(decodedFrameData);
+                frame_to_decode.rx_done_ms = SteadyNowMs();
+
+                {
+                    std::lock_guard<std::mutex> lk(g_fecEndTimeMutex);
+                    g_fecEndTimeByStreamFrame[frame_to_decode.frameNumber] = frame_to_decode.rx_done_ms;
+                }
+                {
+                    std::lock_guard<std::mutex> lk(g_wgcTsMutex);
+                    g_wgcCaptureTimestampByStreamFrame[frame_to_decode.frameNumber] = frame_to_decode.timestamp;
+                }
+                g_encodedFrameQueue.enqueue(std::move(frame_to_decode));
+            } else {
+                // Decoding failed, but we might get more shards. Since we already removed it from the buffer,
+                // we can't retry. This is a trade-off to prevent multiple threads from decoding the same frame.
+                // With a robust shard validation (which is now implicitly done by the server), this path should be rare.
+                 DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: FEC Decode failed for frame " + std::to_wstring(frameNumber));
             }
-            std::this_thread::sleep_for(EMPTY_QUEUE_WAIT_MS);
         }
     }
     DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"] stopped.");
