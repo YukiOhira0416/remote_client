@@ -7,6 +7,8 @@
 #include <vector>
 #include <utility>
 #include <cstdint>
+#include <chrono>
+#include <memory>
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <deque>
@@ -17,7 +19,6 @@
 #include <condition_variable>
 #include <unordered_map>
 #include "concurrentqueue/concurrentqueue.h"
-#include <nvtx3/nvtx3.hpp>
 
 // CUDA includes
 #include <cuda.h>
@@ -42,9 +43,6 @@ inline void BumpStreamGeneration() {
     g_latencyEpochMs.store(SteadyNowMs(), std::memory_order_release);
 }
 
-
-// Global once:
-static nvtxDomainHandle_t g_frameDomain = nvtxDomainCreateA("FRAME");
 
 #define SIZE_PACKET_SIZE 256
 
@@ -135,7 +133,6 @@ struct ReadyGpuFrame {
     uint64_t fence_done_ms = 0;    // Client steady clock: after per-frame fence wait (if any)
     CUevent copyDone = nullptr; // NEW: signaled when NVDEC->CUDA copy has finished
     UINT64 fenceValue = 0;  // NEW (0 means “no fence” / fallback path)
-    nvtxRangeId_t nvtx_range_id = 0;
     PlaneLayout planeLayout = PlaneLayout::YUV444;
 };
 

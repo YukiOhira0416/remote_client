@@ -1,4 +1,3 @@
-#include <nvtx3/nvtx3.hpp>
 #include <d3dcompiler.h> // For shader compilation
 #include <DirectXColors.h> // For DirectX::Colors
 #include <windows.h>
@@ -333,9 +332,6 @@ D3D12_VERTEX_BUFFER_VIEW g_overlayVertexBufferView;
 Microsoft::WRL::ComPtr<ID3D12Resource> g_textTexture;
 Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_textSrvHeap;
 
-
-struct d3d12_domain { static constexpr char const* name = "D3D12"; };
-struct cuda_domain { static constexpr char const* name = "CUDA"; };
 static constexpr UINT kSwapChainBufferCount = 3; // was 2
 Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;
 Microsoft::WRL::ComPtr<ID3D12CommandQueue> g_d3d12CommandQueue;
@@ -391,7 +387,7 @@ static UINT64 SignalFenceNow() noexcept {
 }
 
 // Drain any retired resources whose CUDA event and fence are complete.
-// Maintains timing/logging and NVTX; no sleeps; no reformatting.
+// Maintains timing/logging; no sleeps; no reformatting.
 static void DrainRetireBin() {
     // NEW: bail out if sync primitives or device are not in a trustworthy state.
     if (g_deviceResetInProgress.load(std::memory_order_acquire)) {
@@ -474,11 +470,6 @@ static void HandleDeviceRemovedAndReinit() noexcept {
     // Clear in-flight frames and reorder buffers to avoid stale resources
     {
         std::lock_guard<std::mutex> qlock(g_readyGpuFrameQueueMutex);
-        for (const auto& frame : g_readyGpuFrameQueue) {
-            if (frame.nvtx_range_id) {
-                nvtxDomainRangeEnd(g_frameDomain, frame.nvtx_range_id);
-            }
-        }
         g_readyGpuFrameQueue.clear();
     }
     ClearReorderState(); // do not touch MonitorSharedMemory()
@@ -573,11 +564,6 @@ void ClearReorderState()
         for (auto &pair : g_reorderBuffer) {
             ReadyGpuFrame &rf = pair.second;
 
-            if (rf.nvtx_range_id) {
-                nvtxDomainRangeEnd(g_frameDomain, rf.nvtx_range_id);
-                rf.nvtx_range_id = 0;
-            }
-
             RetiredGpuResources r;
             r.y = std::move(rf.hw_decoded_texture_Y);
             r.u = std::move(rf.hw_decoded_texture_U);
@@ -595,10 +581,6 @@ void ClearReorderState()
     // Handle the cached last-drawn frame the same way
     {
         RetiredGpuResources r;
-        if (g_lastDrawnFrame.nvtx_range_id) {
-            nvtxDomainRangeEnd(g_frameDomain, g_lastDrawnFrame.nvtx_range_id);
-            g_lastDrawnFrame.nvtx_range_id = 0;
-        }
         r.y = std::move(g_lastDrawnFrame.hw_decoded_texture_Y);
         r.u = std::move(g_lastDrawnFrame.hw_decoded_texture_U);
         r.v = std::move(g_lastDrawnFrame.hw_decoded_texture_V);
@@ -912,7 +894,6 @@ bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
 }
 
 bool InitD3D() {
-    nvtxNameOsThreadA(GetCurrentThreadId(), "RenderThread");
     // Elevate priority to reduce scheduling jitter.
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
         // Release existing D3D12 resources if re-initializing
@@ -1611,30 +1592,19 @@ bool CreateOverlayResources() {
 }
 
 UINT64 PopulateCommandListCount = 0;
-struct reorder_domain { static constexpr char const* name = "REORDER"; };
 // 修正対象ファイル: window.cpp
 
 // 既存の PopulateCommandList 関数をまるごと置き換えてください
 bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass ReadyGpuFrame by reference
-    nvtx3::scoped_range_in<d3d12_domain> nvtx_populate_cmdlist{"PopulateCommandList"};
-
-    { nvtx3::scoped_range_in<d3d12_domain> r{ "DrainRetireBin" };
-      DrainRetireBin(); // safe: runs on render thread, preserves timing/logging
-    }
+    DrainRetireBin(); // safe: runs on render thread, preserves timing/logging
 
     // Reset command allocator and command list
     ID3D12CommandAllocator* allocator = g_commandAllocator[g_currentFrameBufferIndex].Get();
     HRESULT hr;
-    {
-        nvtx3::scoped_range_in<d3d12_domain> r{ "AllocatorReset" };
-        hr = allocator->Reset();
-    }
+    hr = allocator->Reset();
     if (FAILED(hr)) { DebugLog(L"PopulateCommandList: allocator Reset failed."); return false; }
 
-    {
-        nvtx3::scoped_range_in<d3d12_domain> r{ "CmdListReset" };
-        hr = g_commandList->Reset(allocator, nullptr);
-    }
+    hr = g_commandList->Reset(allocator, nullptr);
     if (FAILED(hr)) { DebugLog(L"PopulateCommandList: cmdlist Reset failed."); return false; }
 
     // Transition the current back buffer from PRESENT to RENDER_TARGET.
@@ -1649,19 +1619,13 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-    {
-        nvtx3::scoped_range_in<d3d12_domain> r{ "BarrierToRTV" };
-        g_commandList->ResourceBarrier(1, &barrier);
-    }
+    g_commandList->ResourceBarrier(1, &barrier);
 
     // Set RTV
     g_commandList->SetPipelineState(g_pipelineStateYuv444.Get());
     g_commandList->SetGraphicsRootSignature(g_rootSignature.Get());
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(g_rtvHeap->GetCPUDescriptorHandleForHeapStart(), g_currentFrameBufferIndex, g_rtvDescriptorSize);
-    {
-        nvtx3::scoped_range_in<d3d12_domain> r{ "SetRT" };
-        g_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
-    }
+    g_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
     // [修正点 1] レンダーターゲットをセットした直後にクリア処理を行う
     const float clearColor[4] = {0.f, 0.f, 0.f, 1.f};
@@ -1809,7 +1773,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         }
         const UINT startIndex = g_srvDescriptorHeapIndex;
 
-        // CPU/GPU 両方のハンドルを同じ startIndex から計算（従来コメント・NVTXは維持）
+        // CPU/GPU 両方のハンドルを同じ startIndex から計算（従来コメントは維持）
         CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandleCpu(
             g_srvHeap->GetCPUDescriptorHandleForHeapStart(), startIndex, g_srvDescriptorSize);
         CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandleGpu(
@@ -1848,10 +1812,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         // リングの書き込み位置を必要数進める（従来のモジュロ運用は維持）
         g_srvDescriptorHeapIndex = (startIndex + kNeededSrv) % kSrvHeapSize;
         g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-        {
-            nvtx3::scoped_range_in<d3d12_domain> r{ "Draw" };
-            g_commandList->DrawInstanced(4, 1, 0, 0);
-        }
+        g_commandList->DrawInstanced(4, 1, 0, 0);
     } else {
         // [修正点 3] 描画するフレームがない場合、ビューポートをバックバッファ全体に設定する
         ID3D12Resource* backbuffer = g_renderTargets[g_currentFrameBufferIndex].Get();
@@ -1888,10 +1849,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     // Transition the current back buffer from RENDER_TARGET to PRESENT.
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-    {
-        nvtx3::scoped_range_in<d3d12_domain> r{ "BarrierToPresent" };
-        g_commandList->ResourceBarrier(1, &barrier);
-    }
+    g_commandList->ResourceBarrier(1, &barrier);
 
     hr = g_commandList->Close();
     if (FAILED(hr)) { DebugLog(L"PopulateCommandList: Failed to close command list. HR: " + HResultToHexWString(hr)); return false; }
@@ -1899,7 +1857,6 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 }
 
 static void ResizeSwapChainOnRenderThread(int newW, int newH) {
-    nvtx3::scoped_range_in<d3d12_domain> r("ResizeSwapChain");
     if (!g_swapChain || !g_d3d12Device || !g_d3d12CommandQueue) return;
 
     // Get existing desc; skip if already correct
@@ -1948,11 +1905,6 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
     DebugLog(L"Resize detected. Clearing in-flight frame queues.");
     {
         std::lock_guard<std::mutex> qlock(g_readyGpuFrameQueueMutex);
-        for (const auto& frame : g_readyGpuFrameQueue) {
-            if (frame.nvtx_range_id) {
-                nvtxDomainRangeEnd(g_frameDomain, frame.nvtx_range_id);
-            }
-        }
         // The ComPtrs in the deque will automatically be released.
         g_readyGpuFrameQueue.clear();
     }
@@ -2007,9 +1959,8 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 }
 
 void RenderFrame() {
-    // NVTX range for frame latency wait
+    // Frame latency wait scope
     {
-        nvtx3::scoped_range_in<d3d12_domain> frame_latency_wait{"FrameLatency(Wait)"};
         bool hasReadyFrame = false;
         bool hasReorderFrame = false;
 
@@ -2079,8 +2030,6 @@ void RenderFrame() {
             }
         }
     }
-    nvtx3::scoped_range_in<d3d12_domain> frame_r("Frame");
-    nvtx3::scoped_range_in<d3d12_domain> r("D3D12Present");
     // Use existing fence and queue types; keep comments and layout intact.
 
     // Pick up pending resize, if any
@@ -2102,11 +2051,8 @@ void RenderFrame() {
     const bool frameWasRendered = PopulateCommandList(renderedFrameData); // 今回のフレームで実描画コマンドを記録したか？
 
     // Command list is populated (at least with a clear). Now execute and present.
-    {
-        nvtx3::scoped_range_in<d3d12_domain> exec_r("ExecuteCommandLists");
-        ID3D12CommandList* ppCommandLists[] = { g_commandList.Get() };
-        g_d3d12CommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
-    }
+    ID3D12CommandList* ppCommandLists[] = { g_commandList.Get() };
+    g_d3d12CommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
 
     const bool forcePresent = g_forcePresentOnce.exchange(false, std::memory_order_acq_rel);
     const bool shouldPresent = frameWasRendered || forcePresent;
@@ -2176,11 +2122,6 @@ void RenderFrame() {
             }
         }
 
-        // 以降は既存の NVTX range 終了処理など（変更なし）
-        if (renderedFrameData.nvtx_range_id) {
-            nvtxDomainRangeEnd(g_frameDomain, renderedFrameData.nvtx_range_id);
-            renderedFrameData.nvtx_range_id = 0;
-        }
     }
 
     //常にPresentを呼び出して、ウィンドウが描画され続けるようにする
@@ -2191,10 +2132,7 @@ void RenderFrame() {
 
     // Present
     HRESULT hrPresent;
-    {
-        nvtx3::scoped_range_in<d3d12_domain> present_r{"Present(Submit)"};
-        hrPresent = g_swapChain->Present(0, g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
-    }
+    hrPresent = g_swapChain->Present(0, g_allowTearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
     if (FAILED(hrPresent)) {
         if (hrPresent == DXGI_ERROR_DEVICE_REMOVED || hrPresent == DXGI_ERROR_DEVICE_RESET) {
             DebugLog(L"RenderFrame (D3D12): Device removed/reset on Present. HR: " + HResultToHexWString(hrPresent));

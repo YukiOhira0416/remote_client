@@ -1,6 +1,5 @@
 #include "nvdec.h"
 #include "Globals.h"
-#include <nvtx3/nvtx3.hpp>
 #include <stdexcept>
 #include <windows.h> // ensure HANDLE is available
 #include <cuda.h>    // we use Driver API external semaphore calls
@@ -12,12 +11,6 @@ extern "C" HANDLE GetCopyFenceSharedHandleForCuda();
 static CUexternalSemaphore g_cuCopyFenceSemaphore = nullptr;
 // [NEW] Per-frame fence value counter (monotonic). If there is another global frame counter, you may reuse it.
 static std::atomic<uint64_t> g_cudaCopyFenceValue{0};
-
-namespace my_nvtx_domains {
-    struct nvdec {
-        static constexpr char const* name = "NVDEC";
-    };
-}
 
 #include <fstream>
 #include <vector>
@@ -725,7 +718,6 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
 
     FrameDecoder* const self = static_cast<FrameDecoder*>(pUserData);
     cuCtxPushCurrent(self->m_cuContext);
-    nvtx3::scoped_range r_decode_copy("DecodeCopy");
 
     // RAII locker for the context lock. It will be unlocked automatically.
     CudaCtxLocker ctxLocker(self->m_ctxLock);
@@ -737,7 +729,6 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     oVPP.unpaired_field = (pDispInfo->progressive_frame == 1 || pDispInfo->repeat_first_field <= 1);
 
     // RAII mapper for the video frame. It will be unmapped automatically.
-    nvtx3::scoped_range r_map("HandlePictureDisplay::cuvidMapVideoFrame");
     MappedVideoFrame mappedFrame(self->m_hDecoder, pDispInfo->picture_index, &oVPP);
     if (!mappedFrame.IsValid()) {
         const char* es = nullptr; cuGetErrorString(mappedFrame.GetMapResult(), &es);
@@ -815,11 +806,8 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
 
     // Record completion event for this frame
     CUevent frameCopyDone = nullptr;
-    {
-        nvtx3::scoped_range_in<my_nvtx_domains::nvdec> r("EventRecord(copyDone)");
-        CUDA_CHECK_CALLBACK(cuEventCreate(&frameCopyDone, CU_EVENT_DISABLE_TIMING));
-        CUDA_CHECK_CALLBACK(cuEventRecord(frameCopyDone, s));
-    }
+    CUDA_CHECK_CALLBACK(cuEventCreate(&frameCopyDone, CU_EVENT_DISABLE_TIMING));
+    CUDA_CHECK_CALLBACK(cuEventRecord(frameCopyDone, s));
 
     // After CUDA copy to D3D12 textures is enqueued and will complete on 'copyStream'
     UINT64 fenceValue = 0;
@@ -900,26 +888,12 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     }
 
     {
-        nvtx3::scoped_range r("HandlePictureDisplay::EnqueueFrame");
         std::lock_guard<std::mutex> lock(g_readyGpuFrameQueueMutex);
         if(HandlePictureDisplayCount++ % 200 == 0) {
             std::wstringstream wss;
             wss << L"HandlePictureDisplay: Pushed Frame Enqueue Size " << g_readyGpuFrameQueue.size()
                 << L" Queueing Duration Time " << readyFrame.client_fec_end_to_render_end_time_ms << " ms";
             DebugLog(wss.str());
-        }
-        // Start a cross-thread NVTX range for this streamFrameNumber
-        {
-            nvtxEventAttributes_t a{};
-            a.version = NVTX_VERSION;
-            a.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;
-            a.messageType = NVTX_MESSAGE_TYPE_ASCII;
-
-            char label[128];
-            sprintf(label, "Frame #%u", readyFrame.streamFrameNumber);
-            a.message.ascii = label;
-
-            readyFrame.nvtx_range_id = nvtxDomainRangeStartEx(g_frameDomain, &a);
         }
         g_readyGpuFrameQueue.push_back(std::move(readyFrame));
     }
@@ -941,7 +915,6 @@ void NvdecThread(int threadId) {
     while (g_decode_worker_Running) { // Use the same global running flag
         EncodedFrame frame;
         if (g_encodedFrameQueue.try_dequeue(frame)) {
-            nvtx3::scoped_range r("CUDA Decode");
             frame.decode_start_ms = SteadyNowMs();
             g_frameDecoder->Decode(frame);
             if(DecoderCount++ % 200 == 0)DebugLog(L"NvdecThread: Dequeue Size " + std::to_wstring(g_encodedFrameQueue.size_approx()));
