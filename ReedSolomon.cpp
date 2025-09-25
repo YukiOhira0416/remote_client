@@ -15,6 +15,7 @@
 bool EncodeFEC_ISAL(
     const uint8_t* original_data,
     size_t original_data_len,
+    std::vector<std::vector<uint8_t>>& dataShards,
     std::vector<std::vector<uint8_t>>& parityShards,
     size_t& shard_len_out,
     int k,
@@ -38,9 +39,12 @@ bool EncodeFEC_ISAL(
     std::vector<uint8_t> padded_data(padded_data_len, 0);
     std::memcpy(padded_data.data(), original_data, original_data_len);
 
+    dataShards.resize(static_cast<size_t>(k));
     std::vector<uint8_t*> data_ptrs(static_cast<size_t>(k));
     for (int i = 0; i < k; ++i) {
-        data_ptrs[static_cast<size_t>(i)] = padded_data.data() + static_cast<size_t>(i) * shard_len;
+        uint8_t* shard_start = padded_data.data() + static_cast<size_t>(i) * shard_len;
+        dataShards[static_cast<size_t>(i)].assign(shard_start, shard_start + shard_len);
+        data_ptrs[static_cast<size_t>(i)] = dataShards[static_cast<size_t>(i)].data();
     }
 
     parityShards.resize(static_cast<size_t>(m));
