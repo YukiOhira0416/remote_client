@@ -143,8 +143,8 @@ bool DecodeFEC_ISAL(
         return false;
     }
 
-    std::vector<uint8_t> encode_matrix(static_cast<size_t>(m) * static_cast<size_t>(k));
-    gf_gen_cauchy1_matrix(encode_matrix.data(), m, k);
+    std::vector<uint8_t> encode_matrix(static_cast<size_t>(n) * static_cast<size_t>(k));
+    gf_gen_cauchy1_matrix(encode_matrix.data(), n, k);
 
     auto fill_generator_row = [&](int shard_index, uint8_t* dest) {
         if (shard_index < k) {
@@ -152,7 +152,7 @@ bool DecodeFEC_ISAL(
                 dest[j] = (shard_index == j) ? 1 : 0;
             }
         } else {
-            std::memcpy(dest, encode_matrix.data() + static_cast<size_t>(shard_index - k) * static_cast<size_t>(k), static_cast<size_t>(k));
+            std::memcpy(dest, encode_matrix.data() + static_cast<size_t>(shard_index) * static_cast<size_t>(k), static_cast<size_t>(k));
         }
     };
 
