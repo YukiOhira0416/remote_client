@@ -771,29 +771,27 @@ void FecWorkerThread(int threadId) {
         if (g_parsedShardQueue.try_dequeue(parsedInfo)) {
             const uint64_t currentGeneration = g_streamGeneration.load(std::memory_order_acquire);
             if (parsedInfo.generation != currentGeneration) {
-                DebugLog(L"FecWorkerThread: Discarding stale shard for frame " + std::to_wstring(parsedInfo.frameNumber) + L" (gen " + std::to_wstring(parsedInfo.generation) + L" != current " + std::to_wstring(currentGeneration) + L")");
+                // Stale shard from a previous stream generation (e.g., after a resize). Discard it.
                 continue;
             }
 
             const uint64_t latencyEpoch = g_latencyEpochMs.load(std::memory_order_acquire);
             const uint64_t graceMs = 100;
             if (latencyEpoch > graceMs && parsedInfo.wgcCaptureTimestamp < (latencyEpoch - graceMs)) {
-                DebugLog(L"FecWorkerThread: Discarding stale shard for frame " + std::to_wstring(parsedInfo.frameNumber) + L" (timestamp " + std::to_wstring(parsedInfo.wgcCaptureTimestamp) + L" < epoch " + std::to_wstring(latencyEpoch) + L")");
+                // Stale shard from before the last known "good" frame timestamp. Discard it.
                 continue;
             }
 
             nvtx3::scoped_range r("FecWorkerThread::ProcessShard");
             uint64_t packetTimestamp = parsedInfo.wgcCaptureTimestamp;
-            int frameNumber = parsedInfo.frameNumber; // Already host order
-            int shardIndex = parsedInfo.shardIndex;   // Already host order
-            uint32_t originalDataLenHost = parsedInfo.originalDataLen; // Already host order
-            std::vector<uint8_t>& payload = parsedInfo.shardData; // Use reference or move if appropriate
+            int frameNumber = parsedInfo.frameNumber;
+            int shardIndex = parsedInfo.shardIndex;
+            uint32_t originalDataLenHost = parsedInfo.originalDataLen;
+            std::vector<uint8_t>& payload = parsedInfo.shardData;
 
             bool tryDecode = false;
             std::map<uint32_t, std::vector<uint8_t>> shardsForDecodeAttempt;
             FrameMetadata currentFrameMetaForAttempt;
-
-            if(count % 120 == 0)DebugLog(L"FecWorkerThread: Queue Size " + std::to_wstring(g_parsedShardQueue.size_approx()));
             
             { // Metadata and FrameBuffer scope
                 // Metadata access first
@@ -802,15 +800,14 @@ void FecWorkerThread(int threadId) {
                     if (g_frameMetadata.find(frameNumber) == g_frameMetadata.end()) {
                         g_frameMetadata[frameNumber] = {packetTimestamp, originalDataLenHost, SteadyNowMs()};
                     }
-                    // Parameter check (totalDataShards and totalParityShards from parsedInfo vs RS_K/RS_M)
                     if (parsedInfo.totalDataShards != RS_K || parsedInfo.totalParityShards != RS_M) {
                         DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: Mismatch in FEC parameters! Packet K/M: " +
                                  std::to_wstring(parsedInfo.totalDataShards) + L"/" + std::to_wstring(parsedInfo.totalParityShards) +
                                  L", Client K/M: " + std::to_wstring(RS_K) + L"/" + std::to_wstring(RS_M) +
                                  L". Frame: " + std::to_wstring(frameNumber) + L", Shard: " + std::to_wstring(shardIndex));
-                        continue; // Skip this shard
+                        continue;
                     }
-                    // Explicitly enforce shardIndex bounds using header values (order-agnostic interleaving guard).
+
                     const uint32_t shards_total_from_header =
                         parsedInfo.totalDataShards + parsedInfo.totalParityShards;
                     if (expectedFrameCounts.find(frameNumber) == expectedFrameCounts.end()) {
@@ -821,7 +818,7 @@ void FecWorkerThread(int threadId) {
                                  L"]: Invalid shardIndex (out of range). Frame " + std::to_wstring(frameNumber) +
                                  L", Shard " + std::to_wstring(shardIndex) +
                                  L", Total(K+M)=" + std::to_wstring(shards_total_from_header));
-                        continue; // drop malformed shard (do not count toward K)
+                        continue;
                     }
                 }
 
@@ -829,20 +826,15 @@ void FecWorkerThread(int threadId) {
                 if (g_frameBuffer.find(frameNumber) == g_frameBuffer.end()) {
                     g_frameBuffer[frameNumber] = std::unordered_map<int, std::vector<uint8_t>>();
                 }
-                // Note: arrival order can be interleaved (data/parity). We only require >=K unique shard indices.
 
                 if (g_frameBuffer[frameNumber].find(shardIndex) == g_frameBuffer[frameNumber].end()) {
-                    g_frameBuffer[frameNumber][shardIndex] = std::move(payload); // payload is moved here
-                    // DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: Added Shard F#" + std::to_wstring(frameNumber) + L" Idx:" + std::to_wstring(shardIndex) + L". Current count: " + std::to_wstring(g_frameBuffer[frameNumber].size()));
+                    g_frameBuffer[frameNumber][shardIndex] = std::move(payload);
                 }
 
                 if (g_frameBuffer.count(frameNumber)) {
                     auto &frameBuf = g_frameBuffer[frameNumber];
-
-                    // 既存: ユニーク shardIndex 数が K 以上かどうか
                     const size_t uniqueShardCount = frameBuf.size();
 
-                    // [追加] シャード長の頻度分布をとり、多数派長(mode_len)を決定
                     size_t mode_len = 0;
                     size_t mode_cnt = 0;
                     std::unordered_map<size_t, size_t> lenFreq;
@@ -853,34 +845,23 @@ void FecWorkerThread(int threadId) {
                         if (c > mode_cnt) { mode_cnt = c; mode_len = len; }
                     }
 
-                    // [条件強化] 「多数派長のシャードが K 個以上」になったらだけ試行
                     if (uniqueShardCount >= static_cast<size_t>(RS_K) && mode_cnt >= static_cast<size_t>(RS_K)) {
-                        // 既存: メタデータの取得
                         std::lock_guard<std::mutex> metaLock(g_frameMetadataMutex);
                         if (g_frameMetadata.count(frameNumber)) {
-                            currentFrameMetaForAttempt = g_frameMetadata[frameNumber]; // コピー
+                            currentFrameMetaForAttempt = g_frameMetadata[frameNumber];
 
-                            // [重要] shardsForDecodeAttempt には「多数派長のシャードのみ」を詰める
                             shardsForDecodeAttempt.clear();
                             for (auto &pair_entry : frameBuf) {
                                 if (pair_entry.second.size() == mode_len) {
-                                    // デコーダは map<uint32_t, vector<uint8_t>> を受け取るためコピーになる
-                                    // ※ move すると frameBuf が空になり再収集できなくなるのでコピーで良い
                                     shardsForDecodeAttempt[static_cast<uint32_t>(pair_entry.first)] = pair_entry.second;
                                 }
                             }
 
-                            // [ポイント] ここでは g_frameBuffer/g_frameMetadata を **消さない**
-                            // デコード成功時のみ消去し、失敗時は追加入荷を待つ
                             tryDecode = !shardsForDecodeAttempt.empty();
                         } else {
-                            DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: Metadata missing for F#"
-                                     + std::to_wstring(frameNumber) + L" when K shards reached. Cleaning buffer.");
-                            // 既存動作と同じ：メタが無ければクリーニング
                             g_frameBuffer.erase(frameNumber);
                         }
                     } else {
-                        // Not enough shards with the same length, check for timeout.
                         bool is_expired = false;
                         {
                             std::lock_guard<std::mutex> metaLock(g_frameMetadataMutex);
@@ -892,21 +873,12 @@ void FecWorkerThread(int threadId) {
 
                                 if (time_since_first_shard > assembly_timeout_ms) {
                                     is_expired = true;
-                                    DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: Pruning expired frame assembly for F#" + std::to_wstring(frameNumber) + L" after " + std::to_wstring(time_since_first_shard) + L"ms.");
                                     g_frameMetadata.erase(metaIt);
                                 }
                             }
                         }
                         if (is_expired) {
                             g_frameBuffer.erase(frameNumber);
-                        } else {
-                            if (count % 200 == 0) {
-                                DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: F#"
-                                         + std::to_wstring(frameNumber) + L" has "
-                                         + std::to_wstring(uniqueShardCount)
-                                         + L" shards, (less than K=" + std::to_wstring(RS_K)
-                                         + L" or not enough same-sized shards) waiting for more.");
-                            }
                         }
                     }
                 }
@@ -939,7 +911,6 @@ void FecWorkerThread(int threadId) {
                     }
                     g_encodedFrameQueue.enqueue(std::move(frame_to_decode));
 
-                    // [ここで初めて] 成功したフレームのバッファ/メタデータを消去
                     {
                         std::lock_guard<std::mutex> bufferLock(g_frameBufferMutex);
                         g_frameBuffer.erase(frameNumber);
@@ -949,20 +920,14 @@ void FecWorkerThread(int threadId) {
                         g_frameMetadata.erase(frameNumber);
                     }
                     
-                    // 追加のデバッグログ
-                    auto fec_worker_thread_end = std::chrono::system_clock::now();
-                    uint64_t fec_worker_thread_end_ts = std::chrono::duration_cast<std::chrono::milliseconds>(fec_worker_thread_end.time_since_epoch()).count();
-                    int64_t elapsed_fec_worker_thread = static_cast<int64_t>(fec_worker_thread_end_ts) - static_cast<int64_t>(parsedInfo.server_fec_timestamp);
-                    if(count % 120 == 0)DebugLog(L"Server FEC Encode End to Client FEC Decode End Process Time: " + std::to_wstring(elapsed_fec_worker_thread) + L" ms");
                 } else {
-                    // 失敗時は何も消さず、追加入荷を待つ（既存ログ・計測は維持）
                     DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: FEC Decode failed for frame " + std::to_wstring(frameNumber) + L", will wait for more shards.");
                 }
             }
             count++;
         } else {
             // Queue was empty
-            if (!g_fec_worker_Running && g_parsedShardQueue.size_approx() == 0) { // Exit if flag is false AND queue is empty
+            if (!g_fec_worker_Running && g_parsedShardQueue.size_approx() == 0) {
                 break;
             }
             std::this_thread::sleep_for(EMPTY_QUEUE_WAIT_MS);
