@@ -504,6 +504,8 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
         int service_result;
         service_result = enet_host_service(server_host, &event, NET_POLL_TIMEOUT_MS);
 
+        auto receive_start_time = std::chrono::system_clock::now();
+        uint64_t receive_start_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(receive_start_time.time_since_epoch()).count();
         if (service_result > 0) {
             switch (event.type) {
                 case ENET_EVENT_TYPE_CONNECT:
@@ -743,6 +745,11 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
             ClearTimedOutAppFragments(); 
             last_timeout_check = now;
         }
+
+        auto receive_end_time = std::chrono::system_clock::now();
+        uint64_t receive_end_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(receive_end_time.time_since_epoch()).count();
+        if (count % 60 == 0) DebugLog(L"ReceiveRawPacketsThread: Client Receive Start to Process End latency: " +
+                         std::to_wstring(receive_end_time_ts - receive_start_time_ts) + L" ms");
         count++;
     }
 
