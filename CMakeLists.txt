@@ -53,10 +53,6 @@ endif()
 if(NOT ISAL_INCLUDE_DIR)
     find_path(ISAL_INCLUDE_DIR NAMES erasure_code.h
         HINTS
-            "${ISAL_ROOT}/include"
-            "$ENV{ISAL_ROOT}/include"
-            "C:/Program Files/isa-l/include"
-            "C:/Program Files (x86)/isa-l/include"
             "${ISAL_SUBMODULE_INCLUDE}"
     )
 endif()
@@ -69,24 +65,11 @@ include_directories(${ISAL_INCLUDE_DIR})
 
 set(ISAL_SUBMODULE_LIB_DIRS
     "${ISAL_SUBMODULE_DIR}"
-    "${ISAL_SUBMODULE_DIR}/bin"
-    "${ISAL_SUBMODULE_DIR}/lib"
-    "${ISAL_SUBMODULE_DIR}/lib64"
-    "${ISAL_SUBMODULE_DIR}/windows/bin"
-    "${ISAL_SUBMODULE_DIR}/windows/lib"
-    "${ISAL_SUBMODULE_DIR}/windows/bin64"
-    "${ISAL_SUBMODULE_DIR}/windows/lib64"
 )
 
 find_library(ISAL_LIBRARY NAMES isa-l isal
     HINTS
-        "${ISAL_ROOT}/lib"
-        "${ISAL_ROOT}/lib64"
-        "$ENV{ISAL_ROOT}/lib"
-        "$ENV{ISAL_ROOT}/lib64"
-        "C:/Program Files/isa-l/lib"
-        "C:/Program Files (x86)/isa-l/lib"
-        ${ISAL_SUBMODULE_LIB_DIRS}
+        "${ISAL_SUBMODULE_DIR}"
 )
 
 if(NOT ISAL_LIBRARY)
@@ -141,11 +124,6 @@ target_link_libraries(${PROJECT_NAME}
     d3d12.lib
     dxgi.lib
     d3dcompiler.lib
-    
-    # MediaFoundationライブラリ
-    mfplat.lib
-    mfuuid.lib
-    mfreadwrite.lib
     
     # CUDA ライブラリ
     "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/lib/x64/cuda.lib"
