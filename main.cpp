@@ -249,12 +249,12 @@ ThreadSafePriorityQueue<ParsedShardInfo, std::vector<ParsedShardInfo>, ParsedSha
 ThreadConfig getOptimalThreadConfig(){
     ThreadConfig config;
 
-    config.receiver = 4;
-    config.fec = 3;
+    config.receiver = 2;
+    config.fec = 2;
     config.decoder = 1;
     config.render = 1;
-    config.RS_K = 6;
-    config.RS_M = 2;
+    config.RS_K = 8;
+    config.RS_M =1;
 
     return config;
 }
@@ -564,6 +564,12 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                                     parsedInfoLocal.generation = g_streamGeneration.load(std::memory_order_acquire);
                                     g_parsedShardQueue.enqueue(std::move(parsedInfoLocal));
 
+                                    auto receive_data_time = std::chrono::system_clock::now();
+                                    uint64_t receive_data_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(receive_data_time.time_since_epoch()).count();
+
+                                    if (count % 60 == 0) DebugLog(L"ReceiveRawPacketsThread: Server FEC End to Client Receive End latency (ms): " +
+                                                     std::to_wstring(receive_data_time_ts - worker_ts_val) + L" ms");
+
                                 } else {
                                     DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Full shard packet (after WorkerTS) too small for WGCCaptureTS and SIH. Size: " + std::to_wstring(size_after_worker_ts));
                                 }
@@ -689,6 +695,11 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                                             }
 
                                             g_parsedShardQueue.enqueue(std::move(parsed));
+
+                                            auto receive_data_time = std::chrono::system_clock::now();
+                                            uint64_t receive_data_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(receive_data_time.time_since_epoch()).count();
+                                            if (count % 60 == 0) DebugLog(L"ReceiveRawPacketsThread: Server FEC End to Client Receive End latency (ms): " +
+                                                     std::to_wstring(receive_data_time_ts - worker_ts_val) + L" ms");
                                         } else {
                                             DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) +
                                                      L"]: Reassembled size too small for headers.");
@@ -746,7 +757,7 @@ void FecWorkerThread(int threadId) {
     DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"] started.");
     const std::chrono::milliseconds EMPTY_QUEUE_WAIT_MS(1);
     const uint64_t ASSEMBLY_TIMEOUT_MS = 300; // Timeout for clearing stale frames
-
+    UINT64 processed_count = 0;
     while (g_fec_worker_Running || g_parsedShardQueue.size_approx() > 0) {
         ParsedShardInfo parsedInfo;
 
@@ -848,6 +859,13 @@ void FecWorkerThread(int threadId) {
                     g_wgcCaptureTimestampByStreamFrame[frame_to_decode.frameNumber] = frame_to_decode.timestamp;
                 }
                 g_encodedFrameQueue.enqueue(std::move(frame_to_decode));
+
+                auto fec_end_time = std::chrono::system_clock::now();
+                uint64_t fec_end_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(fec_end_time.time_since_epoch()).count();
+
+                if (processed_count % 60 == 0) DebugLog(L"FecWorkerThread: Server FEC End to Client FEC End latency for frame " + std::to_wstring(frameNumber) + L": " +
+                         std::to_wstring(fec_end_time_ts - parsedInfo.server_fec_timestamp) + L" ms");
+
             } else {
                 // Decoding failed, but we might get more shards. Since we already removed it from the buffer,
                 // we can't retry. This is a trade-off to prevent multiple threads from decoding the same frame.
@@ -855,6 +873,7 @@ void FecWorkerThread(int threadId) {
                  DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"]: FEC Decode failed for frame " + std::to_wstring(frameNumber));
             }
         }
+        processed_count++;
     }
     DebugLog(L"FecWorkerThread [" + std::to_wstring(threadId) + L"] stopped.");
 }

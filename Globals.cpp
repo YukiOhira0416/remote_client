@@ -33,7 +33,7 @@ std::atomic<bool> app_running_atomic(true);
 std::atomic<bool> g_isSizing{false};
 std::atomic<bool> g_showRebootOverlay{ false };
 std::atomic<bool> g_forcePresentOnce{false};
-std::atomic<bool> dumpEncodedStreamToFiles{true};
+std::atomic<bool> dumpEncodedStreamToFiles{false};
 
 // Encoded Frame queue
 moodycamel::ConcurrentQueue<EncodedFrame> g_encodedFrameQueue;
