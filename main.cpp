@@ -37,7 +37,6 @@
 #include <sstream>
 #include "concurrentqueue/concurrentqueue.h"
 #include <enet/enet.h>
-#include <nvtx3/nvtx3.hpp>
 #include "Globals.h"
 #include "nvdec.h"
 #include "AppShutdown.h"
@@ -449,14 +448,6 @@ void CountBandW() {
 }
 
 
-// Keep layout/comments around this block.
-
-namespace my_nvtx_domains {
-    struct net {
-        static constexpr char const* name = "NET";
-    };
-}
-
 void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsThread would be clearer
     DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"] started.");
 
@@ -511,10 +502,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
         
         // Service ENet events with a timeout (e.g., 10ms)
         int service_result;
-        {
-            nvtx3::scoped_range_in<my_nvtx_domains::net> r("Net/WaitRecv(enet_service)");
-            service_result = enet_host_service(server_host, &event, NET_POLL_TIMEOUT_MS);
-        }
+        service_result = enet_host_service(server_host, &event, NET_POLL_TIMEOUT_MS);
 
         if (service_result > 0) {
             switch (event.type) {
@@ -528,7 +516,6 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
 
                 case ENET_EVENT_TYPE_RECEIVE:
                 {
-                    nvtx3::scoped_range r("ProcessPacket");
                     // DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Packet of length " + std::to_wstring(event.packet->dataLength) +
                     //          L" received from client on channel " + std::to_wstring(event.channelID));
 
@@ -782,7 +769,6 @@ void FecWorkerThread(int threadId) {
                 continue;
             }
 
-            nvtx3::scoped_range r("FecWorkerThread::ProcessShard");
             uint64_t packetTimestamp = parsedInfo.wgcCaptureTimestamp;
             int frameNumber = parsedInfo.frameNumber;
             int shardIndex = parsedInfo.shardIndex;
@@ -1239,11 +1225,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         }
 
         // Always render, even during live-resize.
-        {
-            nvtx3::scoped_range r("RenderFrame_Outer");
-            RenderFrame(); // pacing handled by DXGI frame-latency waitable on the render side
-            lastFrameRenderTime = currentTime;
-        }
+        RenderFrame(); // pacing handled by DXGI frame-latency waitable on the render side
+        lastFrameRenderTime = currentTime;
     }
 
     // Centralized Cleanup

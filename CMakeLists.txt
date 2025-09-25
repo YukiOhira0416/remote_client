@@ -39,7 +39,6 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/directx
     ${CMAKE_SOURCE_DIR}/concurrentqueue_x64-windows/include
     ${CMAKE_SOURCE_DIR}/enet_x64-windows/include
-    ${CMAKE_SOURCE_DIR}/nvtx/c/include
     "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/include"
     "C:/Program Files/NVIDIA Corporation/Video_Codec_SDK_13.0.19/Interface"
 )
@@ -85,9 +84,6 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
         "${CMAKE_SOURCE_DIR}/isa-l/isa-l.dll"
         "$<TARGET_FILE_DIR:${PROJECT_NAME}>/isa-l.dll"
 )
-
-# NVTX v3ヘッダを強制的にインクルードして、バージョン競合エラー(C1189)を解決する
-target_compile_options(${PROJECT_NAME} PRIVATE "/FInvtx3/nvtx3.hpp")
 
 # ライブラリのリンク
 target_link_libraries(${PROJECT_NAME}
