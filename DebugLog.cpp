@@ -18,7 +18,7 @@
 
 namespace {
 
-using Clock = std::chrono::system_clock;
+using Clock = std::chrono::steady_clock;
 
 struct LogMsg {
     std::wstring text;
@@ -62,13 +62,20 @@ inline DWORD GetThreadIdFast() noexcept {
 }
 
 inline std::wstring NowString() {
+    static const auto start = Clock::now();
     const auto now = Clock::now();
-    const auto ms  = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
-    std::time_t t  = Clock::to_time_t(now);
-    std::tm lt{};
-    localtime_s(&lt, &t);
+    const auto elapsed = now - start;
+    const auto hours = std::chrono::duration_cast<std::chrono::hours>(elapsed);
+    const auto minutes = std::chrono::duration_cast<std::chrono::minutes>(elapsed - hours);
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(elapsed - hours - minutes);
+    const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed - hours - minutes - seconds);
+
     wchar_t buf[64]{};
-    std::swprintf(buf, 64, L"%02d:%02d:%02d.%03d", lt.tm_hour, lt.tm_min, lt.tm_sec, static_cast<int>(ms.count()));
+    std::swprintf(buf, 64, L"%02lld:%02lld:%02lld.%03lld",
+                  static_cast<long long>(hours.count()),
+                  static_cast<long long>(minutes.count()),
+                  static_cast<long long>(seconds.count()),
+                  static_cast<long long>(milliseconds.count()));
     return buf;
 }
 

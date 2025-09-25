@@ -559,7 +559,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                                     parsedInfoLocal.generation = g_streamGeneration.load(std::memory_order_acquire);
                                     g_parsedShardQueue.enqueue(std::move(parsedInfoLocal));
 
-                                    auto receive_data_time = std::chrono::system_clock::now();
+                                    auto receive_data_time = std::chrono::steady_clock::now();
                                     uint64_t receive_data_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(receive_data_time.time_since_epoch()).count();
 
                                     if (count % 60 == 0) DebugLog(L"ReceiveRawPacketsThread: Server FEC End to Client Receive End latency (ms): " +
@@ -691,7 +691,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
 
                                             g_parsedShardQueue.enqueue(std::move(parsed));
 
-                                            auto receive_data_time = std::chrono::system_clock::now();
+                                            auto receive_data_time = std::chrono::steady_clock::now();
                                             uint64_t receive_data_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(receive_data_time.time_since_epoch()).count();
                                             if (count % 60 == 0) DebugLog(L"ReceiveRawPacketsThread: Server FEC End to Client Receive End latency (ms): " +
                                                      std::to_wstring(receive_data_time_ts - worker_ts_val) + L" ms");
@@ -856,7 +856,7 @@ void FecWorkerThread(int threadId) {
                 }
                 g_encodedFrameQueue.enqueue(std::move(frame_to_decode));
 
-                auto fec_end_time = std::chrono::system_clock::now();
+                auto fec_end_time = std::chrono::steady_clock::now();
                 uint64_t fec_end_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(fec_end_time.time_since_epoch()).count();
 
                 if (processed_count % 60 == 0) DebugLog(L"FecWorkerThread: Server FEC End to Client FEC End latency for frame " + std::to_wstring(frameNumber) + L": " +

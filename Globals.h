@@ -164,7 +164,7 @@ extern std::condition_variable g_readyGpuFrameQueueCV;
 extern std::unordered_map<uint32_t, uint64_t> g_fecEndTimeByStreamFrame;
 extern std::mutex g_fecEndTimeMutex;
 
-// New: WGC capture timestamps keyed by stream frame number (server system_clock ms)
+// New: WGC capture timestamps keyed by stream frame number (server steady_clock ms)
 extern std::unordered_map<uint32_t, uint64_t> g_wgcCaptureTimestampByStreamFrame;
 extern std::mutex g_wgcTsMutex;
 

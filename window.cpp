@@ -2095,7 +2095,7 @@ void RenderFrame() {
                 }
             }
             if (wgc_ts_ms != 0) {
-                auto frameEndSys = std::chrono::system_clock::now();
+                auto frameEndSys = std::chrono::steady_clock::now();
                 uint64_t frameEndMs =
                     std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
                 wgc_to_renderend_ms = static_cast<int64_t>(frameEndMs) - static_cast<int64_t>(wgc_ts_ms);
