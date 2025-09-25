@@ -2318,13 +2318,14 @@ void SendFinalResolution(int width, int height) {
 
     size_t shard_len = 0; // シャードの長さ
     bool fec_success = false;
+    std::vector<std::vector<uint8_t>> dataShards;
     std::vector<std::vector<uint8_t>> parityShards;
-    std::vector<uint8_t> paddedData;
+
     if (original_data_len > 0) { // データが存在する場合は FEC を適用
-        // ISA-L によるエンコード：パディング長は関数で決定（64B アライン）
         fec_success = EncodeFEC_ISAL(
             data.data(),
             original_data_len,
+            dataShards,
             parityShards,
             shard_len,
             RS_K,
@@ -2332,12 +2333,6 @@ void SendFinalResolution(int width, int height) {
         );
         if (!fec_success) {
             DebugLog(L"SendFinalResolution: EncodeFEC_ISAL failed.");
-        } else {
-            const size_t padded_data_len = shard_len * static_cast<size_t>(RS_K);
-            paddedData.assign(padded_data_len, 0);
-            if (!data.empty() && !paddedData.empty()) {
-                std::memcpy(paddedData.data(), data.data(), std::min(padded_data_len, original_data_len));
-            }
         }
     } else {
         DebugLog(L"SendFinalResolution: original_data_len is 0. Skipping FEC.");
@@ -2372,8 +2367,7 @@ void SendFinalResolution(int width, int height) {
             header.originalDataLen = htonl(static_cast<uint32_t>(original_data_len));
 
             packetData.insert(packetData.end(), reinterpret_cast<uint8_t*>(&header), reinterpret_cast<uint8_t*>(&header) + shardHeaderSize);
-            const uint8_t* shardStart = paddedData.data() + static_cast<size_t>(i) * shard_len;
-            packetData.insert(packetData.end(), shardStart, shardStart + shard_len);
+            packetData.insert(packetData.end(), dataShards[i].begin(), dataShards[i].end());
 
             if (packetData.data() != nullptr && packetData.size() > 0 && packetData.size() <= SIZE_PACKET_SIZE) {
                 if (sendto(udpSocket, reinterpret_cast<const char*>(packetData.data()), static_cast<int>(packetData.size()), 0, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) == SOCKET_ERROR) {
@@ -2384,7 +2378,7 @@ void SendFinalResolution(int width, int height) {
             }
         }
 
-        // パリティシャードの送信
+        // パリティシャードの送信 (変更なし)
         for (int i = 0; i < RS_M; ++i) {
             std::vector<uint8_t> packetData;
             packetData.reserve(shardHeaderSize + shard_len);
