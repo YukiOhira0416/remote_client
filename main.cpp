@@ -102,9 +102,6 @@ extern std::atomic<int> currentResolutionHeight; // Assumed to be in window.cpp 
 #define RECEIVE_PORT_REBOOT_START 8150
 #define RECEIVE_PORT_REBOOT_END 8151
 
-// Keep layout/comments around this block.
-static constexpr unsigned NET_POLL_TIMEOUT_MS = 2; // was ~10; finer granularity
-
 // FEC worker threads and control variables
 std::atomic<bool> send_bandw_Running = true;
 std::atomic<bool> receive_resend_Running = true;
@@ -499,13 +496,9 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
     std::chrono::steady_clock::time_point last_timeout_check = std::chrono::steady_clock::now();
 
     while (receive_raw_packet_Running) {
-        
-        // Service ENet events with a timeout (e.g., 10ms)
         int service_result;
-        service_result = enet_host_service(server_host, &event, NET_POLL_TIMEOUT_MS);
+        service_result = enet_host_service(server_host, &event, 0);
 
-        auto receive_start_time = std::chrono::system_clock::now();
-        uint64_t receive_start_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(receive_start_time.time_since_epoch()).count();
         if (service_result > 0) {
             switch (event.type) {
                 case ENET_EVENT_TYPE_CONNECT:
@@ -745,12 +738,8 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
             ClearTimedOutAppFragments(); 
             last_timeout_check = now;
         }
-
-        auto receive_end_time = std::chrono::system_clock::now();
-        uint64_t receive_end_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(receive_end_time.time_since_epoch()).count();
-        if (count % 60 == 0) DebugLog(L"ReceiveRawPacketsThread: Client Receive Start to Process End latency: " +
-                         std::to_wstring(receive_end_time_ts - receive_start_time_ts) + L" ms");
-        count++;
+        // カウンタを60,000でリセット（約1000分=16.7時間分のログ）
+        count = (count + 1) % 60000;
     }
 
     if (server_host) {
@@ -1006,6 +995,8 @@ void ListenForRebootCommands() {
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
     // SetProcessDpiAwarenessContextが使えない場合はSetProcessDPIAwareを使う
+    timeBeginPeriod(1);
+
     HMODULE hUser32 = LoadLibraryA("user32.dll");
     if (hUser32) {
         typedef BOOL (WINAPI *SetDpiAwarenessContextFunc)(HANDLE);
@@ -1086,8 +1077,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         WSACleanup();
         return 1;
     }
-
-    timeBeginPeriod(1);
 
     // Initialize window and DirectX
     if (!InitWindow(hInstance, nCmdShow)) {
