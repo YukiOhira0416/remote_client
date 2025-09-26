@@ -98,8 +98,7 @@ inline std::wstring HResultToHexWString(HRESULT hr) {
 }
 
 enum class PlaneLayout : uint32_t {
-    YUV444,
-    NV12
+    YUV444
 };
 
 // ReadyGpuFrame struct for D3D12
