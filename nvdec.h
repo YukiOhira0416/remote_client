@@ -62,7 +62,7 @@ private:
     void copyDecodedFrameToD3D12(CUVIDPARSERDISPINFO* pDispInfo);
     void releaseDecoderResources();
     bool reconfigureDecoder(CUVIDEOFORMAT* pVideoFormat);
-    uint32_t determineDecodeSurfaceCount(const CUVIDEOFORMAT* pVideoFormat) const;
+    uint32_t determineDecodeSurfaceCount(const CUVIDEOFORMAT* pVideoFormat, bool logDecision = true) const;
 
     CUcontext m_cuContext;
     ID3D12Device* m_pD3D12Device;

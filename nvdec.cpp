@@ -397,6 +397,19 @@ int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoForm
             // DO NOT reconfigure just because currentResolutionWidth/Height changed.
             // Target display size is a renderer concern; decoder operates at coded size.
 
+            // However, if the server now requires more decode surfaces (e.g. GOP length
+            // grew), we must recreate the decoder with a larger surface pool. Without
+            // this, NVDEC stalls once the reference queue is exhausted.
+            const uint32_t requiredSurfaces = self->determineDecodeSurfaceCount(pVideoFormat, false);
+            if (requiredSurfaces > self->m_numDecodeSurfaces) {
+                std::wstringstream wss;
+                wss << L"HandleVideoSequence: decode surface requirement increased from "
+                    << self->m_numDecodeSurfaces << L" to " << requiredSurfaces
+                    << L". Recreating decoder.";
+                DebugLog(wss.str());
+                needsReconfig = true;
+            }
+
             if (needsReconfig) {
                 if (!self->reconfigureDecoder(pVideoFormat)) {
                     DebugLog(L"HandleVideoSequence: Failed to reconfigure decoder.");
@@ -421,7 +434,7 @@ int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoForm
     return result; // Proceed with decoding
 }
 
-uint32_t FrameDecoder::determineDecodeSurfaceCount(const CUVIDEOFORMAT* pVideoFormat) const {
+uint32_t FrameDecoder::determineDecodeSurfaceCount(const CUVIDEOFORMAT* pVideoFormat, bool logDecision) const {
     if (!pVideoFormat) {
         return static_cast<uint32_t>(FrameDecoder::NUM_DECODE_SURFACES);
     }
@@ -453,10 +466,12 @@ uint32_t FrameDecoder::determineDecodeSurfaceCount(const CUVIDEOFORMAT* pVideoFo
         return parserMax;
     }
 
-    std::wstringstream wss;
-    wss << L"determineDecodeSurfaceCount: stream requires at least " << minSurfaces
-        << L", allocating " << requested << L" surfaces.";
-    DebugLog(wss.str());
+    if (logDecision) {
+        std::wstringstream wss;
+        wss << L"determineDecodeSurfaceCount: stream requires at least " << minSurfaces
+            << L", allocating " << requested << L" surfaces.";
+        DebugLog(wss.str());
+    }
 
     return requested;
 }
