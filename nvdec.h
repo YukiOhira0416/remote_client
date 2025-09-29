@@ -30,7 +30,10 @@ struct FrameTimings {
 
 class FrameDecoder {
 public:
-    static const int NUM_DECODE_SURFACES = 20;
+    // Maximum number of decode surfaces the parser can expose. The actual number
+    // of allocated surfaces is determined per-stream based on the sequence
+    // parameters that the server provides (e.g., GOP length / reference frames).
+    static const int NUM_DECODE_SURFACES = 64;
     
     FrameDecoder(CUcontext cuContext, ID3D12Device* pD3D12Device);
     ~FrameDecoder();
@@ -59,6 +62,7 @@ private:
     void copyDecodedFrameToD3D12(CUVIDPARSERDISPINFO* pDispInfo);
     void releaseDecoderResources();
     bool reconfigureDecoder(CUVIDEOFORMAT* pVideoFormat);
+    uint32_t determineDecodeSurfaceCount(const CUVIDEOFORMAT* pVideoFormat) const;
 
     CUcontext m_cuContext;
     ID3D12Device* m_pD3D12Device;
@@ -98,6 +102,7 @@ private:
     int m_frameHeight = 0;
     PlaneLayout m_planeLayout;
     bool m_isHighBitDepth = false;
+    uint32_t m_numDecodeSurfaces = NUM_DECODE_SURFACES;
 
     // Cropping parameters from video sequence
     int m_cropLeft = 0, m_cropTop = 0, m_cropRight = 0, m_cropBottom = 0;

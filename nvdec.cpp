@@ -421,6 +421,45 @@ int FrameDecoder::HandleVideoSequence(void* pUserData, CUVIDEOFORMAT* pVideoForm
     return result; // Proceed with decoding
 }
 
+uint32_t FrameDecoder::determineDecodeSurfaceCount(const CUVIDEOFORMAT* pVideoFormat) const {
+    if (!pVideoFormat) {
+        return static_cast<uint32_t>(FrameDecoder::NUM_DECODE_SURFACES);
+    }
+
+    const uint32_t parserMax = static_cast<uint32_t>(FrameDecoder::NUM_DECODE_SURFACES);
+    const uint32_t minSurfaces = std::max(1u, pVideoFormat->min_num_decode_surfaces);
+
+    // Add a small amount of headroom so we can keep decoding while the renderer
+    // is consuming previously decoded pictures. Streams with long GOPs (e.g., I/P
+    // only with interval ~120) tend to advertise a larger DPB requirement.
+    uint32_t headroom = 4;
+    if (minSurfaces >= 8) {
+        headroom = std::min<uint32_t>(16, minSurfaces / 2);
+    }
+
+    uint32_t requested = minSurfaces + headroom;
+    requested = std::max(requested, std::min<uint32_t>(8u, parserMax));
+
+    if (requested > parserMax) {
+        requested = parserMax;
+    }
+
+    if (requested < minSurfaces) {
+        std::wstringstream warn;
+        warn << L"determineDecodeSurfaceCount: stream requires " << minSurfaces
+             << L" surfaces but parser limit is " << parserMax << L". Clamping to parser limit.";
+        DebugLog(warn.str());
+        return parserMax;
+    }
+
+    std::wstringstream wss;
+    wss << L"determineDecodeSurfaceCount: stream requires at least " << minSurfaces
+        << L", allocating " << requested << L" surfaces.";
+    DebugLog(wss.str());
+
+    return requested;
+}
+
 bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
     // Get the target display resolution from global variables.
     // This resolution is determined by the window size and sent to the server.
@@ -446,14 +485,15 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
     m_videoDecoderCreateInfo.ChromaFormat = pVideoFormat->chroma_format;
     m_videoDecoderCreateInfo.ulWidth = pVideoFormat->coded_width;
     m_videoDecoderCreateInfo.ulHeight = pVideoFormat->coded_height;
-    m_videoDecoderCreateInfo.ulNumDecodeSurfaces = FrameDecoder::NUM_DECODE_SURFACES; // A pool of surfaces
+    m_numDecodeSurfaces = determineDecodeSurfaceCount(pVideoFormat);
+    m_videoDecoderCreateInfo.ulNumDecodeSurfaces = m_numDecodeSurfaces; // A pool of surfaces
     m_videoDecoderCreateInfo.ulCreationFlags = cudaVideoCreate_PreferCUVID;
     m_videoDecoderCreateInfo.DeinterlaceMode = cudaVideoDeinterlaceMode_Weave;
     // Set target size to the actual coded size so decoder does NO scaling.
     // We will perform a crop manually during the cuMemcpy2D.
     m_videoDecoderCreateInfo.ulTargetWidth = pVideoFormat->coded_width;
     m_videoDecoderCreateInfo.ulTargetHeight = pVideoFormat->coded_height;
-    m_videoDecoderCreateInfo.ulNumOutputSurfaces = 12; // more headroom during resize/IDR
+    m_videoDecoderCreateInfo.ulNumOutputSurfaces = std::min<uint32_t>(12u, m_numDecodeSurfaces);
 
     const bool isHighBitDepth = (pVideoFormat->bit_depth_luma_minus8 > 0) ||
                                 (pVideoFormat->bit_depth_chroma_minus8 > 0);
@@ -484,7 +524,7 @@ bool FrameDecoder::createDecoder(CUVIDEOFORMAT* pVideoFormat) {
 
 bool FrameDecoder::allocateFrameBuffers() {
     // pHeapY/pHeapUV are no longer used but can remain in the struct
-    m_frameResources.resize(m_videoDecoderCreateInfo.ulNumDecodeSurfaces);
+    m_frameResources.resize(m_numDecodeSurfaces);
 
 // [NEW] Import D3D12 fence as CUDA external semaphore (once)
 if (!g_cuCopyFenceSemaphore) {
@@ -674,6 +714,12 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     }
 
     // From here, we can return on error and the destructors will handle cleanup.
+    if (static_cast<size_t>(pDispInfo->picture_index) >= self->m_frameResources.size()) {
+        DebugLog(L"HandlePictureDisplay: picture_index out of range for allocated surfaces.");
+        cuCtxPopCurrent(NULL);
+        return 0;
+    }
+
     auto& fr = self->m_frameResources[pDispInfo->picture_index];
 
     if (!fr.pCudaArrayY || !fr.pCudaArrayU || !fr.pCudaArrayV) {
