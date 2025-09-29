@@ -427,7 +427,8 @@ uint32_t FrameDecoder::determineDecodeSurfaceCount(const CUVIDEOFORMAT* pVideoFo
     }
 
     const uint32_t parserMax = static_cast<uint32_t>(FrameDecoder::NUM_DECODE_SURFACES);
-    const uint32_t minSurfaces = std::max(1u, pVideoFormat->min_num_decode_surfaces);
+    const uint32_t minSurfaces = std::max<uint32_t>(
+        1u, static_cast<uint32_t>(pVideoFormat->min_num_decode_surfaces));
 
     // Add a small amount of headroom so we can keep decoding while the renderer
     // is consuming previously decoded pictures. Streams with long GOPs (e.g., I/P
