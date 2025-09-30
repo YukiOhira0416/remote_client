@@ -1,6 +1,5 @@
 # Build directories
 build/
-out/
 
 # Visual Studio generated files
 *.vcxproj.user
@@ -56,13 +55,3 @@ Makefile
 .Trashes
 ehthumbs.db
 Thumbs.db
-
-# IDE files
-.vscode/settings.json
-.vscode/launch.json
-.vscode/extensions.json
-*.code-workspace
-
-# Keep .vscode/tasks.json for build configuration
-!.vscode/tasks.json
-!.vscode/c_cpp_properties.json
