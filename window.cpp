@@ -13,6 +13,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <cstring>
+#include <thread>
 #include "DebugLog.h"
 #include "ReedSolomon.h"
 #include <algorithm> // For std::min, std::abs
@@ -448,15 +449,31 @@ bool CreateOverlayResources(); // New function for overlay
 void CleanupOverlayResources(); // New function for overlay cleanup
 bool InitD3D();
 
-// ---- Device-loss recovery (no goto, preserve layout/comments) ----
+extern "C" void Nvdec_OnD3DDeviceLost();
 
+static bool InitD3D_WithRetry(int attempts, int delayMs)
+{
+    for (int i = 0; i < attempts; ++i) {
+        if (InitD3D()) {
+            return true;
+        }
+        std::wstringstream w;
+        w << L"InitD3D_WithRetry: attempt " << (i + 1) << L"/" << attempts << L" failed.";
+        DebugLog(w.str());
+        std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+    }
+    return false;
+}
+
+// ---- Device-loss recovery (no goto, preserve layout/comments) ----
 static void HandleDeviceRemovedAndReinit() noexcept {
-    if (g_deviceResetInProgress.exchange(true)) {
-        // Already handling a reset in another code path; do nothing.
+    if (g_deviceResetInProgress.exchange(true, std::memory_order_acq_rel)) {
+        DebugLog(L"HandleDeviceRemovedAndReinit: already in progress.");
         return;
     }
 
-    // Log remove/reset reason if available
+    DebugLog(L"HandleDeviceRemovedAndReinit: begin.");
+
     if (g_d3d12Device) {
         HRESULT gr = g_d3d12Device->GetDeviceRemovedReason();
         DebugLog(L"D3D12 device removed/reset. Reason: " + HResultToHexWString(gr));
@@ -464,25 +481,56 @@ static void HandleDeviceRemovedAndReinit() noexcept {
         DebugLog(L"D3D12 device removed/reset. Reason: (device nullptr)");
     }
 
-    // Drain GPU work while pumping messages; preserves timing/logging
-    WaitForGpu();
+    // Give Present/rendering threads a moment to observe the reset flag
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
 
-    // Clear in-flight frames and reorder buffers to avoid stale resources
+    // Ensure CUDA/NVDEC drops references to the old fence/semaphore
+    Nvdec_OnD3DDeviceLost();
+
+    // Drain GPU work while pumping messages; preserves timing/logging
+    try {
+        WaitForGpu();
+    } catch (...) {
+        DebugLog(L"HandleDeviceRemovedAndReinit: WaitForGpu threw, continuing teardown.");
+    }
+
     {
         std::lock_guard<std::mutex> qlock(g_readyGpuFrameQueueMutex);
         g_readyGpuFrameQueue.clear();
     }
-    ClearReorderState(); // do not touch MonitorSharedMemory()
+    ClearReorderState();
 
-    // Tear down and re-create the D3D12 pipeline (InitD3D already resets & recreates)
-    if (!InitD3D()) {
-        DebugLog(L"HandleDeviceRemovedAndReinit: InitD3D() failed.");
-        // We intentionally return; the main loop/logging survives.
+    if (g_frameLatencyWaitableObject) {
+        CloseHandle(g_frameLatencyWaitableObject);
+        g_frameLatencyWaitableObject = nullptr;
+    }
+
+    try { CleanupOverlayResources(); } catch (...) {}
+
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) g_renderTargets[i].Reset();
+    g_rtvHeap.Reset();
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) g_commandAllocator[i].Reset();
+    g_commandList.Reset();
+    g_fence.Reset();
+    if (g_fenceEvent) { CloseHandle(g_fenceEvent); g_fenceEvent = nullptr; }
+    if (g_copyFenceSharedHandle) { CloseHandle(g_copyFenceSharedHandle); g_copyFenceSharedHandle = nullptr; }
+    g_copyFence.Reset();
+    g_copyFenceValue = 0;
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) g_renderFenceValues[i] = 0;
+    g_fenceValue = 0;
+    g_d3d12CommandQueue.Reset();
+    g_swapChain.Reset();
+    g_d3d12Device.Reset();
+
+    DebugLog(L"HandleDeviceRemovedAndReinit: D3D12 objects released. Retrying InitD3D...");
+
+    const bool ok = InitD3D_WithRetry(30, 100);
+    if (!ok) {
+        DebugLog(L"HandleDeviceRemovedAndReinit: FAILED to reinitialize D3D12 after retries. Core objects remain null. Rendering will be skipped.");
         g_deviceResetInProgress.store(false, std::memory_order_release);
         return;
     }
 
-    // Force at least one Present to refresh the screen after reset
     g_forcePresentOnce.store(true, std::memory_order_release);
 
     DebugLog(L"HandleDeviceRemovedAndReinit: D3D12 re-initialized successfully.");
@@ -1835,6 +1883,10 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 }
 
 static void ResizeSwapChainOnRenderThread(int newW, int newH) {
+    if (g_deviceResetInProgress.load(std::memory_order_acquire)) {
+        DebugLog(L"RenderThread: skip ResizeBuffers because device reset is in progress.");
+        return;
+    }
     if (!g_swapChain || !g_d3d12Device || !g_d3d12CommandQueue) return;
 
     // Get existing desc; skip if already correct
@@ -1937,6 +1989,9 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 }
 
 void RenderFrame() {
+    if (g_deviceResetInProgress.load(std::memory_order_acquire)) {
+        return;
+    }
     // Frame latency wait scope
     {
         bool hasReadyFrame = false;
