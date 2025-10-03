@@ -12,6 +12,26 @@ static CUexternalSemaphore g_cuCopyFenceSemaphore = nullptr;
 // [NEW] Per-frame fence value counter (monotonic). If there is another global frame counter, you may reuse it.
 static std::atomic<uint64_t> g_cudaCopyFenceValue{0};
 
+extern "C" void Nvdec_OnD3DDeviceLost()
+{
+    if (g_cuCopyFenceSemaphore) {
+        CUresult cr = cuDestroyExternalSemaphore(g_cuCopyFenceSemaphore);
+        if (cr != CUDA_SUCCESS) {
+            const char* es = nullptr;
+            cuGetErrorString(cr, &es);
+            std::wstring msg = L"Nvdec_OnD3DDeviceLost: cuDestroyExternalSemaphore failed: ";
+            if (es) {
+                std::string s(es);
+                msg += std::wstring(s.begin(), s.end());
+            }
+            DebugLog(msg);
+        }
+        g_cuCopyFenceSemaphore = nullptr;
+    }
+    g_cudaCopyFenceValue.store(0, std::memory_order_relaxed);
+    DebugLog(L"Nvdec_OnD3DDeviceLost: destroyed CUDA external semaphore and reset fence counter.");
+}
+
 #include <fstream>
 #include <vector>
 #include <algorithm>
