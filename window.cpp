@@ -1937,6 +1937,9 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 }
 
 void RenderFrame() {
+    static std::atomic<bool> s_loggedDeviceResetWait{false};
+    static std::atomic<bool> s_loggedMissingCoreObjects{false};
+
     // Frame latency wait scope
     {
         bool hasReadyFrame = false;
@@ -2019,10 +2022,29 @@ void RenderFrame() {
     }
 
     // --- D3D12 RenderFrame ---
-    if (!g_commandList || !g_d3d12CommandQueue || !g_swapChain || !g_fence) {
-        DebugLog(L"RenderFrame (D3D12): Core D3D12 objects not initialized.");
+    if (!g_commandList || !g_d3d12CommandQueue || !g_swapChain || !g_fence || !g_d3d12Device) {
+        if (!app_running_atomic.load(std::memory_order_acquire)) {
+            // Shutdown in progress; don't attempt to resurrect the device.
+            return;
+        }
+
+        if (g_deviceResetInProgress.load(std::memory_order_acquire)) {
+            if (!s_loggedDeviceResetWait.exchange(true, std::memory_order_acq_rel)) {
+                DebugLog(L"RenderFrame (D3D12): Waiting for device reset to complete.");
+            }
+            return;
+        }
+
+        if (!s_loggedMissingCoreObjects.exchange(true, std::memory_order_acq_rel)) {
+            DebugLog(L"RenderFrame (D3D12): Core D3D12 objects not initialized. Attempting recovery.");
+        }
+        HandleDeviceRemovedAndReinit();
         return;
     }
+
+    // Core objects are available again; clear throttled log state.
+    s_loggedDeviceResetWait.store(false, std::memory_order_release);
+    s_loggedMissingCoreObjects.store(false, std::memory_order_release);
 
     HRESULT hr; // for error checks
     ReadyGpuFrame renderedFrameData{}; // 描画したフレームのメタ（ログ用）
