@@ -501,6 +501,7 @@ struct TargetResolution { int width; int height; };
 // Dense 16:9 ladder from 8K to 360p + practical intermediate widths.
 static const TargetResolution kKnownResolutions[] = {
     {3840, 2160}, // 4K UHD
+    {2560, 1440}, // QHD
     {1920, 1080}, // FHD
     {1280, 720},  // HD
     {960,  540},  // qHD
