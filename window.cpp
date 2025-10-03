@@ -904,8 +904,8 @@ bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
         return false;
     }
 
-    const int initialWidth = 1280;
-    const int initialHeight = 720;
+    const int initialWidth = 1920;
+    const int initialHeight = 1080;
     if (!CreateWindowOnBestMonitor(hInstance, nCmdShow, initialWidth, initialHeight)) {
         return false;
     }
