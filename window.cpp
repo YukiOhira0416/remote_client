@@ -504,9 +504,6 @@ static const TargetResolution kKnownResolutions[] = {
     {2560, 1440}, // QHD
     {1920, 1080}, // FHD
     {1280, 720},  // HD
-    {960,  540},  // qHD
-    {768,  432},  // 432p
-    {640,  360}   // 360p
 };
 
 // 既知解像度にスナップするユーティリティ
@@ -856,8 +853,8 @@ bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
         return false;
     }
 
-    const int initialWidth = 1280;
-    const int initialHeight = 720;
+    const int initialWidth = 1920;
+    const int initialHeight = 1080;
     if (!CreateWindowOnBestMonitor(hInstance, nCmdShow, initialWidth, initialHeight)) {
         return false;
     }
