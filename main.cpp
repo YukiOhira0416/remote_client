@@ -246,8 +246,8 @@ ThreadSafePriorityQueue<ParsedShardInfo, std::vector<ParsedShardInfo>, ParsedSha
 ThreadConfig getOptimalThreadConfig(){
     ThreadConfig config;
 
-    config.receiver = 2;
-    config.fec = 2;
+    config.receiver = 4;
+    config.fec = 3;
     config.decoder = 1;
     config.render = 1;
     config.RS_K = 8;
