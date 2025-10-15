@@ -128,6 +128,9 @@ struct FrameMetadata {
     uint64_t firstTimestamp = 0;
     uint32_t originalDataLen = 0;
     uint64_t first_seen_time_ms = 0;
+    // FEC parameters (per-frame, from ShardInfoHeader)
+    uint32_t rs_k = 0;
+    uint32_t rs_m = 0;
 };
 std::unordered_map<int, FrameMetadata> g_frameMetadata;
 std::mutex g_frameMetadataMutex;
@@ -250,8 +253,8 @@ ThreadConfig getOptimalThreadConfig(){
     config.fec = 3;
     config.decoder = 1;
     config.render = 1;
-    config.RS_K = 8;
-    config.RS_M =1;
+    config.RS_K = 14;
+    config.RS_M = 8;
 
     return config;
 }
@@ -804,6 +807,9 @@ void FecWorkerThread(int threadId) {
                 meta.firstTimestamp = parsedInfo.wgcCaptureTimestamp;
                 meta.originalDataLen = parsedInfo.originalDataLen;
                 meta.first_seen_time_ms = SteadyNowMs();
+                // Keep per-frame RS parameters from ShardInfoHeader
+                meta.rs_k = parsedInfo.totalDataShards;
+                meta.rs_m = parsedInfo.totalParityShards;
             }
 
             auto& frameBuf = g_frameBuffer[frameNumber];
@@ -813,8 +819,10 @@ void FecWorkerThread(int threadId) {
                 frameBuf[shardIndex] = std::move(parsedInfo.shardData);
             }
 
-            // Check if we have enough shards to attempt decoding
-            if (frameBuf.size() >= static_cast<size_t>(RS_K)) {
+            // Check if we have enough shards to attempt decoding (use per-frame K)
+            const uint32_t rsKForFrame_local =
+                (meta.rs_k != 0) ? meta.rs_k : static_cast<uint32_t>(RS_K);
+            if (frameBuf.size() >= static_cast<size_t>(rsKForFrame_local)) {
                 readyToDecode = true;
                 // Copy data needed for decoding to local variables, to release locks sooner
                 for (const auto& pair : frameBuf) {
@@ -832,9 +840,12 @@ void FecWorkerThread(int threadId) {
 
         if (readyToDecode) {
             std::vector<uint8_t> decodedFrameData;
+            // Use per-frame K/M (fallback to globals if not set, for safety)
+            const uint32_t rsKForFrame = (metadataForDecode.rs_k != 0) ? metadataForDecode.rs_k : static_cast<uint32_t>(RS_K);
+            const uint32_t rsMForFrame = (metadataForDecode.rs_m != 0) ? metadataForDecode.rs_m : static_cast<uint32_t>(RS_M);
             if (DecodeFEC_ISAL(
-                    shardsForDecode, RS_K, RS_M, metadataForDecode.originalDataLen, decodedFrameData)) {
-                
+                    shardsForDecode, rsKForFrame, rsMForFrame, metadataForDecode.originalDataLen, decodedFrameData)) {
+
                 if (dumpEncodedStreamToFiles.load()) {
                     std::lock_guard<std::mutex> lock(hevcoutputMutex);
                     SaveEncodedStreamToFile(decodedFrameData, "output_hevc");
