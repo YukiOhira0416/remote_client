@@ -567,7 +567,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                                     uint64_t receive_data_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(receive_data_time.time_since_epoch()).count();
 
                                     if (count % 60 == 0) DebugLog(L"ReceiveRawPacketsThread: Server FEC End to Client Receive End latency (ms): " +
-                                                     std::to_wstring(receive_data_time_ts - worker_ts_val) + L" ms");
+                                                     std::to_wstring(receive_data_time_ts - worker_ts_val + g_TimeOffsetNs / 1000000) + L" ms");
 
                                 } else {
                                     DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Full shard packet (after WorkerTS) too small for WGCCaptureTS and SIH. Size: " + std::to_wstring(size_after_worker_ts));
@@ -698,7 +698,7 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                                             auto receive_data_time = std::chrono::system_clock::now();
                                             uint64_t receive_data_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(receive_data_time.time_since_epoch()).count();
                                             if (count % 60 == 0) DebugLog(L"ReceiveRawPacketsThread: Server FEC End to Client Receive End latency (ms): " +
-                                                     std::to_wstring(receive_data_time_ts - worker_ts_val) + L" ms");
+                                                     std::to_wstring(receive_data_time_ts - worker_ts_val + g_TimeOffsetNs / 1000000) + L" ms");
                                         } else {
                                             DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) +
                                                      L"]: Reassembled size too small for headers.");
@@ -872,7 +872,7 @@ void FecWorkerThread(int threadId) {
                 uint64_t fec_end_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(fec_end_time.time_since_epoch()).count();
 
                 if (processed_count % 60 == 0) DebugLog(L"FecWorkerThread: Server FEC End to Client FEC End latency for frame " + std::to_wstring(frameNumber) + L": " +
-                         std::to_wstring(fec_end_time_ts - parsedInfo.server_fec_timestamp) + L" ms");
+                         std::to_wstring(fec_end_time_ts - parsedInfo.server_fec_timestamp + g_TimeOffsetNs / 1000000) + L" ms");
 
             } else {
                 // Decoding failed, but we might get more shards. Since we already removed it from the buffer,
