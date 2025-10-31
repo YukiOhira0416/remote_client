@@ -2085,7 +2085,7 @@ void RenderFrame() {
             s_hasLastLoggedStreamFrame && (log_stream_frame_no == s_lastLoggedStreamFrame);
 
         // 既存の 60 フレーム毎の条件は維持しつつ、(1) 同一フレームの再レンダリング、(2) 差分が 0 以下 を抑制
-        if ((RenderCount % 60) == 0) {
+        if ((RenderCount % 1) == 0) {
             if (!isDuplicateFrameLog && wgc_to_renderend_ms > 0) {
                 DebugLog(L"RenderFrame Latency (unsynced clocks): StreamFrame #"
                     + std::to_wstring(log_stream_frame_no)
