@@ -29,6 +29,7 @@
 #include "Globals.h"
 #include "AppShutdown.h"
 #include "main.h"
+#include "TimeSyncClient.h"
 
 // Condition variable to signal when the window is shown
 extern std::mutex g_windowShownMutex;
@@ -2073,7 +2074,7 @@ void RenderFrame() {
                 auto frameEndSys = std::chrono::system_clock::now();
                 uint64_t frameEndMs =
                     std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
-                wgc_to_renderend_ms = static_cast<int64_t>(frameEndMs) - static_cast<int64_t>(wgc_ts_ms);
+                wgc_to_renderend_ms = static_cast<int64_t>(frameEndMs) - static_cast<int64_t>(wgc_ts_ms) + g_TimeOffsetNs;
             }
         }
 

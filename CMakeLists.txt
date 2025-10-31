@@ -62,6 +62,7 @@ set(SOURCES
     ReedSolomon.cpp
     nvdec.cpp
     AppShutdown.cpp
+    TimeSyncClient.cpp
 )
 
 # ヘッダーファイル
@@ -73,6 +74,7 @@ set(HEADERS
     ReedSolomon.h
     nvdec.h
     AppShutdown.h
+    TimeSyncClient.h
 )
 
 # 実行ファイルを作成
