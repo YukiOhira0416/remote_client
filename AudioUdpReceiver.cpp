@@ -31,6 +31,9 @@
 
 #include <Windows.h>
 #include <mmsystem.h>
+#include <mmreg.h>
+#include <ks.h>
+#include <ksmedia.h>
 
 #include "TimeSyncClient.h"
 
