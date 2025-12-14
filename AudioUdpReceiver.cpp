@@ -20,14 +20,22 @@
 #include <ws2tcpip.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <functional>
 #include <mutex>
+#include <queue>
 #include <thread>
 #include <vector>
 
+#include <Windows.h>
+#include <mmsystem.h>
+
+#include "TimeSyncClient.h"
+
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "winmm.lib")
 
 struct ReceivedAudioPacket {
     uint64_t captureTimestampMs = 0;  // server-side frame timestamp (ms)
@@ -41,6 +49,16 @@ struct ReceivedAudioPacket {
 namespace {
 
 constexpr size_t kMaxUdpPayload = 64 * 1024;  // generous buffer for UDP packets
+
+uint64_t NowNs() {
+    using namespace std::chrono;
+    return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+struct QueuedAudioPacket {
+    ReceivedAudioPacket packet;
+    uint64_t clientPlayTimeNs = 0;
+};
 
 bool ParseAudioPacket(const uint8_t* data, size_t size, ReceivedAudioPacket& out) {
     const size_t headerSize = sizeof(uint64_t) * 2 + sizeof(uint32_t) * 4;
@@ -100,6 +118,183 @@ private:
 
 }  // namespace
 
+class AudioSyncPlayer {
+public:
+    AudioSyncPlayer() = default;
+
+    ~AudioSyncPlayer() { Stop(); }
+
+    bool Start() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (running_) {
+            return true;
+        }
+        running_ = true;
+        playbackThread_ = std::thread(&AudioSyncPlayer::PlaybackLoop, this);
+        return true;
+    }
+
+    void Stop() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!running_) {
+                return;
+            }
+            running_ = false;
+        }
+        cv_.notify_all();
+        if (playbackThread_.joinable()) {
+            playbackThread_.join();
+        }
+        CleanupWaveOut(true);
+    }
+
+    void Enqueue(const ReceivedAudioPacket& packet) {
+        const uint64_t serverCaptureNs = packet.captureTimestampMs * 1'000'000ull;
+        const int64_t offsetNs = g_TimeOffsetNs.load(std::memory_order_acquire);
+        const int64_t clientPlayNsSigned = static_cast<int64_t>(serverCaptureNs) - offsetNs;
+        if (clientPlayNsSigned < 0) {
+            return;  // too old; drop
+        }
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!running_) {
+            return;
+        }
+        queue_.push({packet, static_cast<uint64_t>(clientPlayNsSigned)});
+        cv_.notify_one();
+    }
+
+private:
+    struct ActiveBuffer {
+        WAVEHDR header{};
+        std::vector<uint8_t> data;
+    };
+
+    void PlaybackLoop() {
+        while (true) {
+            QueuedAudioPacket item;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait(lock, [&]() { return !running_ || !queue_.empty(); });
+                if (!running_ && queue_.empty()) {
+                    break;
+                }
+                item = queue_.front();
+
+                const uint64_t nowNs = NowNs();
+                if (item.clientPlayTimeNs > nowNs + 1'000'000'000ull) {
+                    cv_.wait_for(lock, std::chrono::milliseconds(10));
+                    continue;
+                }
+                if (item.clientPlayTimeNs > nowNs) {
+                    cv_.wait_until(lock, std::chrono::steady_clock::time_point(std::chrono::nanoseconds(item.clientPlayTimeNs)));
+                    continue;
+                }
+
+                queue_.pop();
+            }
+
+            SubmitPacket(item.packet);
+            CleanupCompletedHeaders();
+        }
+        CleanupCompletedHeaders();
+    }
+
+    bool EnsureWaveOut(uint32_t sampleRate, uint32_t channels) {
+        if (waveOut_) {
+            if (currentSampleRate_ == sampleRate && currentChannels_ == channels) {
+                return true;
+            }
+            CleanupWaveOut(false);
+        }
+
+        WAVEFORMATEXTENSIBLE format{};
+        format.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+        format.Format.nChannels = static_cast<WORD>(channels);
+        format.Format.nSamplesPerSec = sampleRate;
+        format.Format.wBitsPerSample = 32;
+        format.Format.nBlockAlign = format.Format.nChannels * format.Format.wBitsPerSample / 8;
+        format.Format.nAvgBytesPerSec = format.Format.nSamplesPerSec * format.Format.nBlockAlign;
+        format.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+        format.Samples.wValidBitsPerSample = 32;
+        format.dwChannelMask = (channels == 1) ? SPEAKER_FRONT_CENTER : (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
+        format.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+
+        MMRESULT res = waveOutOpen(&waveOut_, WAVE_MAPPER, reinterpret_cast<WAVEFORMATEX*>(&format), 0, 0, CALLBACK_NULL);
+        if (res != MMSYSERR_NOERROR) {
+            waveOut_ = nullptr;
+            return false;
+        }
+
+        currentSampleRate_ = sampleRate;
+        currentChannels_ = channels;
+        return true;
+    }
+
+    void SubmitPacket(const ReceivedAudioPacket& packet) {
+        if (!EnsureWaveOut(packet.sampleRate, packet.channels)) {
+            return;
+        }
+
+        ActiveBuffer buffer{};
+        buffer.data.resize(packet.interleavedSamples.size() * sizeof(float));
+        std::memcpy(buffer.data.data(), packet.interleavedSamples.data(), buffer.data.size());
+
+        buffer.header.lpData = reinterpret_cast<LPSTR>(buffer.data.data());
+        buffer.header.dwBufferLength = static_cast<DWORD>(buffer.data.size());
+
+        if (waveOutPrepareHeader(waveOut_, &buffer.header, sizeof(WAVEHDR)) != MMSYSERR_NOERROR) {
+            return;
+        }
+        if (waveOutWrite(waveOut_, &buffer.header, sizeof(WAVEHDR)) != MMSYSERR_NOERROR) {
+            waveOutUnprepareHeader(waveOut_, &buffer.header, sizeof(WAVEHDR));
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(mutex_);
+        active_.push_back(std::move(buffer));
+    }
+
+    void CleanupCompletedHeaders() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = active_.begin();
+        while (it != active_.end()) {
+            if (it->header.dwFlags & WHDR_DONE) {
+                waveOutUnprepareHeader(waveOut_, &it->header, sizeof(WAVEHDR));
+                it = active_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    void CleanupWaveOut(bool reset) {
+        if (waveOut_) {
+            if (reset) {
+                waveOutReset(waveOut_);
+            }
+            for (auto& buf : active_) {
+                waveOutUnprepareHeader(waveOut_, &buf.header, sizeof(WAVEHDR));
+            }
+            active_.clear();
+            waveOutClose(waveOut_);
+            waveOut_ = nullptr;
+        }
+    }
+
+    std::atomic<bool> running_{false};
+    std::thread playbackThread_;
+    std::queue<QueuedAudioPacket> queue_;
+    std::vector<ActiveBuffer> active_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+
+    HWAVEOUT waveOut_ = nullptr;
+    uint32_t currentSampleRate_ = 0;
+    uint32_t currentChannels_ = 0;
+};
+
 class AudioUdpReceiver {
 public:
     using PacketCallback = std::function<void(const ReceivedAudioPacket&)>;
@@ -144,19 +339,34 @@ public:
         return true;
     }
 
-    void Stop() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!running_) {
-            return;
+    bool StartWithSynchronizedPlayback() {
+        if (!audioPlayer_.Start()) {
+            return false;
         }
-        running_ = false;
-        if (socket_ != INVALID_SOCKET) {
-            closesocket(socket_);
-            socket_ = INVALID_SOCKET;
+        if (!Start([this](const ReceivedAudioPacket& packet) { audioPlayer_.Enqueue(packet); })) {
+            audioPlayer_.Stop();
+            return false;
+        }
+        return true;
+    }
+
+    void Stop() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!running_) {
+                return;
+            }
+            running_ = false;
+            if (socket_ != INVALID_SOCKET) {
+                closesocket(socket_);
+                socket_ = INVALID_SOCKET;
+            }
         }
         if (receiveThread_.joinable()) {
             receiveThread_.join();
         }
+        audioPlayer_.Stop();
+        std::lock_guard<std::mutex> lock(mutex_);
         callback_ = nullptr;
     }
 
@@ -193,5 +403,6 @@ private:
     std::thread receiveThread_;
     mutable std::mutex mutex_;
     WinsockScope winsock_;
+    AudioSyncPlayer audioPlayer_;
 };
 
