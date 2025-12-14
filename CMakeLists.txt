@@ -61,6 +61,7 @@ set(SOURCES
     Globals.cpp
     ReedSolomon.cpp
     nvdec.cpp
+    AudioUdpReceiver.cpp
     AppShutdown.cpp
     TimeSyncClient.cpp
 )
