@@ -23,9 +23,11 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <iomanip>
 #include <functional>
 #include <mutex>
 #include <queue>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -404,6 +406,17 @@ private:
             if (received <= 0) {
                 break;  // socket closed or error; exit loop and let Stop() clean up
             }
+
+            std::wstringstream logStream;
+            logStream << L"[AudioUdpReceiver] Received " << received << L" bytes: ";
+            logStream << std::hex << std::setw(2) << std::setfill(L'0');
+            for (int i = 0; i < received; ++i) {
+                logStream << std::setw(2) << static_cast<int>(buffer[i]);
+                if (i + 1 < received) {
+                    logStream << L" ";
+                }
+            }
+            DebugLog(logStream.str());
 
             ReceivedAudioPacket packet;
             if (ParseAudioPacket(buffer.data(), static_cast<size_t>(received), packet)) {
