@@ -3,6 +3,7 @@
 #include "Globals.h"
 #include "nvdec.h"
 #include "window.h"
+#include "AudioUdpReceiver.h"
 
 #include <Windows.h>
 #include <winsock2.h>
@@ -98,6 +99,9 @@ void RequestShutdown(std::atomic<bool>* appRunningPtr) {
 void ReleaseAllResources(const AppThreads& threads) {
     std::call_once(g_shutdownOnce, [&]() {
         DebugLog(L"ReleaseAllResources: Begin");
+
+        // Ensure the audio receiver is stopped before tearing down sockets.
+        StopAudioReceiver();
 
         // 1) Join all threads to ensure they have exited cleanly.
         try {

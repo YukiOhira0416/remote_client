@@ -76,6 +76,7 @@ set(HEADERS
     nvdec.h
     AppShutdown.h
     TimeSyncClient.h
+    AudioUdpReceiver.h
 )
 
 # 実行ファイルを作成
