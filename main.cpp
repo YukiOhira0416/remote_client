@@ -45,6 +45,7 @@
 #include <d3dx12.h>
 #include <d3d12.h>
 #include "TimeSyncClient.h"
+#include "AudioUdpReceiver.h"
 using namespace DebugLogAsync;
 
 // === 新規：ネットワーク準備・解像度ペンディング管理 ===
@@ -1133,6 +1134,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     std::thread timeSyncThread(TimeSyncClientThread);
     std::thread bandwidthThread(CountBandW);
     std::thread rebootListenerThread(ListenForRebootCommands);
+
+    if (!StartAudioReceiver()) {
+        DebugLog(L"wWinMain: Failed to start audio receiver.");
+    }
 
     std::vector<std::thread> receiverThreads;
     for (int i = 0; i < getOptimalThreadConfig().receiver; ++i) {

@@ -36,6 +36,7 @@
 #include <ksmedia.h>
 
 #include "TimeSyncClient.h"
+#include "AudioUdpReceiver.h"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "winmm.lib")
@@ -52,6 +53,7 @@ struct ReceivedAudioPacket {
 namespace {
 
 constexpr size_t kMaxUdpPayload = 64 * 1024;  // generous buffer for UDP packets
+constexpr uint16_t kAudioListenPort = 8200;
 
 uint64_t NowNs() {
     using namespace std::chrono;
@@ -408,4 +410,16 @@ private:
     WinsockScope winsock_;
     AudioSyncPlayer audioPlayer_;
 };
+
+namespace {
+    AudioUdpReceiver g_audioReceiver(kAudioListenPort);
+}
+
+bool StartAudioReceiver() {
+    return g_audioReceiver.StartWithSynchronizedPlayback();
+}
+
+void StopAudioReceiver() {
+    g_audioReceiver.Stop();
+}
 
