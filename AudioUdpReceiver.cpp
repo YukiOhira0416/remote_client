@@ -91,7 +91,26 @@ bool ParseAudioPacket(const uint8_t* data, size_t size, ReceivedAudioPacket& out
     read_u32(sampleCount);
 
     const size_t expectedSize = headerSize + static_cast<size_t>(sampleCount) * sizeof(float);
-    if (sampleCount == 0 || size < expectedSize) {
+    const bool sizeMatchesPayload = (size == expectedSize);
+
+    if (sampleCount == 0 || !sizeMatchesPayload) {
+        return false;
+    }
+
+    if (out.channels == 0 || out.channels > 8) {
+        return false;
+    }
+
+    if (out.frames == 0) {
+        return false;
+    }
+
+    if (out.sampleRate < 8'000 || out.sampleRate > 192'000) {
+        return false;
+    }
+
+    const uint64_t expectedSamples = static_cast<uint64_t>(out.frames) * out.channels;
+    if (expectedSamples != sampleCount) {
         return false;
     }
 
