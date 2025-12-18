@@ -216,7 +216,10 @@ private:
                     continue;
                 }
                 if (item.clientPlayTimeNs > nowNs) {
-                    cv_.wait_until(lock, std::chrono::system_clock::time_point(std::chrono::nanoseconds(item.clientPlayTimeNs)));
+                    auto targetTime = std::chrono::system_clock::time_point(
+                        std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                            std::chrono::nanoseconds(item.clientPlayTimeNs)));
+                    cv_.wait_until(lock, targetTime);
                     continue;
                 }
 
