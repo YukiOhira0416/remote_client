@@ -59,9 +59,9 @@ namespace {
 constexpr size_t kMaxUdpPayload = 64 * 1024;  // generous buffer for UDP packets
 constexpr uint16_t kAudioListenPort = 8200;
 
-uint64_t NowNs() {
+uint64_t NowSystemNs() {
     using namespace std::chrono;
-    return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
+    return duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count();
 }
 
 struct QueuedAudioPacket {
@@ -210,13 +210,13 @@ private:
                 }
                 item = queue_.front();
 
-                const uint64_t nowNs = NowNs();
+                const uint64_t nowNs = NowSystemNs();
                 if (item.clientPlayTimeNs > nowNs + 1'000'000'000ull) {
                     cv_.wait_for(lock, std::chrono::milliseconds(10));
                     continue;
                 }
                 if (item.clientPlayTimeNs > nowNs) {
-                    cv_.wait_until(lock, std::chrono::steady_clock::time_point(std::chrono::nanoseconds(item.clientPlayTimeNs)));
+                    cv_.wait_until(lock, std::chrono::system_clock::time_point(std::chrono::nanoseconds(item.clientPlayTimeNs)));
                     continue;
                 }
 
