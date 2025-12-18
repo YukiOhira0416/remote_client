@@ -69,9 +69,14 @@ struct QueuedAudioPacket {
     uint64_t clientPlayTimeNs = 0;
 };
 
-bool ParseAudioPacket(const uint8_t* data, size_t size, ReceivedAudioPacket& out) {
-    const size_t headerSize = sizeof(uint64_t) * 2 + sizeof(uint32_t) * 4;
-    if (size < headerSize) {
+constexpr size_t kLegacyHeaderSize = sizeof(uint64_t) * 2 + sizeof(uint32_t) * 4;
+constexpr size_t kPcmHeaderSize = 32;
+constexpr size_t kPcmPayloadSize = 3840;
+constexpr uint32_t kPcmSampleRate = 48'000;
+constexpr uint32_t kPcmChannels = 2;
+
+bool ParseLegacyAudioPacket(const uint8_t* data, size_t size, ReceivedAudioPacket& out) {
+    if (size < kLegacyHeaderSize) {
         return false;
     }
 
@@ -94,7 +99,7 @@ bool ParseAudioPacket(const uint8_t* data, size_t size, ReceivedAudioPacket& out
     uint32_t sampleCount = 0;
     read_u32(sampleCount);
 
-    const size_t expectedSize = headerSize + static_cast<size_t>(sampleCount) * sizeof(float);
+    const size_t expectedSize = kLegacyHeaderSize + static_cast<size_t>(sampleCount) * sizeof(float);
     const bool sizeMatchesPayload = (size == expectedSize);
 
     if (sampleCount == 0 || !sizeMatchesPayload) {
@@ -121,6 +126,38 @@ bool ParseAudioPacket(const uint8_t* data, size_t size, ReceivedAudioPacket& out
     out.interleavedSamples.resize(sampleCount);
     std::memcpy(out.interleavedSamples.data(), data + offset, sampleCount * sizeof(float));
     return true;
+}
+
+bool ParsePcmAudioPacket(const uint8_t* data, size_t size, ReceivedAudioPacket& out) {
+    if (size != kPcmHeaderSize + kPcmPayloadSize) {
+        return false;
+    }
+
+    const uint32_t frames = static_cast<uint32_t>(kPcmPayloadSize / (sizeof(int16_t) * kPcmChannels));
+    const uint32_t sampleCount = frames * kPcmChannels;
+
+    out.captureTimestampMs = 0;
+    out.qpcTimestamp = 0;
+    out.sampleRate = kPcmSampleRate;
+    out.channels = kPcmChannels;
+    out.frames = frames;
+    out.interleavedSamples.resize(sampleCount);
+
+    std::vector<int16_t> pcmSamples(sampleCount);
+    std::memcpy(pcmSamples.data(), data + kPcmHeaderSize, kPcmPayloadSize);
+    for (uint32_t i = 0; i < sampleCount; ++i) {
+        out.interleavedSamples[i] = static_cast<float>(pcmSamples[i]) / 32768.0f;
+    }
+
+    return true;
+}
+
+bool ParseAudioPacket(const uint8_t* data, size_t size, ReceivedAudioPacket& out) {
+    if (ParseLegacyAudioPacket(data, size, out)) {
+        return true;
+    }
+
+    return ParsePcmAudioPacket(data, size, out);
 }
 
 class WinsockScope {
@@ -353,6 +390,9 @@ public:
             return false;
         }
 
+        DWORD timeoutMs = 2000;
+        setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_port = htons(listenPort_);
@@ -384,14 +424,11 @@ public:
     void Stop() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (!running_) {
-                return;
-            }
-            running_ = false;
             if (socket_ != INVALID_SOCKET) {
                 closesocket(socket_);
                 socket_ = INVALID_SOCKET;
             }
+            running_ = false;
         }
         if (receiveThread_.joinable()) {
             receiveThread_.join();
@@ -409,6 +446,9 @@ private:
         while (running_) {
             int received = recv(socket_, reinterpret_cast<char*>(buffer.data()), static_cast<int>(buffer.size()), 0);
             if (received <= 0) {
+                if (WSAGetLastError() == WSAETIMEDOUT) {
+                    DebugLog(L"[AudioUdpReceiver] Receive timeout; stopping audio playback due to inactivity.");
+                }
                 break;  // socket closed or error; exit loop and let Stop() clean up
             }
 
@@ -448,6 +488,7 @@ private:
                 }
             }
         }
+        audioPlayer_.Stop();
         running_ = false;
     }
 
