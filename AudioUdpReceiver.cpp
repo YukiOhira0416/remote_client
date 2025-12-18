@@ -39,6 +39,7 @@
 
 #include "TimeSyncClient.h"
 #include "AudioUdpReceiver.h"
+#include "DebugLog.h"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "winmm.lib")
