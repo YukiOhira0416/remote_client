@@ -38,7 +38,6 @@
 #include <ks.h>
 #include <ksmedia.h>
 
-#include "TimeSyncClient.h"
 #include "AudioUdpReceiver.h"
 #include "DebugLog.h"
 
@@ -58,6 +57,7 @@ namespace {
 
 constexpr size_t kMaxUdpPayload = 64 * 1024;  // generous buffer for UDP packets
 constexpr uint16_t kAudioListenPort = 8200;
+constexpr size_t kAudioPayloadBytes = 3840;   // server sends 32-byte header + 3840 bytes audio
 
 uint64_t NowSystemNs() {
     using namespace std::chrono;
@@ -66,8 +66,9 @@ uint64_t NowSystemNs() {
 
 struct QueuedAudioPacket {
     ReceivedAudioPacket packet;
-    uint64_t clientPlayTimeNs = 0;
 };
+
+constexpr uint64_t kStreamInactivityNs = 1'000'000'000ull;  // 1 second
 
 bool ParseAudioPacket(const uint8_t* data, size_t size, ReceivedAudioPacket& out) {
     const size_t headerSize = sizeof(uint64_t) * 2 + sizeof(uint32_t) * 4;
@@ -94,10 +95,13 @@ bool ParseAudioPacket(const uint8_t* data, size_t size, ReceivedAudioPacket& out
     uint32_t sampleCount = 0;
     read_u32(sampleCount);
 
-    const size_t expectedSize = headerSize + static_cast<size_t>(sampleCount) * sizeof(float);
-    const bool sizeMatchesPayload = (size == expectedSize);
+    const size_t payloadSize = static_cast<size_t>(sampleCount) * sizeof(float);
+    if (sampleCount == 0 || payloadSize != kAudioPayloadBytes) {
+        return false;
+    }
 
-    if (sampleCount == 0 || !sizeMatchesPayload) {
+    const size_t expectedSize = headerSize + payloadSize;
+    if (size != expectedSize) {
         return false;
     }
 
@@ -158,6 +162,7 @@ public:
             return true;
         }
         running_ = true;
+        lastPacketTimeNs_.store(0, std::memory_order_relaxed);
         playbackThread_ = std::thread(&AudioSyncPlayer::PlaybackLoop, this);
         return true;
     }
@@ -178,18 +183,12 @@ public:
     }
 
     void Enqueue(const ReceivedAudioPacket& packet) {
-        const uint64_t serverCaptureNs = packet.captureTimestampMs * 1'000'000ull;
-        const int64_t offsetNs = g_TimeOffsetNs.load(std::memory_order_acquire);
-        const int64_t clientPlayNsSigned = static_cast<int64_t>(serverCaptureNs) - offsetNs;
-        if (clientPlayNsSigned < 0) {
-            return;  // too old; drop
-        }
-
         std::lock_guard<std::mutex> lock(mutex_);
         if (!running_) {
             return;
         }
-        queue_.push({packet, static_cast<uint64_t>(clientPlayNsSigned)});
+        queue_.push({packet});
+        lastPacketTimeNs_.store(NowSystemNs(), std::memory_order_relaxed);
         cv_.notify_one();
     }
 
@@ -204,25 +203,18 @@ private:
             QueuedAudioPacket item;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                cv_.wait(lock, [&]() { return !running_ || !queue_.empty(); });
+                cv_.wait_for(lock, std::chrono::milliseconds(100), [&]() { return !running_ || !queue_.empty(); });
                 if (!running_ && queue_.empty()) {
                     break;
                 }
+                if (queue_.empty()) {
+                    if (ShouldResetForInactivity()) {
+                        CleanupWaveOutLocked(true);
+                    }
+                    continue;
+                }
+
                 item = queue_.front();
-
-                const uint64_t nowNs = NowSystemNs();
-                if (item.clientPlayTimeNs > nowNs + 1'000'000'000ull) {
-                    cv_.wait_for(lock, std::chrono::milliseconds(10));
-                    continue;
-                }
-                if (item.clientPlayTimeNs > nowNs) {
-                    auto targetTime = std::chrono::system_clock::time_point(
-                        std::chrono::duration_cast<std::chrono::system_clock::duration>(
-                            std::chrono::nanoseconds(item.clientPlayTimeNs)));
-                    cv_.wait_until(lock, targetTime);
-                    continue;
-                }
-
                 queue_.pop();
             }
 
@@ -233,11 +225,16 @@ private:
     }
 
     bool EnsureWaveOut(uint32_t sampleRate, uint32_t channels) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return EnsureWaveOutLocked(sampleRate, channels);
+    }
+
+    bool EnsureWaveOutLocked(uint32_t sampleRate, uint32_t channels) {
         if (waveOut_) {
             if (currentSampleRate_ == sampleRate && currentChannels_ == channels) {
                 return true;
             }
-            CleanupWaveOut(false);
+            CleanupWaveOutLocked(false);
         }
 
         WAVEFORMATEXTENSIBLE format{};
@@ -275,6 +272,11 @@ private:
         buffer.header.lpData = reinterpret_cast<LPSTR>(buffer.data.data());
         buffer.header.dwBufferLength = static_cast<DWORD>(buffer.data.size());
 
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!waveOut_) {
+            return;
+        }
+
         if (waveOutPrepareHeader(waveOut_, &buffer.header, sizeof(WAVEHDR)) != MMSYSERR_NOERROR) {
             return;
         }
@@ -283,7 +285,6 @@ private:
             return;
         }
 
-        std::lock_guard<std::mutex> lock(mutex_);
         active_.push_back(std::move(buffer));
     }
 
@@ -301,6 +302,11 @@ private:
     }
 
     void CleanupWaveOut(bool reset) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        CleanupWaveOutLocked(reset);
+    }
+
+    void CleanupWaveOutLocked(bool reset) {
         if (waveOut_) {
             if (reset) {
                 waveOutReset(waveOut_);
@@ -314,6 +320,15 @@ private:
         }
     }
 
+    bool ShouldResetForInactivity() const {
+        const uint64_t lastPacketNs = lastPacketTimeNs_.load(std::memory_order_relaxed);
+        if (lastPacketNs == 0) {
+            return false;
+        }
+        const uint64_t nowNs = NowSystemNs();
+        return nowNs > lastPacketNs && (nowNs - lastPacketNs) > kStreamInactivityNs;
+    }
+
     std::atomic<bool> running_{false};
     std::thread playbackThread_;
     std::queue<QueuedAudioPacket> queue_;
@@ -324,6 +339,7 @@ private:
     HWAVEOUT waveOut_ = nullptr;
     uint32_t currentSampleRate_ = 0;
     uint32_t currentChannels_ = 0;
+    std::atomic<uint64_t> lastPacketTimeNs_{0};
 };
 
 class AudioUdpReceiver {
