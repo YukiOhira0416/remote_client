@@ -20,6 +20,7 @@
 #include <ws2tcpip.h>
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -406,6 +407,19 @@ private:
             int received = recv(socket_, reinterpret_cast<char*>(buffer.data()), static_cast<int>(buffer.size()), 0);
             if (received <= 0) {
                 break;  // socket closed or error; exit loop and let Stop() clean up
+            }
+
+            // Some environments have been observed to deliver packets where the payload
+            // (audio samples) is entirely zeroed while the 32-byte header looks valid.
+            // Skip such packets early to avoid enqueuing silence and polluting the log.
+            constexpr size_t kHeaderSize = sizeof(uint64_t) * 2 + sizeof(uint32_t) * 4;
+            if (received > static_cast<int>(kHeaderSize)) {
+                const uint8_t* payloadBegin = buffer.data() + kHeaderSize;
+                const uint8_t* payloadEnd = buffer.data() + received;
+                if (std::all_of(payloadBegin, payloadEnd, [](uint8_t b) { return b == 0; })) {
+                    DebugLog(L"[AudioUdpReceiver] Dropping packet with zeroed audio payload.");
+                    continue;
+                }
             }
 
             std::wstringstream logStream;
