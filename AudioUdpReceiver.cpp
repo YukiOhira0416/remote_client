@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <string>
 #include <mutex>
 #include <queue>
 #include <thread>
@@ -47,6 +48,22 @@ constexpr size_t kAudioPayloadSize = 3840;    // 960 stereo frames @ 16-bit PCM 
 constexpr uint32_t kAudioSampleRate = 48'000;
 constexpr uint32_t kAudioChannels = 2;
 constexpr size_t kExpectedPacketSize = kAudioHeaderSize + kAudioPayloadSize;
+
+std::wstring BytesToHexString(const uint8_t* data, size_t size) {
+    static constexpr wchar_t kHexDigits[] = L"0123456789ABCDEF";
+    std::wstring hex;
+    hex.reserve(size * 3);  // two hex chars + space per byte (roughly)
+
+    for (size_t i = 0; i < size; ++i) {
+        const uint8_t byte = data[i];
+        hex.push_back(kHexDigits[(byte >> 4) & 0xF]);
+        hex.push_back(kHexDigits[byte & 0xF]);
+        if (i + 1 != size) {
+            hex.push_back(L' ');
+        }
+    }
+    return hex;
+}
 
 struct QueuedAudioPacket {
     ReceivedAudioPacket packet;
@@ -334,6 +351,10 @@ private:
                 DebugLog(L"[AudioUdpReceiver] Dropping packet with unexpected size.");
                 continue;
             }
+
+            // ログ用にヘッダー32バイト + 音声データ3840バイトをそのまま16進文字列化
+            std::wstring packetHex = BytesToHexString(buffer.data(), kExpectedPacketSize);
+            DebugLog(L"[AudioUdpReceiver] Raw packet bytes: " + packetHex);
 
             const uint8_t* payloadBegin = buffer.data() + kAudioHeaderSize;
             const uint8_t* payloadEnd = payloadBegin + kAudioPayloadSize;
