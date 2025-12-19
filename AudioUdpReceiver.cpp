@@ -57,6 +57,7 @@ namespace {
 
 constexpr size_t kMaxUdpPayload = 64 * 1024;  // generous buffer for UDP packets
 constexpr uint16_t kAudioListenPort = 8200;
+constexpr size_t kAudioHeaderBytes = 32;
 constexpr size_t kAudioPayloadBytes = 3840;   // server sends 32-byte header + 3840 bytes audio
 
 uint64_t NowSystemNs() {
@@ -70,9 +71,8 @@ struct QueuedAudioPacket {
 
 constexpr uint64_t kStreamInactivityNs = 1'000'000'000ull;  // 1 second
 
-bool ParseAudioPacket(const uint8_t* data, size_t size, ReceivedAudioPacket& out) {
-    const size_t headerSize = sizeof(uint64_t) * 2 + sizeof(uint32_t) * 4;
-    if (size < headerSize) {
+bool ParseAudioHeader(const uint8_t* data, size_t size, ReceivedAudioPacket& out) {
+    if (size != kAudioHeaderBytes) {
         return false;
     }
 
@@ -92,19 +92,6 @@ bool ParseAudioPacket(const uint8_t* data, size_t size, ReceivedAudioPacket& out
     read_u32(out.channels);
     read_u32(out.frames);
 
-    uint32_t sampleCount = 0;
-    read_u32(sampleCount);
-
-    const size_t payloadSize = static_cast<size_t>(sampleCount) * sizeof(float);
-    if (sampleCount == 0 || payloadSize != kAudioPayloadBytes) {
-        return false;
-    }
-
-    const size_t expectedSize = headerSize + payloadSize;
-    if (size != expectedSize) {
-        return false;
-    }
-
     if (out.channels == 0 || out.channels > 8) {
         return false;
     }
@@ -117,13 +104,6 @@ bool ParseAudioPacket(const uint8_t* data, size_t size, ReceivedAudioPacket& out
         return false;
     }
 
-    const uint64_t expectedSamples = static_cast<uint64_t>(out.frames) * out.channels;
-    if (expectedSamples != sampleCount) {
-        return false;
-    }
-
-    out.interleavedSamples.resize(sampleCount);
-    std::memcpy(out.interleavedSamples.data(), data + offset, sampleCount * sizeof(float));
     return true;
 }
 
@@ -431,9 +411,8 @@ private:
             // Some environments have been observed to deliver packets where the payload
             // (audio samples) is entirely zeroed while the 32-byte header looks valid.
             // Skip such packets early to avoid enqueuing silence and polluting the log.
-            constexpr size_t kHeaderSize = sizeof(uint64_t) * 2 + sizeof(uint32_t) * 4;
-            if (received > static_cast<int>(kHeaderSize)) {
-                const uint8_t* payloadBegin = buffer.data() + kHeaderSize;
+            if (received > static_cast<int>(kAudioHeaderBytes)) {
+                const uint8_t* payloadBegin = buffer.data() + kAudioHeaderBytes;
                 const uint8_t* payloadEnd = buffer.data() + received;
                 if (std::all_of(payloadBegin, payloadEnd, [](uint8_t b) { return b == 0; })) {
                     DebugLog(L"[AudioUdpReceiver] Dropping packet with zeroed audio payload.");
@@ -442,21 +421,39 @@ private:
             }
 
             std::wstringstream logStream;
-            logStream << L"[AudioUdpReceiver] Received " << received << L" bytes: ";
+            logStream << L"[AudioUdpReceiver] Received " << received << L" bytes. ";
             logStream << std::hex << std::setw(2) << std::setfill(L'0');
-            for (int i = 0; i < received; ++i) {
-                logStream << std::setw(2) << static_cast<int>(buffer[i]);
-                if (i + 1 < received) {
-                    logStream << L" ";
+
+            if (received > 32) {
+                logStream << L"Header: ";
+                for (int i = 0; i < 32; ++i) {
+                    logStream << std::setw(2) << static_cast<int>(buffer[i]) << (i < 31 ? L" " : L"");
+                }
+                logStream << L" | Payload: ";
+                for (int i = 32; i < received; ++i) {
+                    logStream << std::setw(2) << static_cast<int>(buffer[i]) << (i < received - 1 ? L" " : L"");
+                }
+            } else {
+                logStream << L"Data: ";
+                for (int i = 0; i < received; ++i) {
+                    logStream << std::setw(2) << static_cast<int>(buffer[i]) << (i < received - 1 ? L" " : L"");
                 }
             }
             DebugLog(logStream.str());
 
-            ReceivedAudioPacket packet;
-            if (ParseAudioPacket(buffer.data(), static_cast<size_t>(received), packet)) {
-                PacketCallback cb;
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
+            constexpr size_t kTotalPacketSize = kAudioHeaderBytes + kAudioPayloadBytes;
+
+            if (static_cast<size_t>(received) == kTotalPacketSize) {
+                ReceivedAudioPacket packet;
+                // ヘッダーのみをパース
+                if (ParseAudioHeader(buffer.data(), kAudioHeaderBytes, packet)) {
+                    // 音声ペイロードを再生キューに追加
+                    packet.interleavedSamples.resize(kAudioPayloadBytes / sizeof(float));
+                    std::memcpy(packet.interleavedSamples.data(), buffer.data() + kAudioHeaderBytes, kAudioPayloadBytes);
+
+                    PacketCallback cb;
+                    {
+                        std::lock_guard<std::mutex> lock(mutex_);
                     cb = callback_;
                 }
                 if (cb) {
