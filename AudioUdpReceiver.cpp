@@ -364,6 +364,14 @@ public:
             return false;
         }
 
+        DWORD timeoutMs = 500;
+        if (setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs)) == SOCKET_ERROR) {
+            DebugLog(L"[AudioUdpReceiver] Failed to set socket timeout.");
+            closesocket(socket_);
+            socket_ = INVALID_SOCKET;
+            return false;
+        }
+
         running_ = true;
         callback_ = std::move(callback);
         receiveThread_ = std::thread(&AudioUdpReceiver::ReceiveLoop, this);
@@ -406,11 +414,24 @@ public:
 private:
     void ReceiveLoop() {
         std::vector<uint8_t> buffer(kMaxUdpPayload);
+        lastPacketReceivedTime_ = std::chrono::steady_clock::now();
         while (running_) {
             int received = recv(socket_, reinterpret_cast<char*>(buffer.data()), static_cast<int>(buffer.size()), 0);
             if (received <= 0) {
-                break;  // socket closed or error; exit loop and let Stop() clean up
+                if (WSAGetLastError() == WSAETIMEDOUT) {
+                    auto now = std::chrono::steady_clock::now();
+                    auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastPacketReceivedTime_).count();
+                    if (elapsedMs > 2000) {
+                        DebugLog(L"[AudioUdpReceiver] Audio stream timed out.");
+                        audioPlayer_.Stop();
+                        break;
+                    }
+                } else {
+                    break;  // socket closed or error; exit loop and let Stop() clean up
+                }
+                continue;
             }
+            lastPacketReceivedTime_ = std::chrono::steady_clock::now();
 
             // Some environments have been observed to deliver packets where the payload
             // (audio samples) is entirely zeroed while the 32-byte header looks valid.
@@ -459,6 +480,7 @@ private:
     mutable std::mutex mutex_;
     WinsockScope winsock_;
     AudioSyncPlayer audioPlayer_;
+    std::chrono::steady_clock::time_point lastPacketReceivedTime_{};
 };
 
 namespace {
