@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <sstream>
 #include <iomanip>
+#include <array>
 
 #pragma comment(lib, "ole32.lib")
 
@@ -166,6 +167,78 @@ namespace
     std::map<uint32_t, DecodedBlock> g_jitterBuffer;
     uint32_t g_playSession = 0;
 
+    enum class DropReason
+    {
+        SizeTooSmall = 0,
+        MagicMismatch,
+        VersionMismatch,
+        SizeMismatch,
+        HeaderCrcMismatch,
+        PayloadCrcMismatch,
+        ShardTotalMismatch,
+        ShardIndexRange,
+        PcmBytesMismatch,
+        SamplesPerChannelMismatch,
+        SampleRateMismatch,
+        ChannelFormatMismatch,
+        ShardBytesZero,
+        Count
+    };
+
+    const wchar_t* DropReasonName(DropReason reason)
+    {
+        switch (reason)
+        {
+        case DropReason::SizeTooSmall: return L"size_too_small";
+        case DropReason::MagicMismatch: return L"magic_mismatch";
+        case DropReason::VersionMismatch: return L"version_or_headersize";
+        case DropReason::SizeMismatch: return L"size_mismatch";
+        case DropReason::HeaderCrcMismatch: return L"header_crc_mismatch";
+        case DropReason::PayloadCrcMismatch: return L"payload_crc_mismatch";
+        case DropReason::ShardTotalMismatch: return L"shard_total_mismatch";
+        case DropReason::ShardIndexRange: return L"shard_index_range";
+        case DropReason::PcmBytesMismatch: return L"pcm_bytes_mismatch";
+        case DropReason::SamplesPerChannelMismatch: return L"samples_per_ch_mismatch";
+        case DropReason::SampleRateMismatch: return L"sample_rate_mismatch";
+        case DropReason::ChannelFormatMismatch: return L"channel_format_mismatch";
+        case DropReason::ShardBytesZero: return L"shard_bytes_zero";
+        default: return L"unknown";
+        }
+    }
+
+    void LogValidationDrop(DropReason reason)
+    {
+        static std::array<uint64_t, static_cast<size_t>(DropReason::Count)> counts{};
+        static auto lastLog = std::chrono::steady_clock::now();
+
+        const size_t idx = static_cast<size_t>(reason);
+        if (idx < counts.size())
+        {
+            ++counts[idx];
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        if (now - lastLog >= std::chrono::seconds(1))
+        {
+            std::wstringstream ss;
+            ss << L"AudioReceiver: dropped packets - ";
+            bool any = false;
+            for (size_t i = 0; i < counts.size(); ++i)
+            {
+                if (counts[i] == 0) continue;
+                if (any) ss << L", ";
+                ss << DropReasonName(static_cast<DropReason>(i)) << L":" << counts[i];
+                any = true;
+            }
+            if (any)
+            {
+                DebugLog(ss.str());
+            }
+            counts.fill(0);
+            lastLog = now;
+        }
+    }
+
     void ResetForSession(uint32_t session)
     {
         std::scoped_lock lk(g_blockMutex, g_jitterMutex);
@@ -178,27 +251,82 @@ namespace
 
     bool ValidateAndParse(const uint8_t* buf, size_t len, AudioPacketHeader& header)
     {
-        if (len < sizeof(AudioPacketHeader)) return false;
-        std::memcpy(&header, buf, sizeof(AudioPacketHeader));
-        if (std::memcmp(header.Magic, "AUDP", 4) != 0) return false;
-        if (header.Version != 1 || header.HeaderSize != sizeof(AudioPacketHeader)) return false;
-        if (len != sizeof(AudioPacketHeader) + header.ShardBytes) return false;
+        if (len < sizeof(AudioPacketHeader))
+        {
+            LogValidationDrop(DropReason::SizeTooSmall);
+            return false;
+        }
 
-        uint8_t headerBytes[sizeof(AudioPacketHeader)];
-        std::memcpy(headerBytes, buf, sizeof(AudioPacketHeader));
-        std::memset(headerBytes + 56, 0, 4);
-        uint32_t headerCrc = Crc32(headerBytes, sizeof(AudioPacketHeader));
-        if (headerCrc != header.HeaderCrc32) return false;
+        std::memcpy(&header, buf, sizeof(AudioPacketHeader));
+        if (std::memcmp(header.Magic, "AUDP", 4) != 0)
+        {
+            LogValidationDrop(DropReason::MagicMismatch);
+            return false;
+        }
+        if (header.Version != 1 || header.HeaderSize != sizeof(AudioPacketHeader))
+        {
+            LogValidationDrop(DropReason::VersionMismatch);
+            return false;
+        }
+        if (header.ShardBytes == 0)
+        {
+            LogValidationDrop(DropReason::ShardBytesZero);
+            return false;
+        }
+
+        const size_t expectedSize = sizeof(AudioPacketHeader) + header.ShardBytes;
+        if (len != expectedSize)
+        {
+            LogValidationDrop(DropReason::SizeMismatch);
+            return false;
+        }
+
+        AudioPacketHeader crcHeader = header;
+        crcHeader.HeaderCrc32 = 0;
+        const uint32_t headerCrc = Crc32(reinterpret_cast<uint8_t*>(&crcHeader), sizeof(AudioPacketHeader));
+        if (headerCrc != header.HeaderCrc32)
+        {
+            LogValidationDrop(DropReason::HeaderCrcMismatch);
+            return false;
+        }
 
         const uint8_t* payload = buf + sizeof(AudioPacketHeader);
-        uint32_t payloadCrc = Crc32(payload, header.ShardBytes);
-        if (payloadCrc != header.PayloadCrc32) return false;
-        if (header.ShardTotal != header.K + header.M) return false;
-        if (header.ShardIndex >= header.ShardTotal) return false;
-        if (header.PcmBytesInBlock != PCM_BYTES_PER_BLOCK) return false;
-        if (header.BlockSamplesPerCh != BLOCK_SAMPLES_PER_CH) return false;
-        if (header.SampleRate != AUDIO_SAMPLE_RATE) return false;
-        if (header.Channels != AUDIO_CHANNELS || header.BitsPerSample != AUDIO_BITS_PER_SAMPLE) return false;
+        const uint32_t payloadCrc = Crc32(payload, header.ShardBytes);
+        if (payloadCrc != header.PayloadCrc32)
+        {
+            LogValidationDrop(DropReason::PayloadCrcMismatch);
+            return false;
+        }
+        if (header.ShardTotal != header.K + header.M)
+        {
+            LogValidationDrop(DropReason::ShardTotalMismatch);
+            return false;
+        }
+        if (header.ShardIndex >= header.ShardTotal)
+        {
+            LogValidationDrop(DropReason::ShardIndexRange);
+            return false;
+        }
+        if (header.PcmBytesInBlock != PCM_BYTES_PER_BLOCK)
+        {
+            LogValidationDrop(DropReason::PcmBytesMismatch);
+            return false;
+        }
+        if (header.BlockSamplesPerCh != BLOCK_SAMPLES_PER_CH)
+        {
+            LogValidationDrop(DropReason::SamplesPerChannelMismatch);
+            return false;
+        }
+        if (header.SampleRate != AUDIO_SAMPLE_RATE)
+        {
+            LogValidationDrop(DropReason::SampleRateMismatch);
+            return false;
+        }
+        if (header.Channels != AUDIO_CHANNELS || header.BitsPerSample != AUDIO_BITS_PER_SAMPLE)
+        {
+            LogValidationDrop(DropReason::ChannelFormatMismatch);
+            return false;
+        }
         return true;
     }
 
@@ -226,14 +354,12 @@ namespace
         header.PayloadCrc32 = header.BlockCrc32;
         header.Reserved0 = header.Reserved1 = header.Reserved2 = 0;
 
-        uint8_t headerBytes[sizeof(AudioPacketHeader)];
-        std::memcpy(headerBytes, &header, sizeof(AudioPacketHeader));
-        std::memset(headerBytes + 56, 0, 4);
-        header.HeaderCrc32 = Crc32(headerBytes, sizeof(AudioPacketHeader));
-        std::memcpy(headerBytes, &header, sizeof(AudioPacketHeader));
+        AudioPacketHeader crcHeader = header;
+        crcHeader.HeaderCrc32 = 0;
+        header.HeaderCrc32 = Crc32(reinterpret_cast<uint8_t*>(&crcHeader), sizeof(AudioPacketHeader));
 
-        std::vector<uint8_t> dump;
-        dump.insert(dump.end(), headerBytes, headerBytes + sizeof(AudioPacketHeader));
+        std::vector<uint8_t> dump(sizeof(AudioPacketHeader));
+        std::memcpy(dump.data(), &header, sizeof(AudioPacketHeader));
         dump.insert(dump.end(), blk.pcm.begin(), blk.pcm.begin() + PCM_BYTES_PER_BLOCK);
         DebugLog(L"AudioBlockDecoded: " + HexDump(dump));
     }
