@@ -13,7 +13,7 @@
 #include <exception>
 #include <mutex>
 #include <string>
-#include <mmsystem.h>
+#include <timeapi.h>
 
 // ==== External Symbols from main.cpp ====
 // These are defined in main.cpp and control thread loops.
