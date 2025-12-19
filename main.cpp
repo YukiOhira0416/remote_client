@@ -45,6 +45,13 @@
 #include <d3dx12.h>
 #include <d3d12.h>
 #include "TimeSyncClient.h"
+
+// Audio component includes
+#include "AudioReceiver.h"
+#include "AudioDecoder.h"
+#include "ConcreteJitterBuffer.h"
+#include "WasapiPlayer.h"
+
 using namespace DebugLogAsync;
 
 // === 新規：ネットワーク準備・解像度ペンディング管理 ===
@@ -1152,6 +1159,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     // The app_running_atomic is now a global atomic defined in Globals.cpp
     // The windowSenderThread is removed as it's part of the old logic.
 
+    // --- Audio Pipeline Setup ---
+    DebugLog(L"Initializing audio pipeline...");
+    auto jitterBuffer = std::make_unique<ConcreteJitterBuffer>();
+    auto audioReceiver = std::make_unique<AudioReceiver>();
+    auto audioDecoder = std::make_unique<AudioDecoder>(*audioReceiver, *jitterBuffer);
+    auto wasapiPlayer = std::make_unique<WasapiPlayer>(*jitterBuffer);
+
+    if (audioReceiver->Start() && wasapiPlayer->Start()) {
+        audioDecoder->Start();
+        DebugLog(L"Audio pipeline started successfully.");
+    } else {
+        DebugLog(L"ERROR: Failed to start the audio pipeline.");
+        // We can continue without audio, or decide to exit. For now, just log.
+        audioReceiver->Stop();
+        wasapiPlayer->Stop();
+    }
+    // -----------------------------
+
     // Main render loop
     // Verified: The following loop correctly handles rendering during live-resize
     // by calling RenderFrame() unconditionally. No functional change was needed.
@@ -1196,6 +1221,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
     // Centralized Cleanup
     DebugLog(L"Exited message loop. Initiating final resource cleanup...");
+
+    // --- Audio Pipeline Shutdown ---
+    DebugLog(L"Stopping audio pipeline...");
+    if (audioDecoder) audioDecoder->Stop();
+    if (wasapiPlayer) wasapiPlayer->Stop();
+    if (audioReceiver) audioReceiver->Stop();
+    DebugLog(L"Audio pipeline stopped.");
+    // -----------------------------
+
     AppThreads appThreads{};
     appThreads.bandwidthThread = &bandwidthThread;
     appThreads.rebootListenerThread = &rebootListenerThread;
