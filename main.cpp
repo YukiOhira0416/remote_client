@@ -12,7 +12,7 @@
 #include <ws2tcpip.h>
 #include <mswsock.h> // Required for WSARecvMsg and WSASendMsg
 #include <windows.h>
-#include <mmsystem.h>
+#include <timeapi.h>
 #include <thread>
 #include <atomic>
 #include <algorithm>
