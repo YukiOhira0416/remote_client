@@ -3,6 +3,7 @@
 #include "Globals.h"
 #include "nvdec.h"
 #include "window.h"
+#include "AudioReceiver.h"
 
 #include <Windows.h>
 #include <winsock2.h>
@@ -80,6 +81,7 @@ void RequestShutdown(std::atomic<bool>* appRunningPtr) {
         receive_raw_packet_Running.store(false, std::memory_order_relaxed);
         g_fec_worker_Running.store(false, std::memory_order_relaxed);
         g_decode_worker_Running.store(false, std::memory_order_relaxed);
+        Audio::StopAudioPipeline();
 
         // This handles the main render loop flag in wWinMain.
         if (appRunningPtr) {
@@ -98,6 +100,13 @@ void RequestShutdown(std::atomic<bool>* appRunningPtr) {
 void ReleaseAllResources(const AppThreads& threads) {
     std::call_once(g_shutdownOnce, [&]() {
         DebugLog(L"ReleaseAllResources: Begin");
+
+        // Stop audio threads first so playback can drain before graphics/network teardown.
+        try {
+            Audio::StopAudioPipeline();
+        } catch (...) {
+            DebugLog(L"ReleaseAllResources: exception during audio shutdown (ignored).");
+        }
 
         // 1) Join all threads to ensure they have exited cleanly.
         try {
