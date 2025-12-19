@@ -45,6 +45,7 @@
 #include <d3dx12.h>
 #include <d3d12.h>
 #include "TimeSyncClient.h"
+#include "AudioReceiver.h"
 using namespace DebugLogAsync;
 
 // === 新規：ネットワーク準備・解像度ペンディング管理 ===
@@ -52,6 +53,7 @@ std::atomic<bool> g_networkReady(false);
 std::atomic<bool> g_pendingResolutionValid(false);
 std::atomic<int>  g_pendingW(0), g_pendingH(0);
 std::atomic<bool> g_didInitialAnnounce(false);
+static AudioReceiver g_audioReceiver;
 
 // Render kick global
 std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
@@ -1090,9 +1092,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         return 1;
     }
 
+    if (!g_audioReceiver.Start()) {
+        DebugLog(L"Failed to start audio receiver.");
+        enet_deinitialize();
+        WSACleanup();
+        return 1;
+    }
+
     // Initialize window and DirectX
     if (!InitWindow(hInstance, nCmdShow)) {
         timeEndPeriod(1);
+        g_audioReceiver.Stop();
         WSACleanup();
         enet_deinitialize();
         return -1;
@@ -1100,6 +1110,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
     if (!InitD3D()) {
         DebugLog(L"wWinMain: Failed to initialize Direct3D for rendering after InitWindow.");
+        g_audioReceiver.Stop();
         return -1;
     }
 
@@ -1126,6 +1137,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     g_frameDecoder = std::make_unique<FrameDecoder>(cuContext, g_d3d12Device.Get());
     if (!g_frameDecoder->Init()) {
         DebugLog(L"wWinMain: Failed to initialize FrameDecoder.");
+        g_audioReceiver.Stop();
         return -1;
     }
 
@@ -1196,6 +1208,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
     // Centralized Cleanup
     DebugLog(L"Exited message loop. Initiating final resource cleanup...");
+    g_audioReceiver.Stop();
     AppThreads appThreads{};
     appThreads.bandwidthThread = &bandwidthThread;
     appThreads.rebootListenerThread = &rebootListenerThread;
