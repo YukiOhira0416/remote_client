@@ -29,7 +29,7 @@ namespace
     constexpr uint32_t PCM_BYTES_PER_BLOCK = 1920;
     constexpr uint32_t BLOCK_SAMPLES_PER_CH = 480;
     constexpr uint32_t BLOCK_TIMEOUT_MS = 15;
-    constexpr uint32_t JITTER_BLOCKS = 2;
+    constexpr uint32_t JITTER_BLOCKS = 1;
     constexpr uint16_t AUDIO_PORT = 8200;
 
     constexpr uint8_t FLAG_IS_PARITY = 0x01;
@@ -165,7 +165,6 @@ namespace
     std::condition_variable g_jitterCv;
     std::map<uint32_t, DecodedBlock> g_jitterBuffer;
     uint32_t g_playSession = 0;
-    std::chrono::steady_clock::time_point g_missingBlockStart;
 
     void ResetForSession(uint32_t session)
     {
@@ -175,7 +174,6 @@ namespace
         g_currentSession = session;
         g_playSession = session;
         g_expectedBlock = 0;
-        g_missingBlockStart = {};
     }
 
     bool ValidateAndParse(const uint8_t* buf, size_t len, AudioPacketHeader& header)
@@ -464,6 +462,7 @@ namespace
         client->Start();
 
         bool primed = false;
+        uint64_t silenceBlocks = 0;
         while (g_audioPlaybackRunning.load(std::memory_order_relaxed))
         {
             WaitForSingleObject(eventHandle, 10);
@@ -477,16 +476,30 @@ namespace
             {
                 DecodedBlock block;
                 bool haveBlock = false;
+                bool generatedSilence = false;
                 {
                     std::unique_lock<std::mutex> lock(g_jitterMutex);
                     g_jitterCv.wait_for(lock, std::chrono::milliseconds(BLOCK_TIMEOUT_MS), [&] {
                         return !g_audioPlaybackRunning.load(std::memory_order_relaxed) || !g_jitterBuffer.empty();
                     });
 
-                    if (g_jitterBuffer.size() >= JITTER_BLOCKS && !primed)
+                    if (!primed)
                     {
                         primed = true;
-                        g_expectedBlock = g_jitterBuffer.begin()->first;
+                        if (!g_jitterBuffer.empty())
+                        {
+                            g_expectedBlock = g_jitterBuffer.begin()->first;
+                            g_playSession = g_jitterBuffer.begin()->second.sessionId;
+                        }
+                        else if (g_currentSession != 0)
+                        {
+                            g_playSession = g_currentSession;
+                        }
+                    }
+
+                    while (!g_jitterBuffer.empty() && g_jitterBuffer.begin()->first < g_expectedBlock)
+                    {
+                        g_jitterBuffer.erase(g_jitterBuffer.begin());
                     }
 
                     if (primed)
@@ -497,24 +510,15 @@ namespace
                             block = std::move(it->second);
                             g_jitterBuffer.erase(it);
                             haveBlock = true;
-                            g_missingBlockStart = {};
                         }
                         else
                         {
-                            auto now = std::chrono::steady_clock::now();
-                            if (g_missingBlockStart.time_since_epoch().count() == 0)
-                            {
-                                g_missingBlockStart = now;
-                            }
-                            else if (std::chrono::duration_cast<std::chrono::milliseconds>(now - g_missingBlockStart).count() >= BLOCK_TIMEOUT_MS)
-                            {
-                                block.pcm.assign(PCM_BYTES_PER_BLOCK, 0);
-                                block.sessionId = g_playSession;
-                                block.blockId = g_expectedBlock;
-                                block.shardBytes = PCM_BYTES_PER_BLOCK;
-                                haveBlock = true;
-                                g_missingBlockStart = {};
-                            }
+                            block.pcm.assign(PCM_BYTES_PER_BLOCK, 0);
+                            block.sessionId = g_playSession;
+                            block.blockId = g_expectedBlock;
+                            block.shardBytes = PCM_BYTES_PER_BLOCK;
+                            haveBlock = true;
+                            generatedSilence = true;
                         }
                     }
                 }
@@ -534,6 +538,17 @@ namespace
                 renderClient->ReleaseBuffer(BLOCK_SAMPLES_PER_CH, 0);
                 framesAvailable -= BLOCK_SAMPLES_PER_CH;
                 ++g_expectedBlock;
+
+                if (generatedSilence)
+                {
+                    ++silenceBlocks;
+                    if (silenceBlocks % 100 == 0)
+                    {
+                        std::wstringstream ss;
+                        ss << L"AudioPlayback: generated " << silenceBlocks << L" silent blocks so far";
+                        DebugLog(ss.str());
+                    }
+                }
             }
         }
         client->Stop();
