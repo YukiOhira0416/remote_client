@@ -1,5 +1,24 @@
 #ifndef GLOBALS_H
 #define GLOBALS_H
+#ifndef __timecode__
+// Workaround for Windows SDK headers (e.g., ksmedia.h) redefining TIMECODE when
+// combined with other multimedia headers. Defining the structure here prevents
+// duplicate definitions during compilation with newer Windows SDK versions.
+#define __timecode__
+typedef struct tagTIMECODE {
+    WORD  wFrameRate;
+    WORD  wFrameFract;
+    DWORD dwFrames;
+} TIMECODE, *PTIMECODE;
+
+typedef struct tagTIMECODE_SAMPLE {
+    LONGLONG qwTick;
+    TIMECODE timecode;
+    DWORD    dwUser;
+    DWORD    dwFlags;
+} TIMECODE_SAMPLE, *PTIMECODE_SAMPLE;
+#endif
+
 #include <windows.h>
 #include <atomic>
 #include <string>
