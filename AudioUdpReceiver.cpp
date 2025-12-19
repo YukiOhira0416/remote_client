@@ -1,27 +1,16 @@
-// Standalone audio UDP receiver for packets produced by AudioUdpSender.
+// Audio UDP receiver that consumes packets consisting of a 32-byte header
+// followed by 3,840 bytes of 16-bit stereo PCM audio (48 kHz).
 //
-// This file is intentionally self contained so it can be copied to a client
-// project as-is. It is not part of the server build; compile manually when
-// needed (e.g., `cl /std:c++17 /EHsc AudioUdpReceiverSample.cpp ws2_32.lib`).
+// As long as packets continue to arrive, the payloads are enqueued for
+// immediate playback. When packets stop, playback naturally drains and stops.
 //
-// Packet layout (see SendAudioPacket in AudioUdpSender.cpp):
-// [u64 captureTimestampMs][u64 qpcTimestamp][u32 sampleRate][u32 channels]
-// [u32 frames][u32 sampleCount][float interleavedSamples...]
-//
-// Usage example:
-//   AudioUdpReceiver receiver(8200);
-//   receiver.Start([](const ReceivedAudioPacket& packet) {
-//       // process audio samples here
-//   });
-//   ...
-//   receiver.Stop();
+// The received bytes (header + payload) are logged in hex for inspection.
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
+#include <array>
 #include <atomic>
-#include <algorithm>
-#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <iomanip>
@@ -46,80 +35,33 @@
 #pragma comment(lib, "winmm.lib")
 
 struct ReceivedAudioPacket {
-    uint64_t captureTimestampMs = 0;  // server-side frame timestamp (ms)
-    int64_t qpcTimestamp = 0;         // QueryPerformanceCounter ticks
-    uint32_t sampleRate = 0;          // Hz
-    uint32_t channels = 0;
-    uint32_t frames = 0;              // frames per channel contained in payload
-    std::vector<float> interleavedSamples;  // size = frames * channels
+    std::array<uint8_t, 32> header{};         // 32-byte header (opaque)
+    std::vector<int16_t> interleavedSamples;  // PCM samples (16-bit, stereo)
 };
 
 namespace {
 
 constexpr size_t kMaxUdpPayload = 64 * 1024;  // generous buffer for UDP packets
 constexpr uint16_t kAudioListenPort = 8200;
-
-uint64_t NowSystemNs() {
-    using namespace std::chrono;
-    return duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count();
-}
-
-struct QueuedAudioPacket {
-    ReceivedAudioPacket packet;
-    uint64_t clientPlayTimeNs = 0;
-};
+constexpr size_t kAudioHeaderSize = 32;
+constexpr size_t kAudioPayloadSize = 3'840;  // PCM chunk size
+constexpr uint32_t kAudioSampleRate = 48'000;
+constexpr uint32_t kAudioChannels = 2;
 
 bool ParseAudioPacket(const uint8_t* data, size_t size, ReceivedAudioPacket& out) {
-    const size_t headerSize = sizeof(uint64_t) * 2 + sizeof(uint32_t) * 4;
-    if (size < headerSize) {
+    if (size < kAudioHeaderSize + kAudioPayloadSize) {
         return false;
     }
 
-    size_t offset = 0;
-    auto read_u64 = [&](uint64_t& value) {
-        std::memcpy(&value, data + offset, sizeof(uint64_t));
-        offset += sizeof(uint64_t);
-    };
-    auto read_u32 = [&](uint32_t& value) {
-        std::memcpy(&value, data + offset, sizeof(uint32_t));
-        offset += sizeof(uint32_t);
-    };
+    std::memcpy(out.header.data(), data, kAudioHeaderSize);
 
-    read_u64(out.captureTimestampMs);
-    read_u64(reinterpret_cast<uint64_t&>(out.qpcTimestamp));
-    read_u32(out.sampleRate);
-    read_u32(out.channels);
-    read_u32(out.frames);
-
-    uint32_t sampleCount = 0;
-    read_u32(sampleCount);
-
-    const size_t expectedSize = headerSize + static_cast<size_t>(sampleCount) * sizeof(float);
-    const bool sizeMatchesPayload = (size == expectedSize);
-
-    if (sampleCount == 0 || !sizeMatchesPayload) {
-        return false;
+    const size_t payloadBytes = size - kAudioHeaderSize;
+    if (payloadBytes != kAudioPayloadSize) {
+        return false;  // unexpected payload size
     }
 
-    if (out.channels == 0 || out.channels > 8) {
-        return false;
-    }
-
-    if (out.frames == 0) {
-        return false;
-    }
-
-    if (out.sampleRate < 8'000 || out.sampleRate > 192'000) {
-        return false;
-    }
-
-    const uint64_t expectedSamples = static_cast<uint64_t>(out.frames) * out.channels;
-    if (expectedSamples != sampleCount) {
-        return false;
-    }
-
-    out.interleavedSamples.resize(sampleCount);
-    std::memcpy(out.interleavedSamples.data(), data + offset, sampleCount * sizeof(float));
+    out.interleavedSamples.resize(kAudioPayloadSize / sizeof(int16_t));
+    std::memcpy(out.interleavedSamples.data(), data + kAudioHeaderSize, kAudioPayloadSize);
     return true;
 }
 
@@ -178,18 +120,11 @@ public:
     }
 
     void Enqueue(const ReceivedAudioPacket& packet) {
-        const uint64_t serverCaptureNs = packet.captureTimestampMs * 1'000'000ull;
-        const int64_t offsetNs = g_TimeOffsetNs.load(std::memory_order_acquire);
-        const int64_t clientPlayNsSigned = static_cast<int64_t>(serverCaptureNs) - offsetNs;
-        if (clientPlayNsSigned < 0) {
-            return;  // too old; drop
-        }
-
         std::lock_guard<std::mutex> lock(mutex_);
         if (!running_) {
             return;
         }
-        queue_.push({packet, static_cast<uint64_t>(clientPlayNsSigned)});
+        queue_.push(packet);
         cv_.notify_one();
     }
 
@@ -201,7 +136,7 @@ private:
 
     void PlaybackLoop() {
         while (true) {
-            QueuedAudioPacket item;
+            ReceivedAudioPacket item;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 cv_.wait(lock, [&]() { return !running_ || !queue_.empty(); });
@@ -209,24 +144,10 @@ private:
                     break;
                 }
                 item = queue_.front();
-
-                const uint64_t nowNs = NowSystemNs();
-                if (item.clientPlayTimeNs > nowNs + 1'000'000'000ull) {
-                    cv_.wait_for(lock, std::chrono::milliseconds(10));
-                    continue;
-                }
-                if (item.clientPlayTimeNs > nowNs) {
-                    auto targetTime = std::chrono::system_clock::time_point(
-                        std::chrono::duration_cast<std::chrono::system_clock::duration>(
-                            std::chrono::nanoseconds(item.clientPlayTimeNs)));
-                    cv_.wait_until(lock, targetTime);
-                    continue;
-                }
-
                 queue_.pop();
             }
 
-            SubmitPacket(item.packet);
+            SubmitPacket(item);
             CleanupCompletedHeaders();
         }
         CleanupCompletedHeaders();
@@ -244,13 +165,13 @@ private:
         format.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
         format.Format.nChannels = static_cast<WORD>(channels);
         format.Format.nSamplesPerSec = sampleRate;
-        format.Format.wBitsPerSample = 32;
+        format.Format.wBitsPerSample = 16;
         format.Format.nBlockAlign = format.Format.nChannels * format.Format.wBitsPerSample / 8;
         format.Format.nAvgBytesPerSec = format.Format.nSamplesPerSec * format.Format.nBlockAlign;
         format.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
-        format.Samples.wValidBitsPerSample = 32;
+        format.Samples.wValidBitsPerSample = 16;
         format.dwChannelMask = (channels == 1) ? SPEAKER_FRONT_CENTER : (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
-        format.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+        format.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
 
         MMRESULT res = waveOutOpen(&waveOut_, WAVE_MAPPER, reinterpret_cast<WAVEFORMATEX*>(&format), 0, 0, CALLBACK_NULL);
         if (res != MMSYSERR_NOERROR) {
@@ -264,12 +185,12 @@ private:
     }
 
     void SubmitPacket(const ReceivedAudioPacket& packet) {
-        if (!EnsureWaveOut(packet.sampleRate, packet.channels)) {
+        if (!EnsureWaveOut(kAudioSampleRate, kAudioChannels)) {
             return;
         }
 
         ActiveBuffer buffer{};
-        buffer.data.resize(packet.interleavedSamples.size() * sizeof(float));
+        buffer.data.resize(packet.interleavedSamples.size() * sizeof(int16_t));
         std::memcpy(buffer.data.data(), packet.interleavedSamples.data(), buffer.data.size());
 
         buffer.header.lpData = reinterpret_cast<LPSTR>(buffer.data.data());
@@ -316,7 +237,7 @@ private:
 
     std::atomic<bool> running_{false};
     std::thread playbackThread_;
-    std::queue<QueuedAudioPacket> queue_;
+    std::queue<ReceivedAudioPacket> queue_;
     std::vector<ActiveBuffer> active_;
     std::mutex mutex_;
     std::condition_variable cv_;
@@ -410,19 +331,6 @@ private:
             int received = recv(socket_, reinterpret_cast<char*>(buffer.data()), static_cast<int>(buffer.size()), 0);
             if (received <= 0) {
                 break;  // socket closed or error; exit loop and let Stop() clean up
-            }
-
-            // Some environments have been observed to deliver packets where the payload
-            // (audio samples) is entirely zeroed while the 32-byte header looks valid.
-            // Skip such packets early to avoid enqueuing silence and polluting the log.
-            constexpr size_t kHeaderSize = sizeof(uint64_t) * 2 + sizeof(uint32_t) * 4;
-            if (received > static_cast<int>(kHeaderSize)) {
-                const uint8_t* payloadBegin = buffer.data() + kHeaderSize;
-                const uint8_t* payloadEnd = buffer.data() + received;
-                if (std::all_of(payloadBegin, payloadEnd, [](uint8_t b) { return b == 0; })) {
-                    DebugLog(L"[AudioUdpReceiver] Dropping packet with zeroed audio payload.");
-                    continue;
-                }
             }
 
             std::wstringstream logStream;
