@@ -301,7 +301,7 @@ bool AudioReceiver::InitAudioClient() {
 
     REFERENCE_TIME defaultPeriod = 0;
     REFERENCE_TIME minPeriod = 0;
-    device_->GetDevicePeriod(&defaultPeriod, &minPeriod);
+    audioClient_->GetDevicePeriod(&defaultPeriod, &minPeriod);
 
     hr = audioClient_->Initialize(AUDCLNT_SHAREMODE_SHARED,
                                   AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
