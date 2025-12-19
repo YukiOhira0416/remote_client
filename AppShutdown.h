@@ -10,6 +10,8 @@ struct AppThreads {
     std::vector<std::thread>* fecWorkerThreads = nullptr;
     std::vector<std::thread>* nvdecThreads = nullptr;
     std::thread* rebootListenerThread = nullptr;
+    std::thread* audioReceiverThread = nullptr;
+    std::thread* audioPlaybackThread = nullptr;
 };
 
 // Asynchronous signal: sets flags and, if necessary, exits the message loop.

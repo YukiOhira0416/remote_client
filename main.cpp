@@ -38,6 +38,7 @@
 #include "concurrentqueue/concurrentqueue.h"
 #include <enet/enet.h>
 #include "Globals.h"
+#include "AudioClient.h"
 #include "nvdec.h"
 #include "AppShutdown.h"
 #include <cuda.h>
@@ -1133,6 +1134,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     std::thread timeSyncThread(TimeSyncClientThread);
     std::thread bandwidthThread(CountBandW);
     std::thread rebootListenerThread(ListenForRebootCommands);
+    std::thread audioReceiverThread;
+    std::thread audioPlaybackThread;
+    if (!StartAudioClient(audioReceiverThread, audioPlaybackThread)) {
+        DebugLog(L"Failed to start audio client threads.");
+    }
 
     std::vector<std::thread> receiverThreads;
     for (int i = 0; i < getOptimalThreadConfig().receiver; ++i) {
@@ -1196,12 +1202,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
     // Centralized Cleanup
     DebugLog(L"Exited message loop. Initiating final resource cleanup...");
+    StopAudioClient();
     AppThreads appThreads{};
     appThreads.bandwidthThread = &bandwidthThread;
     appThreads.rebootListenerThread = &rebootListenerThread;
     appThreads.receiverThreads = &receiverThreads;
     appThreads.fecWorkerThreads = &fecWorkerThreads;
     appThreads.nvdecThreads = &nvdecThreads;
+    appThreads.audioReceiverThread = &audioReceiverThread;
+    appThreads.audioPlaybackThread = &audioPlaybackThread;
 
     // This single call handles joining all threads and releasing all resources idempotently.
     ReleaseAllResources(appThreads);

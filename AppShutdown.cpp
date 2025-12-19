@@ -1,6 +1,7 @@
 #include "AppShutdown.h"
 #include "DebugLog.h"
 #include "Globals.h"
+#include "AudioClient.h"
 #include "nvdec.h"
 #include "window.h"
 
@@ -21,6 +22,8 @@ extern std::atomic<bool> send_bandw_Running;
 extern std::atomic<bool> receive_resend_Running;
 extern std::atomic<bool> reboot_listener_running;
 extern std::atomic<bool> receive_raw_packet_Running;
+extern std::atomic<bool> g_audioReceiverRunning;
+extern std::atomic<bool> g_audioPlaybackRunning;
 // This will be created in a future step to replace the local bool in wWinMain.
 extern std::atomic<bool> app_running_atomic;
 
@@ -80,6 +83,8 @@ void RequestShutdown(std::atomic<bool>* appRunningPtr) {
         receive_raw_packet_Running.store(false, std::memory_order_relaxed);
         g_fec_worker_Running.store(false, std::memory_order_relaxed);
         g_decode_worker_Running.store(false, std::memory_order_relaxed);
+        g_audioReceiverRunning.store(false, std::memory_order_relaxed);
+        g_audioPlaybackRunning.store(false, std::memory_order_relaxed);
 
         // This handles the main render loop flag in wWinMain.
         if (appRunningPtr) {
@@ -107,6 +112,8 @@ void ReleaseAllResources(const AppThreads& threads) {
             SafeJoinVector(threads.fecWorkerThreads, L"fecWorkerThreads");
             SafeJoinVector(threads.nvdecThreads, L"nvdecThreads");
             SafeJoin(threads.rebootListenerThread, L"rebootListenerThread");
+            SafeJoin(threads.audioReceiverThread, L"audioReceiverThread");
+            SafeJoin(threads.audioPlaybackThread, L"audioPlaybackThread");
         } catch (...) {
             DebugLog(L"ReleaseAllResources: exception during thread join (ignored to continue cleanup).");
         }

@@ -61,6 +61,7 @@ set(SOURCES
     Globals.cpp
     ReedSolomon.cpp
     nvdec.cpp
+    AudioClient.cpp
     AppShutdown.cpp
     TimeSyncClient.cpp
 )
@@ -73,6 +74,7 @@ set(HEADERS
     Globals.h
     ReedSolomon.h
     nvdec.h
+    AudioClient.h
     AppShutdown.h
     TimeSyncClient.h
 )
@@ -98,6 +100,8 @@ target_link_libraries(${PROJECT_NAME}
     bcrypt.lib
     Strmiids.lib
     winmm.lib
+    mmdevapi.lib
+    avrt.lib
     secur32.lib
     
     # DirectX/D3D12ライブラリ
