@@ -49,6 +49,7 @@ private:
         uint32_t HeaderCrc32;
         uint32_t Reserved2;
     };
+    static_assert(sizeof(AudioPacketHeader) == 64, "AudioPacketHeader must be 64 bytes");
     #pragma pack(pop)
 
     struct ReceivedPacket {

@@ -41,8 +41,6 @@ std::string ToHex(const uint8_t* data, size_t len) {
 }
 }
 
-static_assert(sizeof(AudioReceiver::AudioPacketHeader) == 64, "AudioPacketHeader must be 64 bytes");
-
 AudioReceiver::AudioReceiver() = default;
 AudioReceiver::~AudioReceiver() { Stop(); }
 
