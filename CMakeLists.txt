@@ -63,6 +63,7 @@ set(SOURCES
     nvdec.cpp
     AppShutdown.cpp
     TimeSyncClient.cpp
+    AudioReceiver.cpp
 )
 
 # ヘッダーファイル
@@ -75,6 +76,7 @@ set(HEADERS
     nvdec.h
     AppShutdown.h
     TimeSyncClient.h
+    AudioReceiver.h
 )
 
 # 実行ファイルを作成
@@ -99,6 +101,9 @@ target_link_libraries(${PROJECT_NAME}
     Strmiids.lib
     winmm.lib
     secur32.lib
+    Mmdevapi.lib
+    Audioclient.lib
+    Avrt.lib
     
     # DirectX/D3D12ライブラリ
     d3d12.lib
