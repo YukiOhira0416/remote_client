@@ -56,6 +56,7 @@ set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 # ソースファイル
 set(SOURCES
     main.cpp
+    AudioReceiver.cpp
     window.cpp
     DebugLog.cpp
     Globals.cpp
@@ -68,6 +69,7 @@ set(SOURCES
 # ヘッダーファイル
 set(HEADERS
     main.h
+    AudioReceiver.h
     window.h
     DebugLog.h
     Globals.h

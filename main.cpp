@@ -21,6 +21,7 @@
 #include <mutex>
 #include <ctime>
 #include "window.h"
+#include "AudioReceiver.h"
 #include <filesystem>
 #include <regex>
 #include <vector>
@@ -1128,6 +1129,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         DebugLog(L"wWinMain: Failed to initialize FrameDecoder.");
         return -1;
     }
+
+    // Start audio pipeline (UDP receiver + WASAPI renderer)
+    Audio::StartAudioPipeline();
 
     // Start worker threads
     std::thread timeSyncThread(TimeSyncClientThread);
