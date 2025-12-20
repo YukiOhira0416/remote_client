@@ -1,3 +1,4 @@
+#include "WindowsSdkCompat.h"
 #include <windows.h>
 #include <wrl/client.h>
 #include <atomic>

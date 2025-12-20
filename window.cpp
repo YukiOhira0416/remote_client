@@ -1,3 +1,4 @@
+#include "WindowsSdkCompat.h"
 #include <d3dcompiler.h> // For shader compilation
 #include <DirectXColors.h> // For DirectX::Colors
 #include <windows.h>
