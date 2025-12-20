@@ -63,6 +63,7 @@ set(SOURCES
     nvdec.cpp
     AppShutdown.cpp
     TimeSyncClient.cpp
+    AudioReceiver.cpp
 )
 
 # ヘッダーファイル
@@ -75,6 +76,7 @@ set(HEADERS
     nvdec.h
     AppShutdown.h
     TimeSyncClient.h
+    AudioReceiver.h
 )
 
 # 実行ファイルを作成
@@ -95,6 +97,8 @@ target_link_libraries(${PROJECT_NAME}
     Mswsock.lib
     ole32.lib
     uuid.lib
+    mmdevapi.lib
+    avrt.lib
     bcrypt.lib
     Strmiids.lib
     winmm.lib
