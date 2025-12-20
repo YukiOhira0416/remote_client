@@ -31,7 +31,11 @@ set(CMAKE_CXX_FLAGS_RELEASE "/MT /O2 /Ob2 /DNDEBUG")
 add_definitions(-DUNICODE -D_UNICODE)
 
 # プリプロセッサ定義
-add_definitions(-DNOMINMAX -DWIN32_LEAN_AND_MEAN)
+#
+# Windows SDK 10.0.26100 以降では ksmedia.h が TIMECODE を再定義する場合があり、
+# Visual Studio ビルド時に C2371 が発生することがある。
+# 事前に __TIMECODE_DEFINED を定義して再定義を抑止する。
+add_definitions(-DNOMINMAX -DWIN32_LEAN_AND_MEAN -D__TIMECODE_DEFINED)
 
 # インクルードディレクトリ
 include_directories(
