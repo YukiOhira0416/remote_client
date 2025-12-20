@@ -8,8 +8,10 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstring>
 #include <iomanip>
 #include <map>
@@ -52,12 +54,15 @@ struct AudioPacketHeader {
 #pragma pack(pop)
 
 static_assert(sizeof(AudioPacketHeader) == 52, "AudioPacketHeader size mismatch");
+constexpr size_t kCrcOffset = offsetof(AudioPacketHeader, crc32);
+static_assert(offsetof(AudioPacketHeader, crc32) == 48, "AudioPacketHeader::crc32 offset mismatch");
 
+// これはreflected CRC32-IEEE。送信側も crc32_gzip_refl か同等実装で合わせる必要がある。
 // CRC32 implementation (polynomial 0xEDB88320) shared by all calculations here.
 uint32_t ComputeCrc32(const uint8_t* data, size_t length) {
     static uint32_t table[256];
-    static bool tableInit = false;
-    if (!tableInit) {
+    static std::once_flag initOnce;
+    std::call_once(initOnce, []() {
         for (uint32_t i = 0; i < 256; ++i) {
             uint32_t c = i;
             for (int j = 0; j < 8; ++j) {
@@ -65,8 +70,7 @@ uint32_t ComputeCrc32(const uint8_t* data, size_t length) {
             }
             table[i] = c;
         }
-        tableInit = true;
-    }
+    });
 
     uint32_t crc = 0xFFFFFFFFu;
     for (size_t i = 0; i < length; ++i) {
@@ -194,31 +198,40 @@ std::string HexDump(const std::vector<uint8_t>& data) {
     return oss.str();
 }
 
+// Matches AudioSender.cpp
+constexpr uint16_t kFlagParity = 0x0001;
+
 void DumpDecodedFrame(uint32_t frameId, uint8_t fecK, uint8_t fecM, const AudioPacketHeader& hdr,
                       const std::vector<uint8_t>& pcm) {
-    AudioPacketHeader logHeader = hdr;
-    logHeader.shardIndex = 0;
-    logHeader.flags &= ~static_cast<uint16_t>(1); // Clear IS_PARITY
-    logHeader.shardSize = static_cast<uint16_t>(pcm.size());
-    logHeader.originalBytes = static_cast<uint32_t>(pcm.size());
-    logHeader.fecK = fecK;
-    logHeader.fecM = fecM;
+    const uint8_t endian = hdr.endian;
 
-    // Compute CRC32 over header(with crc32=0) + PCM
-    uint8_t headerBytes[sizeof(AudioPacketHeader)];
-    memcpy(headerBytes, &logHeader, sizeof(AudioPacketHeader));
-    WriteU32(0, logHeader.endian, reinterpret_cast<uint8_t*>(&headerBytes[48]));
+    std::array<uint8_t, sizeof(AudioPacketHeader)> headerBytes{};
+    memcpy(headerBytes.data(), &hdr, sizeof(AudioPacketHeader));
+
+    WriteU16(0, endian, &headerBytes[offsetof(AudioPacketHeader, shardIndex)]);
+
+    {
+        uint16_t flags = ReadU16(&headerBytes[offsetof(AudioPacketHeader, flags)], endian);
+        flags &= static_cast<uint16_t>(~kFlagParity);
+        WriteU16(flags, endian, &headerBytes[offsetof(AudioPacketHeader, flags)]);
+    }
+
+    WriteU16(static_cast<uint16_t>(pcm.size()), endian, &headerBytes[offsetof(AudioPacketHeader, shardSize)]);
+    WriteU32(static_cast<uint32_t>(pcm.size()), endian, &headerBytes[offsetof(AudioPacketHeader, originalBytes)]);
+    headerBytes[offsetof(AudioPacketHeader, fecK)] = fecK;
+    headerBytes[offsetof(AudioPacketHeader, fecM)] = fecM;
+
+    WriteU32(0, endian, &headerBytes[kCrcOffset]);
 
     std::vector<uint8_t> blob;
-    blob.insert(blob.end(), headerBytes, headerBytes + sizeof(AudioPacketHeader));
+    blob.insert(blob.end(), headerBytes.begin(), headerBytes.end());
     blob.insert(blob.end(), pcm.begin(), pcm.end());
 
-    uint32_t crc = ComputeCrc32(blob.data(), blob.size());
-    WriteU32(crc, logHeader.endian, reinterpret_cast<uint8_t*>(&headerBytes[48]));
+    const uint32_t crc = ComputeCrc32(blob.data(), blob.size());
+    WriteU32(crc, endian, &headerBytes[kCrcOffset]);
 
-    // Rebuild blob with correct CRC
     blob.clear();
-    blob.insert(blob.end(), headerBytes, headerBytes + sizeof(AudioPacketHeader));
+    blob.insert(blob.end(), headerBytes.begin(), headerBytes.end());
     blob.insert(blob.end(), pcm.begin(), pcm.end());
 
     std::wstring logMessage = L"==== Audio Frame " + std::to_wstring(frameId) +
@@ -306,11 +319,12 @@ bool ValidateAndParseHeader(const uint8_t* packet, size_t len, AudioPacketHeader
 
     // CRC32 check
     std::vector<uint8_t> temp(packet, packet + len);
-    WriteU32(0, endian, &temp[48]);
+    WriteU32(0, endian, &temp[kCrcOffset]);
     uint32_t crc = ComputeCrc32(temp.data(), temp.size());
     uint32_t packetCrc = ReadU32(reinterpret_cast<const uint8_t*>(&outHeader.crc32), endian);
     if (crc != packetCrc) {
-        DebugLog(L"AudioReceiver: CRC mismatch");
+        DebugLog(L"AudioReceiver: CRC mismatch (calc=" + std::to_wstring(crc) +
+                 L" packet=" + std::to_wstring(packetCrc) + L")");
         return false;
     }
 
