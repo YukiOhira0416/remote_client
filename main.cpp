@@ -45,6 +45,7 @@
 #include <d3dx12.h>
 #include <d3d12.h>
 #include "TimeSyncClient.h"
+#include "AudioReceiver.h"
 using namespace DebugLogAsync;
 
 // === 新規：ネットワーク準備・解像度ペンディング管理 ===
@@ -1090,8 +1091,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         return 1;
     }
 
+    AudioReceiver audioReceiver;
+    if (!audioReceiver.Start()) {
+        DebugLog(L"Failed to start AudioReceiver.");
+    }
+
     // Initialize window and DirectX
     if (!InitWindow(hInstance, nCmdShow)) {
+        audioReceiver.Stop();
         timeEndPeriod(1);
         WSACleanup();
         enet_deinitialize();
@@ -1100,6 +1107,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
     if (!InitD3D()) {
         DebugLog(L"wWinMain: Failed to initialize Direct3D for rendering after InitWindow.");
+        audioReceiver.Stop();
         return -1;
     }
 
@@ -1126,6 +1134,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     g_frameDecoder = std::make_unique<FrameDecoder>(cuContext, g_d3d12Device.Get());
     if (!g_frameDecoder->Init()) {
         DebugLog(L"wWinMain: Failed to initialize FrameDecoder.");
+        audioReceiver.Stop();
         return -1;
     }
 
@@ -1193,6 +1202,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         RenderFrame(); // pacing handled by DXGI frame-latency waitable on the render side
         lastFrameRenderTime = currentTime;
     }
+
+    audioReceiver.Stop();
 
     // Centralized Cleanup
     DebugLog(L"Exited message loop. Initiating final resource cleanup...");
