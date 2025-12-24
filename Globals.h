@@ -20,6 +20,13 @@
 #include <unordered_map>
 #include "concurrentqueue/concurrentqueue.h"
 
+// === Audio receive / playback constants ===
+#define RECEIVE_IP_AUDIO   "192.168.0.3"
+#define RECEIVE_PORT_AUDIO 8200
+#define AUDIO_ASSEMBLY_TIMEOUT_MS 120
+#define AUDIO_JITTER_TARGET_MS 60
+#define AUDIO_SYNC_TOLERANCE_MS 20
+
 // CUDA includes
 #include <cuda.h>
 

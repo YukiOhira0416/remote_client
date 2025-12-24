@@ -18,6 +18,7 @@
 #include <algorithm> // For std::min, std::abs
 #include <vector> // For std::vector
 #include <deque>  // For std::deque (used by Globals.h)
+#include "AudioClient.h"
 #include <mutex>  // For std::mutex (used by Globals.h)
 #include <condition_variable> // For std::condition_variable (used by Globals.h)
 #include <atomic> // For std::atomic (used by Globals.h)
@@ -2074,7 +2075,10 @@ void RenderFrame() {
                 auto frameEndSys = std::chrono::system_clock::now();
                 uint64_t frameEndMs =
                     std::chrono::duration_cast<std::chrono::milliseconds>(frameEndSys.time_since_epoch()).count();
+                uint64_t frameEndNs =
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(frameEndSys.time_since_epoch()).count();
                 wgc_to_renderend_ms = static_cast<int64_t>(frameEndMs) - static_cast<int64_t>(wgc_ts_ms) + (g_TimeOffsetNs.load() / 1000000);
+                NotifyVideoPresent(wgc_ts_ms, frameEndNs);
             }
         }
 

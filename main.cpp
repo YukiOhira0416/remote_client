@@ -45,6 +45,7 @@
 #include <d3dx12.h>
 #include <d3d12.h>
 #include "TimeSyncClient.h"
+#include "AudioClient.h"
 using namespace DebugLogAsync;
 
 // === 新規：ネットワーク準備・解像度ペンディング管理 ===
@@ -1148,6 +1149,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     for (int i = 0; i < getOptimalThreadConfig().decoder; ++i) {
         nvdecThreads.emplace_back(NvdecThread, i);
     }
+
+    // Start audio pipeline (UDP receive -> FEC -> WASAPI playback)
+    StartAudioPipeline();
 
     // The app_running_atomic is now a global atomic defined in Globals.cpp
     // The windowSenderThread is removed as it's part of the old logic.

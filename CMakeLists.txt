@@ -62,6 +62,7 @@ set(SOURCES
     ReedSolomon.cpp
     nvdec.cpp
     AppShutdown.cpp
+    AudioClient.cpp
     TimeSyncClient.cpp
 )
 
@@ -74,6 +75,7 @@ set(HEADERS
     ReedSolomon.h
     nvdec.h
     AppShutdown.h
+    AudioClient.h
     TimeSyncClient.h
 )
 
@@ -97,6 +99,8 @@ target_link_libraries(${PROJECT_NAME}
     uuid.lib
     bcrypt.lib
     Strmiids.lib
+    Mmdevapi.lib
+    Avrt.lib
     winmm.lib
     secur32.lib
     
