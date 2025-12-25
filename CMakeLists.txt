@@ -63,6 +63,7 @@ set(SOURCES
     nvdec.cpp
     AppShutdown.cpp
     TimeSyncClient.cpp
+    AudioClient.cpp
 )
 
 # ヘッダーファイル
@@ -75,6 +76,8 @@ set(HEADERS
     nvdec.h
     AppShutdown.h
     TimeSyncClient.h
+    AudioClient.h
+    AudioPacket.h
 )
 
 # 実行ファイルを作成
