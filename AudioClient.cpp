@@ -1,16 +1,24 @@
 #include "AudioClient.h"
-#include "AudioPacket.h"
-#include "Globals.h"
-#include "DebugLog.h"
-#include "ReedSolomon.h"
-#include "TimeSyncClient.h"
-#include "concurrentqueue/concurrentqueue.h"
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef WINVER
+#define WINVER 0x0A00
+#endif
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
+
+#include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include <windows.h>
-#include <audioclient.h>
 #include <mmdeviceapi.h>
-#include <wrl/client.h>
+#include <audioclient.h>
+#include <audiopolicy.h>
+#include <mmsystem.h>
+#include <avrt.h>
+#include <atlbase.h>
 #include <thread>
 #include <vector>
 #include <map>
@@ -19,6 +27,21 @@
 #include <atomic>
 #include <numeric>
 #include <deque>
+#include <algorithm>
+#include <cmath>
+#include <sstream>
+#include <iomanip>
+#include <cstring>
+#include <string>
+#include <optional>
+#include <unordered_map>
+
+#include "AudioPacket.h"
+#include "Globals.h"
+#include "DebugLog.h"
+#include "ReedSolomon.h"
+#include "TimeSyncClient.h"
+#include "concurrentqueue/concurrentqueue.h"
 
 namespace {
 
@@ -271,7 +294,7 @@ void AudioPlaybackThread() {
         return;
     }
 
-    Microsoft::WRL::ComPtr<IMMDeviceEnumerator> enumerator;
+    CComPtr<IMMDeviceEnumerator> enumerator;
     HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator));
     if (FAILED(hr)) {
         DebugLog(L"[AudioPlayback] Failed to create device enumerator.");
@@ -288,8 +311,8 @@ void AudioPlaybackThread() {
     desiredFormat.cbSize = 0;
 
     while (g_audioThreadsRunning) {
-        Microsoft::WRL::ComPtr<IAudioClient> audioClient;
-        Microsoft::WRL::ComPtr<IAudioRenderClient> renderClient;
+        CComPtr<IAudioClient> audioClient;
+        CComPtr<IAudioRenderClient> renderClient;
         UINT32 bufferFrameCount;
 
         AudioFormatPayload format_payload;
@@ -301,7 +324,7 @@ void AudioPlaybackThread() {
             desiredFormat.nAvgBytesPerSec = desiredFormat.nSamplesPerSec * desiredFormat.nBlockAlign;
         }
 
-        Microsoft::WRL::ComPtr<IMMDevice> device;
+        CComPtr<IMMDevice> device;
         hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
         if (FAILED(hr)) {
             DebugLog(L"[AudioPlayback] Failed to get default audio endpoint.");
