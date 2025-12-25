@@ -17,6 +17,8 @@
 #include <audioclient.h>
 #include <audiopolicy.h>
 #include <mmsystem.h>
+#include <mmreg.h>
+#include <ksmedia.h>
 #include <avrt.h>
 #include <atlbase.h>
 #include <thread>
@@ -145,6 +147,70 @@ void AudioUdpReceiveThread() {
 uint64_t Ntohll(uint64_t v) {
     return (static_cast<uint64_t>(ntohl(static_cast<uint32_t>(v >> 32))) |
             (static_cast<uint64_t>(ntohl(static_cast<uint32_t>(v & 0xFFFFFFFFULL))) << 32));
+}
+
+struct HostAudioFormat {
+    uint32_t sample_rate = 48000;
+    uint16_t channels = 2;
+    uint16_t bits_per_sample = 16;
+    uint16_t bytes_per_frame = 4;   // channels * (bits/8)
+    uint32_t channel_mask = 0;
+    uint32_t sample_format = 2;     // 1=float32, 2=pcm(int)
+};
+
+static uint32_t DefaultChannelMask(uint16_t ch) {
+    switch (ch) {
+    case 1: return SPEAKER_FRONT_CENTER;
+    case 2: return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+    case 4: return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;
+    case 6: return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                   SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;
+    case 8: return SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                   SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT | SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT;
+    default: return 0;
+    }
+}
+
+static HostAudioFormat ParseAudioFormatPayload(const AudioFormatPayload& p) {
+    HostAudioFormat f{};
+    f.sample_rate     = ntohl(p.sample_rate_be);
+    f.channels        = ntohs(p.channels_be);
+    f.bits_per_sample = ntohs(p.bits_per_sample_be);
+    f.bytes_per_frame = ntohs(p.bytes_per_frame_be);
+    f.channel_mask    = ntohl(p.channel_mask_be);
+    f.sample_format   = ntohl(p.sample_format_be);
+
+    if (f.bytes_per_frame == 0 && f.channels != 0 && f.bits_per_sample != 0) {
+        f.bytes_per_frame = static_cast<uint16_t>((f.channels * f.bits_per_sample) / 8);
+    }
+    if (f.channel_mask == 0) {
+        f.channel_mask = DefaultChannelMask(f.channels);
+    }
+    return f;
+}
+
+static bool SameAudioFormat(const HostAudioFormat& a, const HostAudioFormat& b) {
+    return a.sample_rate == b.sample_rate &&
+           a.channels == b.channels &&
+           a.bits_per_sample == b.bits_per_sample &&
+           a.bytes_per_frame == b.bytes_per_frame &&
+           a.channel_mask == b.channel_mask &&
+           a.sample_format == b.sample_format;
+}
+
+static WAVEFORMATEXTENSIBLE BuildWaveFormatExtensible(const HostAudioFormat& f) {
+    WAVEFORMATEXTENSIBLE wfx{};
+    wfx.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+    wfx.Format.nChannels = f.channels;
+    wfx.Format.nSamplesPerSec = f.sample_rate;
+    wfx.Format.wBitsPerSample = f.bits_per_sample;
+    wfx.Format.nBlockAlign = f.bytes_per_frame;
+    wfx.Format.nAvgBytesPerSec = wfx.Format.nSamplesPerSec * wfx.Format.nBlockAlign;
+    wfx.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+    wfx.Samples.wValidBitsPerSample = f.bits_per_sample;
+    wfx.dwChannelMask = f.channel_mask;
+    wfx.SubFormat = (f.sample_format == 1) ? KSDATAFORMAT_SUBTYPE_IEEE_FLOAT : KSDATAFORMAT_SUBTYPE_PCM;
+    return wfx;
 }
 
 struct BlockState {
@@ -301,28 +367,32 @@ void AudioPlaybackThread() {
         return;
     }
 
-    WAVEFORMATEX desiredFormat{};
-    desiredFormat.wFormatTag = WAVE_FORMAT_PCM;
-    desiredFormat.nChannels = 2;
-    desiredFormat.nSamplesPerSec = 48000;
-    desiredFormat.wBitsPerSample = 16;
-    desiredFormat.nBlockAlign = (desiredFormat.nChannels * desiredFormat.wBitsPerSample) / 8;
-    desiredFormat.nAvgBytesPerSec = desiredFormat.nSamplesPerSec * desiredFormat.nBlockAlign;
-    desiredFormat.cbSize = 0;
+    std::optional<HostAudioFormat> activeFormat; // サーバPCMのフォーマット（重複formatは無視）
 
     while (g_audioThreadsRunning) {
         CComPtr<IAudioClient> audioClient;
         CComPtr<IAudioRenderClient> renderClient;
         UINT32 bufferFrameCount;
 
-        AudioFormatPayload format_payload;
-        if (g_audioFormatQueue.try_dequeue(format_payload)) {
-            desiredFormat.nSamplesPerSec = ntohl(format_payload.sample_rate_be);
-            desiredFormat.nChannels = ntohs(format_payload.channels_be);
-            desiredFormat.wBitsPerSample = ntohs(format_payload.bits_per_sample_be);
-            desiredFormat.nBlockAlign = (desiredFormat.nChannels * desiredFormat.wBitsPerSample) / 8;
-            desiredFormat.nAvgBytesPerSec = desiredFormat.nSamplesPerSec * desiredFormat.nBlockAlign;
+        // サーバは1秒に1回 format packet を送る設計なので、ここではキューをDrainして最新のみ採用。
+        AudioFormatPayload fmtNet{};
+        HostAudioFormat latest{};
+        bool gotFmt = false;
+        while (g_audioFormatQueue.try_dequeue(fmtNet)) {
+            latest = ParseAudioFormatPayload(fmtNet);
+            gotFmt = true;
         }
+        if (gotFmt) {
+            if (!activeFormat || !SameAudioFormat(*activeFormat, latest)) {
+                activeFormat = latest;
+            }
+        }
+        if (!activeFormat) {
+            activeFormat = HostAudioFormat{}; // 初回formatがまだ来ない場合の暫定
+        }
+
+        WAVEFORMATEXTENSIBLE desiredExt = BuildWaveFormatExtensible(*activeFormat);
+        WAVEFORMATEX* desiredWfx = reinterpret_cast<WAVEFORMATEX*>(&desiredExt);
 
         CComPtr<IMMDevice> device;
         hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
@@ -340,7 +410,7 @@ void AudioPlaybackThread() {
         }
 
         WAVEFORMATEX* closestMatch = nullptr;
-        hr = audioClient->IsFormatSupported(AUDCLNT_SHAREMODE_SHARED, &desiredFormat, &closestMatch);
+        hr = audioClient->IsFormatSupported(AUDCLNT_SHAREMODE_SHARED, desiredWfx, &closestMatch);
         if (FAILED(hr)) {
             DebugLog(L"[AudioPlayback] Format not supported.");
             if (closestMatch) CoTaskMemFree(closestMatch);
@@ -348,12 +418,25 @@ void AudioPlaybackThread() {
             continue;
         }
 
-        hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 10000000, 0, &desiredFormat, nullptr);
+        // S_FALSE のときは closestMatch 推奨（EXTENSIBLE⇔非EXTENSIBLE差分だけのことも多い）
+        WAVEFORMATEX* renderWfx = desiredWfx;
+        if (hr == S_FALSE && closestMatch) {
+            renderWfx = closestMatch;
+        }
+        const uint16_t renderBlockAlign = renderWfx->nBlockAlign;
+        if (renderBlockAlign != activeFormat->bytes_per_frame) {
+            DebugLog(L"[AudioPlayback] Render blockAlign != server bytes_per_frame. "
+                     L"Need sample conversion (float/int16 etc). For now output silence.");
+        }
+
+        hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 10000000, 0, renderWfx, nullptr);
         if (FAILED(hr)) {
             DebugLog(L"[AudioPlayback] Failed to initialize audio client.");
+            if (closestMatch) CoTaskMemFree(closestMatch);
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
+        if (closestMatch) CoTaskMemFree(closestMatch);
 
         hr = audioClient->GetBufferSize(&bufferFrameCount);
         if (FAILED(hr)) {
@@ -371,7 +454,7 @@ void AudioPlaybackThread() {
 
         std::deque<DecodedPcmBlock> jitterBuffer;
         size_t pcmReadOffset = 0;
-        const size_t targetJitterFrames = (desiredFormat.nSamplesPerSec * AUDIO_JITTER_TARGET_MS) / 1000;
+        const size_t targetJitterFrames = (static_cast<size_t>(activeFormat->sample_rate) * AUDIO_JITTER_TARGET_MS) / 1000;
         bool isPlaying = false;
 
         hr = audioClient->Start();
@@ -385,9 +468,17 @@ void AudioPlaybackThread() {
         auto last_correction_time = std::chrono::steady_clock::now();
 
         while (g_audioThreadsRunning) {
-            AudioFormatPayload new_format;
-            if (g_audioFormatQueue.try_dequeue(new_format)) {
-                DebugLog(L"[AudioPlayback] New audio format received. Re-initializing.");
+            // 周期formatは無視。同一フォーマットならスルー、変化があれば再初期化。
+            AudioFormatPayload newNet{};
+            HostAudioFormat newHost{};
+            bool gotNew = false;
+            while (g_audioFormatQueue.try_dequeue(newNet)) {
+                newHost = ParseAudioFormatPayload(newNet);
+                gotNew = true;
+            }
+            if (gotNew && activeFormat && !SameAudioFormat(*activeFormat, newHost)) {
+                DebugLog(L"[AudioPlayback] Audio format changed. Re-initializing.");
+                *activeFormat = newHost;
                 break;
             }
 
@@ -398,7 +489,7 @@ void AudioPlaybackThread() {
 
             size_t total_buffered_frames = 0;
             for(const auto& block : jitterBuffer) {
-                total_buffered_frames += block.pcm_data.size() / desiredFormat.nBlockAlign;
+                total_buffered_frames += block.pcm_data.size() / activeFormat->bytes_per_frame;
             }
 
             if (!isPlaying && total_buffered_frames >= targetJitterFrames) {
@@ -427,18 +518,18 @@ void AudioPlaybackThread() {
                         int64_t audio_play_target_ns = audio_pts_client_ns + g_videoPathDelay.get_average();
 
                         int64_t audio_play_head_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count() +
-                                                   (padding * 1000000000 / desiredFormat.nSamplesPerSec);
+                                                   (padding * 1000000000 / activeFormat->sample_rate);
                         sync_error_ns = audio_play_head_ns - audio_play_target_ns;
                     }
 
-                    UINT32 framesRemainingInBlock = (currentBlock.pcm_data.size() - pcmReadOffset) / desiredFormat.nBlockAlign;
+                    UINT32 framesRemainingInBlock = (currentBlock.pcm_data.size() - pcmReadOffset) / activeFormat->bytes_per_frame;
                     UINT32 framesToWrite = std::min(framesAvailable, framesRemainingInBlock);
 
                     auto now = std::chrono::steady_clock::now();
                     if (abs(sync_error_ns) > AUDIO_SYNC_TOLERANCE_MS * 1000000LL && std::chrono::duration_cast<std::chrono::milliseconds>(now - last_correction_time).count() > 200) {
                         if (sync_error_ns > 0) { // Audio is late
-                            UINT32 framesToDrop = std::min(framesToWrite, (UINT32)(desiredFormat.nSamplesPerSec * 0.005));
-                            pcmReadOffset += framesToDrop * desiredFormat.nBlockAlign;
+                            UINT32 framesToDrop = std::min(framesToWrite, (UINT32)(activeFormat->sample_rate * 0.005));
+                            pcmReadOffset += framesToDrop * activeFormat->bytes_per_frame;
                             framesRemainingInBlock -= framesToDrop;
                             framesToWrite = std::min(framesAvailable, framesRemainingInBlock);
                             last_correction_time = now;
@@ -446,7 +537,7 @@ void AudioPlaybackThread() {
                             UINT32 framesToInsert = std::min(framesAvailable, (UINT32)(desiredFormat.nSamplesPerSec * 0.005));
                             BYTE* pData;
                             if (SUCCEEDED(renderClient->GetBuffer(framesToInsert, &pData))) {
-                                memset(pData, 0, framesToInsert * desiredFormat.nBlockAlign);
+                                memset(pData, 0, framesToInsert * renderBlockAlign);
                                 renderClient->ReleaseBuffer(framesToInsert, AUDCLNT_BUFFERFLAGS_SILENT);
                                 last_correction_time = now;
                             }
@@ -457,9 +548,14 @@ void AudioPlaybackThread() {
                     if (framesToWrite > 0) {
                         hr = renderClient->GetBuffer(framesToWrite, &pData);
                         if (SUCCEEDED(hr)) {
-                            memcpy(pData, currentBlock.pcm_data.data() + pcmReadOffset, framesToWrite * desiredFormat.nBlockAlign);
+                            if (renderBlockAlign == activeFormat->bytes_per_frame) {
+                                memcpy(pData, currentBlock.pcm_data.data() + pcmReadOffset, framesToWrite * renderBlockAlign);
+                            } else {
+                                // TODO: ここで float32<->int16 などのサンプル変換を実装する
+                                memset(pData, 0, framesToWrite * renderBlockAlign);
+                            }
                             renderClient->ReleaseBuffer(framesToWrite, 0);
-                            pcmReadOffset += framesToWrite * desiredFormat.nBlockAlign;
+                            pcmReadOffset += framesToWrite * activeFormat->bytes_per_frame;
                         }
                     }
 
