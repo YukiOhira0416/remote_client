@@ -1,0 +1,30 @@
+{
+    "version": 4,
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/directx",
+                "${workspaceFolder}/concurrentqueue_x64-windows/include",
+                "${workspaceFolder}/enet_x64-windows/include",
+                "${workspaceFolder}/isa-l/include",
+                "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/include",
+                "C:/Program Files/NVIDIA Corporation/Video_Codec_SDK_13.0.19/Interface"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE",
+                "NOMINMAX",
+                "WIN32_LEAN_AND_MEAN"
+            ],
+            "windowsSdkVersion": "10.0.22000.0",
+            "compilerPath": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.40.33807/bin/Hostx64/x64/cl.exe",
+            "cStandard": "c17",
+            "cppStandard": "c++20",
+            "intelliSenseMode": "windows-msvc-x64",
+            "configurationProvider": "ms-vscode.cmake-tools"
+        }
+    ]
+}
