@@ -45,6 +45,7 @@
 #include <d3dx12.h>
 #include <d3d12.h>
 #include "TimeSyncClient.h"
+#include "AudioClient.h"
 using namespace DebugLogAsync;
 
 // === 新規：ネットワーク準備・解像度ペンディング管理 ===
@@ -1131,6 +1132,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
     // Start worker threads
     std::thread timeSyncThread(TimeSyncClientThread);
+    StartAudioThreads();
     std::thread bandwidthThread(CountBandW);
     std::thread rebootListenerThread(ListenForRebootCommands);
 
@@ -1195,6 +1197,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     }
 
     // Centralized Cleanup
+    StopAudioThreads();
     DebugLog(L"Exited message loop. Initiating final resource cleanup...");
     AppThreads appThreads{};
     appThreads.bandwidthThread = &bandwidthThread;

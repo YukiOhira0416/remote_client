@@ -30,6 +30,7 @@
 #include "AppShutdown.h"
 #include "main.h"
 #include "TimeSyncClient.h"
+#include "AudioClient.h"
 
 // Condition variable to signal when the window is shown
 extern std::mutex g_windowShownMutex;
@@ -1692,6 +1693,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             }
             g_lastDrawnFrame = newFrameFromReorder;
             newFrameFromReorder.copyDone = nullptr; // Ownership transferred to cache
+            UpdateVideoTimestamp(g_lastDrawnFrame.timestamp);
         }
 
         if (g_lastDrawnFrame.hw_decoded_texture_Y) {
