@@ -534,7 +534,7 @@ void AudioPlaybackThread() {
                             framesToWrite = std::min(framesAvailable, framesRemainingInBlock);
                             last_correction_time = now;
                         } else { // Audio is early
-                            UINT32 framesToInsert = std::min(framesAvailable, (UINT32)(desiredFormat.nSamplesPerSec * 0.005));
+                            UINT32 framesToInsert = std::min(framesAvailable, (UINT32)(activeFormat->sample_rate * 0.005));
                             BYTE* pData;
                             if (SUCCEEDED(renderClient->GetBuffer(framesToInsert, &pData))) {
                                 memset(pData, 0, framesToInsert * renderBlockAlign);
