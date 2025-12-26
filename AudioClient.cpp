@@ -386,7 +386,7 @@ void AudioPlaybackThread() {
         CComPtr<IAudioClient> audioClient;
         CComPtr<IAudioRenderClient> renderClient;
         UINT32 bufferFrameCount;
-+        UniqueHandle hAudioEvent;
+        HANDLE hAudioEvent = nullptr;
 
         // サーバは1秒に1回 format packet を送る設計なので、ここではキューをDrainして最新のみ採用。
         AudioFormatPayload fmtNet{};
@@ -459,13 +459,13 @@ void AudioPlaybackThread() {
         }
         if (closestMatch) CoTaskMemFree(closestMatch);
 
-        hAudioEvent.h = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-        if (!hAudioEvent.h) {
+        hAudioEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        if (!hAudioEvent) {
             DebugLog(L"[AudioPlayback] CreateEvent failed.");
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
-        hr = audioClient->SetEventHandle(hAudioEvent.h);
+        hr = audioClient->SetEventHandle(hAudioEvent);
         if (FAILED(hr)) {
             DebugLog(L"[AudioPlayback] SetEventHandle failed.");
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -541,7 +541,7 @@ void AudioPlaybackThread() {
 
             if (isPlaying) {
                 // イベント駆動: バッファが必要になるまで待つ（過剰先行書き込みを防ぐ）
-                DWORD w = WaitForSingleObject(hAudioEvent.h, 10);
+                DWORD w = WaitForSingleObject(hAudioEvent, 10);
                 if (w == WAIT_TIMEOUT) {
                     continue;
                 }
@@ -641,6 +641,10 @@ void AudioPlaybackThread() {
             }
         }
         if(audioClient) audioClient->Stop();
+        if(hAudioEvent) {
+            CloseHandle(hAudioEvent);
+            hAudioEvent = nullptr;
+        }
     }
 
     CoUninitialize();
