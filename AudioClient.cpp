@@ -47,6 +47,19 @@
 
 namespace {
 
+// 低遅延向けの目安（必要なら調整）
+constexpr int kRenderBufferMs      = 30;  // IAudioClient::Initialize のバッファ要求
+constexpr int kMaxWriteAheadMs     = 20;  // WASAPIへ先行投入してよい上限(padding目標)
+constexpr int kMaxJitterHoldMs     = 120; // ジッタバッファが増えすぎたら古い分を捨てる
+
+struct UniqueHandle {
+    HANDLE h{ nullptr };
+    ~UniqueHandle() { if (h) CloseHandle(h); }
+    UniqueHandle() = default;
+    UniqueHandle(const UniqueHandle&) = delete;
+    UniqueHandle& operator=(const UniqueHandle&) = delete;
+};
+
 // A/V Sync
 std::atomic<uint64_t> g_lastVideoTimestamp = 0;
 class MovingAverage {
@@ -373,6 +386,7 @@ void AudioPlaybackThread() {
         CComPtr<IAudioClient> audioClient;
         CComPtr<IAudioRenderClient> renderClient;
         UINT32 bufferFrameCount;
++        UniqueHandle hAudioEvent;
 
         // サーバは1秒に1回 format packet を送る設計なので、ここではキューをDrainして最新のみ採用。
         AudioFormatPayload fmtNet{};
@@ -429,7 +443,14 @@ void AudioPlaybackThread() {
                      L"Need sample conversion (float/int16 etc). For now output silence.");
         }
 
-        hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 10000000, 0, renderWfx, nullptr);
+        // 低遅延: デバイス周期を基準に短いバッファを要求し、イベント駆動にする
+        REFERENCE_TIME defaultPeriod = 0, minPeriod = 0;
+        audioClient->GetDevicePeriod(&defaultPeriod, &minPeriod);
+        const REFERENCE_TIME reqByMs = static_cast<REFERENCE_TIME>(kRenderBufferMs) * 10'000; // ms -> 100ns
+        const REFERENCE_TIME bufferDuration = (defaultPeriod > 0) ? std::max(reqByMs, defaultPeriod * 3) : reqByMs;
+
+        const DWORD streamFlags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+        hr = audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, streamFlags, bufferDuration, 0, renderWfx, nullptr);
         if (FAILED(hr)) {
             DebugLog(L"[AudioPlayback] Failed to initialize audio client.");
             if (closestMatch) CoTaskMemFree(closestMatch);
@@ -437,6 +458,19 @@ void AudioPlaybackThread() {
             continue;
         }
         if (closestMatch) CoTaskMemFree(closestMatch);
+
+        hAudioEvent.h = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        if (!hAudioEvent.h) {
+            DebugLog(L"[AudioPlayback] CreateEvent failed.");
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
+        hr = audioClient->SetEventHandle(hAudioEvent.h);
+        if (FAILED(hr)) {
+            DebugLog(L"[AudioPlayback] SetEventHandle failed.");
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
 
         hr = audioClient->GetBufferSize(&bufferFrameCount);
         if (FAILED(hr)) {
@@ -492,18 +526,41 @@ void AudioPlaybackThread() {
                 total_buffered_frames += block.pcm_data.size() / activeFormat->bytes_per_frame;
             }
 
+            // 低遅延優先: ジッタバッファが増えすぎたら古い音声を捨てる（遅延の堆積防止）
+            const size_t maxHoldFrames = (static_cast<size_t>(activeFormat->sample_rate) * kMaxJitterHoldMs) / 1000;
+            while (total_buffered_frames > maxHoldFrames && !jitterBuffer.empty()) {
+                total_buffered_frames -= jitterBuffer.front().pcm_data.size() / activeFormat->bytes_per_frame;
+                jitterBuffer.pop_front();
+                pcmReadOffset = 0;
+            }
+
             if (!isPlaying && total_buffered_frames >= targetJitterFrames) {
                 DebugLog(L"[AudioPlayback] Jitter buffer filled. Starting playback.");
                 isPlaying = true;
             }
 
             if (isPlaying) {
+                // イベント駆動: バッファが必要になるまで待つ（過剰先行書き込みを防ぐ）
+                DWORD w = WaitForSingleObject(hAudioEvent.h, 10);
+                if (w == WAIT_TIMEOUT) {
+                    continue;
+                }
+
                 UINT32 padding;
                 hr = audioClient->GetCurrentPadding(&padding);
                 if (FAILED(hr)) break;
 
+                // 先行投入(padding)を kMaxWriteAheadMs 以内に制限
+                const UINT32 maxWriteAheadFrames =
+                    static_cast<UINT32>((static_cast<uint64_t>(activeFormat->sample_rate) * kMaxWriteAheadMs) / 1000);
+                if (padding >= maxWriteAheadFrames) {
+                    // すでに先行しすぎ → 何も書かず次のイベントへ
+                    continue;
+                }
                 UINT32 framesAvailable = bufferFrameCount - padding;
-                if (framesAvailable > 0 && !jitterBuffer.empty()) {
+                const UINT32 allowWriteFrames = std::min(framesAvailable, maxWriteAheadFrames - padding);
+
+                if (allowWriteFrames > 0 && !jitterBuffer.empty()) {
                     DecodedPcmBlock& currentBlock = jitterBuffer.front();
 
                     // A/V Sync Logic
@@ -523,18 +580,22 @@ void AudioPlaybackThread() {
                     }
 
                     UINT32 framesRemainingInBlock = (currentBlock.pcm_data.size() - pcmReadOffset) / activeFormat->bytes_per_frame;
-                    UINT32 framesToWrite = std::min(framesAvailable, framesRemainingInBlock);
+                    UINT32 framesToWrite = std::min(allowWriteFrames, framesRemainingInBlock);
 
                     auto now = std::chrono::steady_clock::now();
-                    if (abs(sync_error_ns) > AUDIO_SYNC_TOLERANCE_MS * 1000000LL && std::chrono::duration_cast<std::chrono::milliseconds>(now - last_correction_time).count() > 200) {
+                    if (abs(sync_error_ns) > AUDIO_SYNC_TOLERANCE_MS * 1000000LL &&
+                        std::chrono::duration_cast<std::chrono::milliseconds>(now - last_correction_time).count() > 100) {
                         if (sync_error_ns > 0) { // Audio is late
-                            UINT32 framesToDrop = std::min(framesToWrite, (UINT32)(activeFormat->sample_rate * 0.005));
+                            // 遅れが大きいときは補正を強める（最大 20ms 相当まで一気に捨てる）
+                            UINT32 dropFrames = static_cast<UINT32>((static_cast<uint64_t>(activeFormat->sample_rate) * 20) / 1000);
+                            UINT32 framesToDrop = std::min(framesToWrite, dropFrames);
                             pcmReadOffset += framesToDrop * activeFormat->bytes_per_frame;
                             framesRemainingInBlock -= framesToDrop;
-                            framesToWrite = std::min(framesAvailable, framesRemainingInBlock);
+                            framesToWrite = std::min(allowWriteFrames, framesRemainingInBlock);
                             last_correction_time = now;
                         } else { // Audio is early
-                            UINT32 framesToInsert = std::min(framesAvailable, (UINT32)(activeFormat->sample_rate * 0.005));
+                            UINT32 insFrames = static_cast<UINT32>((static_cast<uint64_t>(activeFormat->sample_rate) * 10) / 1000);
+                            UINT32 framesToInsert = std::min(allowWriteFrames, insFrames);
                             BYTE* pData;
                             if (SUCCEEDED(renderClient->GetBuffer(framesToInsert, &pData))) {
                                 memset(pData, 0, framesToInsert * renderBlockAlign);
