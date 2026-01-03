@@ -64,6 +64,7 @@ set(SOURCES
     AppShutdown.cpp
     TimeSyncClient.cpp
     AudioClient.cpp
+    InputSender.cpp
 )
 
 # ヘッダーファイル
@@ -78,6 +79,7 @@ set(HEADERS
     TimeSyncClient.h
     AudioClient.h
     AudioPacket.h
+    InputSender.h
 )
 
 # 実行ファイルを作成

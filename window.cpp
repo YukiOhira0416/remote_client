@@ -711,6 +711,65 @@ static void FinalizeResize(HWND hWnd, bool forceAnnounce = false)
     InvalidateRect(hWnd, nullptr, FALSE);
 }
 
+// State for mouse input handling
+static int lastValidX = -1;
+static int lastValidY = -1;
+static bool isLeftButtonDown = false;
+static bool isRightButtonDown = false;
+
+// Helper function to transform window coordinates to video coordinates
+bool TransformCursorPos(HWND hWnd, int& outX, int& outY) {
+    RECT clientRect;
+    GetClientRect(hWnd, &clientRect);
+
+    POINT p;
+    GetCursorPos(&p);
+    ScreenToClient(hWnd, &p);
+
+    const float bbWidth = static_cast<float>(clientRect.right - clientRect.left);
+    const float bbHeight = static_cast<float>(clientRect.bottom - clientRect.top);
+    const float videoW = static_cast<float>(currentResolutionWidth.load());
+    const float videoH = static_cast<float>(currentResolutionHeight.load());
+
+    if (bbWidth <= 0.0f || bbHeight <= 0.0f || videoW <= 0.0f || videoH <= 0.0f) {
+        return false;
+    }
+
+    const float bbAspect = bbWidth / bbHeight;
+    const float videoAspect = videoW / videoH;
+
+    float vpW, vpH, vpX, vpY;
+    if (bbAspect > videoAspect) { // Pillarbox
+        vpH = bbHeight;
+        vpW = vpH * videoAspect;
+        vpX = (bbWidth - vpW) * 0.5f;
+        vpY = 0.0f;
+    } else { // Letterbox
+        vpW = bbWidth;
+        vpH = vpW / videoAspect;
+        vpX = 0.0f;
+        vpY = (bbHeight - vpH) * 0.5f;
+    }
+
+    bool isInside = (p.x >= vpX && p.x < vpX + vpW && p.y >= vpY && p.y < vpY + vpH);
+
+    if (isInside) {
+        float u = (p.x - vpX) / vpW;
+        float v = (p.y - vpY) / vpH;
+        outX = static_cast<int>(round(u * (videoW - 1)));
+        outY = static_cast<int>(round(v * (videoH - 1)));
+        // Clamp to be safe
+        outX = max(0, min((int)videoW - 1, outX));
+        outY = max(0, min((int)videoH - 1, outY));
+
+        lastValidX = outX;
+        lastValidY = outY;
+    }
+
+    return isInside;
+}
+
+
 UINT64 count = 0;
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     try {
@@ -803,6 +862,80 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             g_pendingResize.has.store(true, std::memory_order_release);
             g_lastFrameRenderTimeForKick = std::chrono::high_resolution_clock::now(); // render kick
 
+            return 0;
+        }
+
+        // Mouse Input Handling
+        case WM_MOUSEMOVE:
+        {
+            int x, y;
+            if (TransformCursorPos(hWnd, x, y)) {
+                g_mouseInputQueue.enqueue({MOUSE_MOVE, x, y, (unsigned short)wParam, 0, 0, 0});
+            }
+            return 0;
+        }
+        case WM_LBUTTONDOWN:
+        {
+            int x, y;
+            if (TransformCursorPos(hWnd, x, y)) {
+                isLeftButtonDown = true;
+                SetCapture(hWnd);
+                g_mouseInputQueue.enqueue({LBUTTON_DOWN, x, y, (unsigned short)wParam, 0, 0, 0});
+            }
+            return 0;
+        }
+        case WM_LBUTTONUP:
+        {
+            isLeftButtonDown = false;
+            if (!isRightButtonDown) ReleaseCapture();
+            int x, y;
+            unsigned char flags = 0;
+            if (!TransformCursorPos(hWnd, x, y)) {
+                x = lastValidX;
+                y = lastValidY;
+                flags = POS_IS_LAST_VALID;
+            }
+            g_mouseInputQueue.enqueue({LBUTTON_UP, x, y, (unsigned short)wParam, 0, 0, flags});
+            return 0;
+        }
+        case WM_RBUTTONDOWN:
+        {
+            int x, y;
+            if (TransformCursorPos(hWnd, x, y)) {
+                isRightButtonDown = true;
+                SetCapture(hWnd);
+                g_mouseInputQueue.enqueue({RBUTTON_DOWN, x, y, (unsigned short)wParam, 0, 0, 0});
+            }
+            return 0;
+        }
+        case WM_RBUTTONUP:
+        {
+            isRightButtonDown = false;
+            if (!isLeftButtonDown) ReleaseCapture();
+            int x, y;
+            unsigned char flags = 0;
+            if (!TransformCursorPos(hWnd, x, y)) {
+                x = lastValidX;
+                y = lastValidY;
+                flags = POS_IS_LAST_VALID;
+            }
+            g_mouseInputQueue.enqueue({RBUTTON_UP, x, y, (unsigned short)wParam, 0, 0, flags});
+            return 0;
+        }
+        case WM_MOUSEWHEEL:
+        {
+            int x, y;
+            if (TransformCursorPos(hWnd, x, y)) {
+                g_mouseInputQueue.enqueue({WHEEL, x, y, (unsigned short)GET_KEYSTATE_WPARAM(wParam), (short)GET_WHEEL_DELTA_WPARAM(wParam), 0, 0});
+            }
+            return 0;
+        }
+        case WM_MOUSEHWHEEL:
+        {
+            int x, y;
+            if (TransformCursorPos(hWnd, x, y)) {
+                g_mouseInputQueue.enqueue({HWHEEL, x, y, (unsigned short)GET_KEYSTATE_WPARAM(wParam), 0, (short)GET_WHEEL_DELTA_WPARAM(wParam), 0});
+            }
             return 0;
         }
 
