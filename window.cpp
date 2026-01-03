@@ -15,7 +15,7 @@
 #include <cstring>
 #include "DebugLog.h"
 #include "ReedSolomon.h"
-#include <algorithm> // For std::min, std::abs
+#include <algorithm>
 #include <vector> // For std::vector
 #include <deque>  // For std::deque (used by Globals.h)
 #include <mutex>  // For std::mutex (used by Globals.h)
@@ -31,6 +31,18 @@
 #include "main.h"
 #include "TimeSyncClient.h"
 #include "AudioClient.h"
+#include "InputSender.h"
+#include <windowsx.h> // For GET_X_LPARAM, GET_Y_LPARAM
+
+// The one and only InputSender instance
+extern std::unique_ptr<InputSender> g_inputSender;
+
+// Mouse state tracking
+static int g_lastValidMouseX = 0;
+static int g_lastValidMouseY = 0;
+static bool g_isLeftButtonDown = false;
+static bool g_isRightButtonDown = false;
+
 
 // Condition variable to signal when the window is shown
 extern std::mutex g_windowShownMutex;
@@ -723,9 +735,189 @@ static void FinalizeResize(HWND hWnd, bool forceAnnounce = false)
 }
 
 UINT64 count = 0;
+// Helper to calculate the video rect and transform coordinates
+static bool TransformMouseCoords(HWND hWnd, int mx, int my, int& outX, int& outY) {
+    RECT clientRect;
+    GetClientRect(hWnd, &clientRect);
+
+    const float bbWidth = static_cast<float>(clientRect.right - clientRect.left);
+    const float bbHeight = static_cast<float>(clientRect.bottom - clientRect.top);
+    const float videoW = static_cast<float>(currentResolutionWidth.load());
+    const float videoH = static_cast<float>(currentResolutionHeight.load());
+
+    if (bbWidth <= 0.0f || bbHeight <= 0.0f || videoW <= 0.0f || videoH <= 0.0f) {
+        return false;
+    }
+
+    const float bbAspect = bbWidth / bbHeight;
+    const float videoAspect = videoW / videoH;
+
+    float vpW, vpH, vpX, vpY;
+    if (bbAspect > videoAspect) { // Pillarbox
+        vpH = bbHeight;
+        vpW = vpH * videoAspect;
+        vpX = (bbWidth - vpW) * 0.5f;
+        vpY = 0.0f;
+    } else { // Letterbox
+        vpW = bbWidth;
+        vpH = vpW / videoAspect;
+        vpX = 0.0f;
+        vpY = (bbHeight - vpH) * 0.5f;
+    }
+
+    bool isInside = (mx >= vpX && mx < vpX + vpW && my >= vpY && my < vpY + vpH);
+
+    if (isInside) {
+        float u = (mx - vpX) / vpW;
+        float v = (my - vpY) / vpH;
+        outX = static_cast<int>(round(u * (videoW - 1)));
+        outY = static_cast<int>(round(v * (videoH - 1)));
+
+        outX = std::min(std::max(outX, 0), (int)videoW - 1);
+        outY = std::min(std::max(outY, 0), (int)videoH - 1);
+
+        g_lastValidMouseX = outX;
+        g_lastValidMouseY = outY;
+    }
+
+    return isInside;
+}
+
+
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     try {
         switch (message) {
+        case WM_MOUSEMOVE: {
+            if (!g_inputSender) break;
+            int xPos = GET_X_LPARAM(lParam);
+            int yPos = GET_Y_LPARAM(lParam);
+            int videoX, videoY;
+            if (TransformMouseCoords(hWnd, xPos, yPos, videoX, videoY)) {
+                MouseInputMessage msg = {0};
+                msg.flags = HAS_POS | MOVE;
+                msg.x = videoX;
+                msg.y = videoY;
+                msg.buttonsState = (g_isLeftButtonDown ? L_DOWN : 0) | (g_isRightButtonDown ? R_DOWN : 0);
+                g_inputSender->EnqueueMessage(msg);
+            }
+            break;
+        }
+        case WM_LBUTTONDOWN: {
+            if (!g_inputSender) break;
+            int xPos = GET_X_LPARAM(lParam);
+            int yPos = GET_Y_LPARAM(lParam);
+            int videoX, videoY;
+            if (TransformMouseCoords(hWnd, xPos, yPos, videoX, videoY)) {
+                g_isLeftButtonDown = true;
+                SetCapture(hWnd);
+                MouseInputMessage msg = {0};
+                msg.flags = HAS_POS | L_DOWN;
+                msg.x = videoX;
+                msg.y = videoY;
+                msg.buttonsState = (g_isLeftButtonDown ? L_DOWN : 0) | (g_isRightButtonDown ? R_DOWN : 0);
+                g_inputSender->EnqueueMessage(msg);
+            }
+            break;
+        }
+        case WM_LBUTTONUP: {
+            if (!g_inputSender) break;
+            g_isLeftButtonDown = false;
+            if (!g_isRightButtonDown) ReleaseCapture();
+
+            int xPos = GET_X_LPARAM(lParam);
+            int yPos = GET_Y_LPARAM(lParam);
+            int videoX, videoY;
+
+            MouseInputMessage msg = {0};
+            msg.flags = HAS_POS | L_UP;
+
+            if (TransformMouseCoords(hWnd, xPos, yPos, videoX, videoY)) {
+                msg.x = videoX;
+                msg.y = videoY;
+            } else {
+                msg.x = g_lastValidMouseX;
+                msg.y = g_lastValidMouseY;
+                msg.flags |= POS_IS_LAST_VALID;
+            }
+            msg.buttonsState = (g_isLeftButtonDown ? L_DOWN : 0) | (g_isRightButtonDown ? R_DOWN : 0);
+            g_inputSender->EnqueueMessage(msg);
+            break;
+        }
+        case WM_RBUTTONDOWN: {
+             if (!g_inputSender) break;
+            int xPos = GET_X_LPARAM(lParam);
+            int yPos = GET_Y_LPARAM(lParam);
+            int videoX, videoY;
+            if (TransformMouseCoords(hWnd, xPos, yPos, videoX, videoY)) {
+                g_isRightButtonDown = true;
+                SetCapture(hWnd);
+                MouseInputMessage msg = {0};
+                msg.flags = HAS_POS | R_DOWN;
+                msg.x = videoX;
+                msg.y = videoY;
+                msg.buttonsState = (g_isLeftButtonDown ? L_DOWN : 0) | (g_isRightButtonDown ? R_DOWN : 0);
+                g_inputSender->EnqueueMessage(msg);
+            }
+            break;
+        }
+        case WM_RBUTTONUP: {
+            if (!g_inputSender) break;
+            g_isRightButtonDown = false;
+            if (!g_isLeftButtonDown) ReleaseCapture();
+
+            int xPos = GET_X_LPARAM(lParam);
+            int yPos = GET_Y_LPARAM(lParam);
+            int videoX, videoY;
+
+            MouseInputMessage msg = {0};
+            msg.flags = HAS_POS | R_UP;
+
+            if (TransformMouseCoords(hWnd, xPos, yPos, videoX, videoY)) {
+                msg.x = videoX;
+                msg.y = videoY;
+            } else {
+                msg.x = g_lastValidMouseX;
+                msg.y = g_lastValidMouseY;
+                msg.flags |= POS_IS_LAST_VALID;
+            }
+            msg.buttonsState = (g_isLeftButtonDown ? L_DOWN : 0) | (g_isRightButtonDown ? R_DOWN : 0);
+            g_inputSender->EnqueueMessage(msg);
+            break;
+        }
+        case WM_MOUSEWHEEL: {
+            if (!g_inputSender) break;
+            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ScreenToClient(hWnd, &pt);
+            int videoX, videoY;
+
+            if (TransformMouseCoords(hWnd, pt.x, pt.y, videoX, videoY)) {
+                MouseInputMessage msg = {0};
+                msg.flags = HAS_POS | WHEEL_V;
+                msg.x = videoX;
+                msg.y = videoY;
+                msg.wheelV = GET_WHEEL_DELTA_WPARAM(wParam);
+                msg.buttonsState = (g_isLeftButtonDown ? L_DOWN : 0) | (g_isRightButtonDown ? R_DOWN : 0);
+                g_inputSender->EnqueueMessage(msg);
+            }
+            break;
+        }
+        case WM_MOUSEHWHEEL: {
+            if (!g_inputSender) break;
+            POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ScreenToClient(hWnd, &pt);
+            int videoX, videoY;
+
+            if (TransformMouseCoords(hWnd, pt.x, pt.y, videoX, videoY)) {
+                MouseInputMessage msg = {0};
+                msg.flags = HAS_POS | WHEEL_H;
+                msg.x = videoX;
+                msg.y = videoY;
+                msg.wheelH = GET_WHEEL_DELTA_WPARAM(wParam);
+                msg.buttonsState = (g_isLeftButtonDown ? L_DOWN : 0) | (g_isRightButtonDown ? R_DOWN : 0);
+                g_inputSender->EnqueueMessage(msg);
+            }
+            break;
+        }
         case WM_CLOSE:
             RequestShutdown(); // Signal all threads to exit and post WM_QUIT
             DestroyWindow(hWnd);

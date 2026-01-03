@@ -46,7 +46,12 @@
 #include <d3d12.h>
 #include "TimeSyncClient.h"
 #include "AudioClient.h"
+#include "InputSender.h"
+
 using namespace DebugLogAsync;
+
+// The one and only InputSender instance
+std::unique_ptr<InputSender> g_inputSender;
 
 // === 新規：ネットワーク準備・解像度ペンディング管理 ===
 std::atomic<bool> g_networkReady(false);
@@ -1154,6 +1159,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     // The app_running_atomic is now a global atomic defined in Globals.cpp
     // The windowSenderThread is removed as it's part of the old logic.
 
+    g_inputSender = std::make_unique<InputSender>();
+    if (!g_inputSender->Start()) {
+        DebugLog(L"wWinMain: Failed to start InputSender.");
+        // Handle error appropriately, maybe shutdown
+    }
+
     // Main render loop
     // Verified: The following loop correctly handles rendering during live-resize
     // by calling RenderFrame() unconditionally. No functional change was needed.
@@ -1197,6 +1208,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     }
 
     // Centralized Cleanup
+    if (g_inputSender) {
+        g_inputSender->Stop();
+    }
     StopAudioThreads();
     DebugLog(L"Exited message loop. Initiating final resource cleanup...");
     AppThreads appThreads{};

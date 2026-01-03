@@ -23,6 +23,10 @@
 // Audio client constants
 #define RECEIVE_IP_AUDIO   "192.168.0.3"
 #define RECEIVE_PORT_AUDIO 8200
+
+// Mouse input constants
+#define INPUT_SEND_IP "192.168.0.3"
+#define INPUT_SEND_PORT 8300
 #define AUDIO_ASSEMBLY_TIMEOUT_MS 120
 #define AUDIO_JITTER_TARGET_MS 30
 #define AUDIO_SYNC_TOLERANCE_MS 20
