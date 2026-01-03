@@ -186,4 +186,13 @@ struct ThreadConfig {
     int RS_M = 1;
 };
 
+// 各シャードパケットに付与するヘッダー
+struct ShardInfoHeader {
+    uint32_t frameNumber;       // フレーム番号 (ネットワークバイトオーダー)
+    uint32_t shardIndex;        // シャードインデックス (0..k-1: データシャード, k..n-1: パリティシャード) (リトルエンディアン)
+    uint32_t totalDataShards;   // データシャードの総数 (k) (リトルエンディアン)
+    uint32_t totalParityShards; // パリティシャードの総数 (m) (リトルエンディアン)
+    uint32_t originalDataLen;   // 元のH.264データの長さ (パケットサイズ) (リトルエンディアン)
+};
+
 #endif

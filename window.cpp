@@ -651,20 +651,9 @@ bool CreateCropCB() {
 
 std::atomic<uint32_t> g_globalFrameNumber(0);// FEC用フレーム番号
 
-// 各シャードパケットに付与するヘッダー
-struct ShardInfoHeader {
-    uint32_t frameNumber;       // フレーム番号 (ネットワークバイトオーダー)
-    uint32_t shardIndex;        // シャードインデックス (0..k-1: データシャード, k..n-1: パリティシャード) (リトルエンディアン)
-    uint32_t totalDataShards;   // データシャードの総数 (k) (リトルエンディアン)
-    uint32_t totalParityShards; // パリティシャードの総数 (m) (リトルエンディアン)
-    uint32_t originalDataLen;   // 元のH.264データの長さ (パケットサイズ) (リトルエンディアン)
-};
-
 extern uint64_t g_lastRenderedRgbaFrameId; // To track the last rendered frameB
 
 struct VertexPosTex { float x, y, z; float u, v; };
-
-
 
 void CleanupD3DRenderResources(); // Forward declaration
 

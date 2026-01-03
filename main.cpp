@@ -141,20 +141,6 @@ std::mutex g_frameMetadataMutex;
 std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> g_fragmentFirstPacketTime;
 std::atomic<uint64_t> g_rgbaFrameIdCounter{0};
 
-// Structures (assuming they are defined in Globals.h or a shared header, replicating here for clarity if not)
-// Ensure these match the definitions used by the sender (CaptureManager.cpp)
-#ifndef SHARED_PACKET_STRUCTURES_DEFINED
-#define SHARED_PACKET_STRUCTURES_DEFINED
-struct ShardInfoHeader {
-    uint32_t frameNumber;        // Network byte order
-    uint32_t shardIndex;         // Network byte order (0 to k-1 for data, k to k+m-1 for parity)
-    uint32_t totalDataShards;    // Network byte order (RS_K)
-    uint32_t totalParityShards;  // Network byte order (RS_M)
-    uint32_t originalDataLen;    // Network byte order (length of AV1 frame before padding and FEC)
-};
-
-#endif
-
 // ENet Packet type prefixes (consistent with sender in CaptureManager.cpp)
 const uint8_t PACKET_TYPE_FULL_SHARD      = 0x01;
 const uint8_t ENET_PACKET_TYPE_APP_FRAGMENT = 0x02;
