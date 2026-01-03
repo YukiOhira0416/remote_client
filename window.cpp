@@ -335,7 +335,6 @@ Microsoft::WRL::ComPtr<ID3D12Resource> g_textTexture;
 Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_textSrvHeap;
 
 static constexpr UINT kSwapChainBufferCount = 3; // was 2
-Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;
 Microsoft::WRL::ComPtr<ID3D12CommandQueue> g_d3d12CommandQueue;
 Microsoft::WRL::ComPtr<IDXGISwapChain3> g_swapChain; // Use IDXGISwapChain3 or 4
 Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_rtvHeap;

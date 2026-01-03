@@ -1,4 +1,5 @@
 #include "Globals.h"
+#include "nvdec.h"
 
 // Instantiate the global queues
 moodycamel::ConcurrentQueue<MouseInputMessage> g_mouseInputQueue;
