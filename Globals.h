@@ -28,7 +28,7 @@
 #define AUDIO_SYNC_TOLERANCE_MS 20
 
 // Input sender constants
-#define INPUT_SEND_IP "192.168.0.3"
+#define INPUT_SEND_IP "192.168.0.2"
 #define INPUT_SEND_PORT 8300
 
 // CUDA includes
