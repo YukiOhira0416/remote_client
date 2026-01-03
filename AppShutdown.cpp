@@ -101,6 +101,8 @@ void ReleaseAllResources(const AppThreads& threads) {
 
         // 1) Join all threads to ensure they have exited cleanly.
         try {
+            if (threads.input_sender_running) threads.input_sender_running->store(false);
+            SafeJoin(threads.inputSenderThread, L"inputSenderThread");
             SafeJoin(threads.bandwidthThread, L"bandwidthThread");
             SafeJoin(threads.resendThread, L"resendThread");
             SafeJoinVector(threads.receiverThreads, L"receiverThreads");

@@ -27,6 +27,10 @@
 #define AUDIO_JITTER_TARGET_MS 30
 #define AUDIO_SYNC_TOLERANCE_MS 20
 
+// Input sender constants
+#define INPUT_SEND_IP "192.168.0.3"
+#define INPUT_SEND_PORT 8300
+
 // CUDA includes
 #include <cuda.h>
 
@@ -160,7 +164,37 @@ extern std::atomic<bool> g_showRebootOverlay;
 extern std::atomic<bool> g_forcePresentOnce; // Present at least once even if no new decoded frame
 extern std::atomic<bool> dumpEncodedStreamToFiles;
 
+// Input message types
+enum MouseInputType {
+    MOUSE_MOVE,
+    LBUTTON_DOWN,
+    LBUTTON_UP,
+    RBUTTON_DOWN,
+    RBUTTON_UP,
+    MBUTTON_DOWN,
+    MBUTTON_UP,
+    WHEEL,
+    HWHEEL
+};
+
+// Flags for mouse input messages
+enum MouseInputFlags {
+    POS_IS_LAST_VALID = 0x01
+};
+
+// Struct for mouse input messages
+struct MouseInputMessage {
+    MouseInputType messageType;
+    int x;
+    int y;
+    unsigned short buttonsState; // Corresponds to wParam of mouse messages
+    short wheelDelta;
+    short wheelHDelta;
+    unsigned char flags;
+};
+
 // Global queues and synchronization for frame management
+extern moodycamel::ConcurrentQueue<MouseInputMessage> g_mouseInputQueue;
 extern moodycamel::ConcurrentQueue<EncodedFrame> g_encodedFrameQueue;
 extern std::deque<ReadyGpuFrame> g_readyGpuFrameQueue;
 extern std::mutex g_readyGpuFrameQueueMutex;
