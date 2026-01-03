@@ -759,8 +759,8 @@ bool TransformCursorPos(HWND hWnd, int& outX, int& outY) {
         outX = static_cast<int>(round(u * (videoW - 1)));
         outY = static_cast<int>(round(v * (videoH - 1)));
         // Clamp to be safe
-        outX = max(0, min((int)videoW - 1, outX));
-        outY = max(0, min((int)videoH - 1, outY));
+        outX = std::max(0, std::min((int)videoW - 1, outX));
+        outY = std::max(0, std::min((int)videoH - 1, outY));
 
         lastValidX = outX;
         lastValidY = outY;
