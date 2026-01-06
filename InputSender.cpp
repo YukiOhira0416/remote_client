@@ -110,6 +110,8 @@ void InputSendThread(std::atomic<bool>& running) {
 
     // 1 input message == 1 FEC frame. Use the same monotonic counter for both seq and frameNumber.
     std::atomic<uint32_t> messageCounter(0);
+    uint64_t sentMessages = 0;
+    auto lastLogTime = std::chrono::steady_clock::now();
 
     while (running) {
         MouseInputMessage msg;
@@ -135,6 +137,7 @@ void InputSendThread(std::atomic<bool>& running) {
         }
 
         if (shouldSend) {
+            sentMessages++;
             const uint32_t seq = messageCounter.fetch_add(1, std::memory_order_relaxed);
             const MouseInputMessageWireV1 wire = BuildWireMessage(msg, seq);
             std::vector<uint8_t> data = SerializeWireMessage(wire);
@@ -182,6 +185,13 @@ void InputSendThread(std::atomic<bool>& running) {
         // Sleep briefly if idle
         if (!hasPendingMove && !shouldSend) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        if (now - lastLogTime >= std::chrono::seconds(1)) {
+            DebugLog(L"InputSendThread: Sent " + std::to_wstring(sentMessages) + L" messages in the last second.");
+            sentMessages = 0;
+            lastLogTime = now;
         }
     }
 

@@ -771,6 +771,7 @@ bool TransformCursorPos(HWND hWnd, int& outX, int& outY) {
 
 UINT64 count = 0;
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    static uint64_t mouseMoveCount = 0;
     try {
         switch (message) {
         case WM_CLOSE:
@@ -870,6 +871,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             int x, y;
             if (TransformCursorPos(hWnd, x, y)) {
                 g_mouseInputQueue.enqueue({MOUSE_MOVE, x, y, (unsigned short)wParam, 0, 0, 0});
+                if (++mouseMoveCount % 100 == 0) {
+                    DebugLog(L"WndProc: WM_MOUSEMOVE enqueued.");
+                }
             }
             return 0;
         }
@@ -880,6 +884,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 isLeftButtonDown = true;
                 SetCapture(hWnd);
                 g_mouseInputQueue.enqueue({LBUTTON_DOWN, x, y, (unsigned short)wParam, 0, 0, 0});
+                DebugLog(L"WndProc: WM_LBUTTONDOWN enqueued.");
             }
             return 0;
         }
@@ -895,6 +900,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 flags = POS_IS_LAST_VALID;
             }
             g_mouseInputQueue.enqueue({LBUTTON_UP, x, y, (unsigned short)wParam, 0, 0, flags});
+            DebugLog(L"WndProc: WM_LBUTTONUP enqueued.");
             return 0;
         }
         case WM_RBUTTONDOWN:
@@ -904,6 +910,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 isRightButtonDown = true;
                 SetCapture(hWnd);
                 g_mouseInputQueue.enqueue({RBUTTON_DOWN, x, y, (unsigned short)wParam, 0, 0, 0});
+                DebugLog(L"WndProc: WM_RBUTTONDOWN enqueued.");
             }
             return 0;
         }
@@ -919,6 +926,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 flags = POS_IS_LAST_VALID;
             }
             g_mouseInputQueue.enqueue({RBUTTON_UP, x, y, (unsigned short)wParam, 0, 0, flags});
+            DebugLog(L"WndProc: WM_RBUTTONUP enqueued.");
             return 0;
         }
         case WM_MOUSEWHEEL:
@@ -926,6 +934,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             int x, y;
             if (TransformCursorPos(hWnd, x, y)) {
                 g_mouseInputQueue.enqueue({WHEEL, x, y, (unsigned short)GET_KEYSTATE_WPARAM(wParam), (short)GET_WHEEL_DELTA_WPARAM(wParam), 0, 0});
+                DebugLog(L"WndProc: WM_MOUSEWHEEL enqueued.");
             }
             return 0;
         }
@@ -934,6 +943,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             int x, y;
             if (TransformCursorPos(hWnd, x, y)) {
                 g_mouseInputQueue.enqueue({HWHEEL, x, y, (unsigned short)GET_KEYSTATE_WPARAM(wParam), 0, (short)GET_WHEEL_DELTA_WPARAM(wParam), 0});
+                DebugLog(L"WndProc: WM_MOUSEHWHEEL enqueued.");
             }
             return 0;
         }
