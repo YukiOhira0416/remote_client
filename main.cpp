@@ -55,9 +55,6 @@ std::atomic<bool> g_pendingResolutionValid(false);
 std::atomic<int>  g_pendingW(0), g_pendingH(0);
 std::atomic<bool> g_didInitialAnnounce(false);
 
-// Render kick global
-std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
-
 // Condition variable to signal when the window is shown
 std::mutex g_windowShownMutex;
 std::condition_variable g_windowShownCv;
@@ -248,27 +245,8 @@ ThreadConfig getOptimalThreadConfig(){
     return config;
 }
 
-// どこからでも呼べるように：解像度が確定/変更されたときの通知
-void OnResolutionChanged_GatedSend(int w, int h, bool forceResendNow = false)
-{
-    currentResolutionWidth  = w;
-    currentResolutionHeight = h;
 
-    // 常にペンディング更新（最後の値を保持）
-    g_pendingW = w; g_pendingH = h; g_pendingResolutionValid = true;
-
-    if (forceResendNow || g_networkReady.load()) {
-        DebugLog(L"OnResolutionChanged_GatedSend: sending now.");
-        SendFinalResolution(w, h);
-        ClearReorderState();
-
-        g_pendingResolutionValid = false;
-    } else {
-        DebugLog(L"OnResolutionChanged_GatedSend: network not ready, pending.");
-    }
-}
-
-// ネットワーク（ENet受信側）が「接続完了」になったときに必ず呼ぶ
+// この関数はネットワーク接続確立のタイミングで、クライアントの解像度情報をサーバーに確実に伝達するために使用される。
 void OnNetworkReady()
 {
     g_networkReady = true;

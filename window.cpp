@@ -524,24 +524,33 @@ void WaitForGpu(); // D3D12: Helper function to wait for GPU to finish commands
 // ==== [Resize helpers - END] ====
 
 // from main.cpp
-extern void OnResolutionChanged_GatedSend(int w, int h, bool forceResendNow);
-extern std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
+extern std::atomic<bool> g_networkReady;
+extern std::atomic<bool> g_pendingResolutionValid;
+extern std::atomic<int> g_pendingW, g_pendingH;
+
+void OnResolutionChanged_GatedSend(int w, int h, bool forceResendNow = false)
+{
+    currentResolutionWidth  = w;
+    currentResolutionHeight = h;
+
+    // 常にペンディング更新（最後の値を保持）
+    g_pendingW = w; g_pendingH = h; g_pendingResolutionValid = true;
+
+    if (forceResendNow || g_networkReady.load()) {
+        DebugLog(L"OnResolutionChanged_GatedSend: sending now.");
+        SendFinalResolution(w, h);
+        ClearReorderState();
+
+        g_pendingResolutionValid = false;
+    } else {
+        DebugLog(L"OnResolutionChanged_GatedSend: network not ready, pending.");
+    }
+}
 
 // 送信フレーム番号で並べる小さなバッファ
 static std::map<uint32_t, ReadyGpuFrame> g_reorderBuffer;
 static std::mutex g_reorderMutex;
 static ReadyGpuFrame g_lastDrawnFrame; // 最後に描画されたフレームをキャッシュ
-
-// ==== [In-flight Frame Management - BEGIN] ====
-// GPUがまだ使用中の可能性のあるフレームのリソースを管理するための構造体 (REMOVED with new fence logic)
-// struct InFlightFrame {
-//     ReadyGpuFrame frameData;
-//     UINT64 fenceValue;
-// };
-// // GPUへ投入済みのフレームを保持するキュー
-// static std::queue<InFlightFrame> g_inFlightFrames;
-// static std::mutex g_inFlightFramesMutex;
-// ==== [In-flight Frame Management - END] ====
 
 static uint32_t g_expectedStreamFrame = 0;
 static bool     g_expectedInitialized = false;

@@ -42,4 +42,6 @@ std::atomic<bool> reboot_listener_running(true);
 std::atomic<int> currentResolutionWidth(0);
 std::atomic<int> currentResolutionHeight(0);
 
+std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
+
 Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;

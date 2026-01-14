@@ -79,6 +79,7 @@ extern std::atomic<bool> g_decode_worker_Running;
 extern std::atomic<bool> reboot_listener_running;
 extern std::atomic<int> currentResolutionWidth;
 extern std::atomic<int> currentResolutionHeight;
+extern std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
 extern HWND g_hWnd;
 extern HANDLE g_frameLatencyWaitableObject;
 // D3D12 Globals (defined in window.cpp)
