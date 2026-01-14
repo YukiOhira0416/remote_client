@@ -360,7 +360,7 @@ void HexDumpBytes(const std::vector<uint8_t>& header, const std::vector<uint8_t>
         hex.push_back(kHex[(b >> 4) & 0xF]);
         hex.push_back(kHex[b & 0xF]);
     }
-    // Using custom ConvertToWString function if available, otherwise std::wstring constructor
+    
     std::wstring wHex(hex.begin(), hex.end());
     DebugLog(L"[AudioDump] " + wHex);
 }

@@ -45,3 +45,17 @@ std::atomic<int> currentResolutionHeight(0);
 std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
 
 Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;
+
+// String conversion utility implementation
+std::wstring ConvertToWString(const std::string& str) {
+    if (str.empty()) return L"";
+    int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
+    if (size_needed <= 0) return L"(invalid UTF-8 string)";
+    std::wstring wstr(size_needed, 0);
+    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, &wstr[0], size_needed);
+    // Remove the null terminator at the end
+    if (!wstr.empty() && wstr.back() == L'\0') {
+        wstr.pop_back();
+    }
+    return wstr;
+}

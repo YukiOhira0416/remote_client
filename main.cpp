@@ -287,9 +287,7 @@ void ClearTimedOutAppFragments() {
     auto now = std::chrono::steady_clock::now();
     for (auto it = appFragmentBuffers.begin(); it != appFragmentBuffers.end(); /* manual increment */) {
         if (std::chrono::duration_cast<std::chrono::seconds>(now - it->second.first_fragment_received_time) > APP_FRAGMENT_ASSEMBLY_TIMEOUT) {
-            // Consider adding thread ID if this function is called from multiple threads,
-            // though with a single global buffer, the log source might be less critical here.
-            //DebugLog(L"ClearTimedOutAppFragments: Clearing timed-out app fragments for packet ID " + std::to_wstring(it->first));
+            DebugLog(L"ClearTimedOutAppFragments: Timing out assembly for original_packet_id " + std::to_wstring(it->first));
             it = appFragmentBuffers.erase(it);
         } else {
             ++it;
@@ -297,18 +295,7 @@ void ClearTimedOutAppFragments() {
     }
 }
 
-std::wstring ConvertToWString(const std::string& str) {
-    if (str.empty()) return L"";
-    int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
-    if (size_needed <= 0) return L"(invalid UTF-8 string)";
-    std::wstring wstr(size_needed, 0);
-    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, &wstr[0], size_needed);
-    // Remove the null terminator at the end
-    if (!wstr.empty() && wstr.back() == L'\0') {
-        wstr.pop_back();
-    }
-    return wstr;
-}
+
 
 void SaveEncodedStreamToFile(const std::vector<uint8_t>& prepared_encodedBuffer, const std::string& baseName) {
     // ★ スレッドIDをログに追加して、どのスレッドからの呼び出しから分かるようにする
@@ -380,8 +367,6 @@ void CountBandW() {
     inet_pton(AF_INET, SEND_IP_BANDWIDTH, &serverAddr.sin_addr);
 
     std::vector<char> data(BANDWIDTH_DATA_SIZE, 'A');
-
-    //DebugLog("Start bandwidth measurement loop.");
 
     const char* endMessage = "END";
     sendto(udpSocket, endMessage, strlen(endMessage), 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
