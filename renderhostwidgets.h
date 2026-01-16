@@ -6,6 +6,7 @@
 #include <QSizePolicy>
 #include <windows.h>
 #include "Globals.h"
+#include "window.h"
 
 class RenderHostWidgets : public QFrame {
     Q_OBJECT
@@ -38,6 +39,8 @@ protected:
         if (g_hWnd) {
             // 子HWND（描写ウインドウ）のサイズを同期
             MoveWindow(g_hWnd, 0, 0, width(), height(), TRUE);
+            // サーバーへ解像度変更を通知
+            NotifyResolutionChange(width(), height());
         }
     }
 };

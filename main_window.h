@@ -2,6 +2,7 @@
 #define MAIN_WINDOW_H
 
 #include <QMainWindow>
+#include <QResizeEvent>
 #include "mainwindow.h"
 #include "renderhostwidgets.h"
 
@@ -15,6 +16,7 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 private:
     Ui::MainWindow ui;
