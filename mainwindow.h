@@ -11,11 +11,11 @@
 
 #include <QtCore/QVariant>
 #include <QtWidgets/QApplication>
-#include <QtWidgets/QFrame>
 #include <QtWidgets/QMainWindow>
 #include <QtWidgets/QMenuBar>
 #include <QtWidgets/QStatusBar>
 #include <QtWidgets/QWidget>
+#include "renderhostwidgets.h"
 
 QT_BEGIN_NAMESPACE
 
@@ -23,7 +23,7 @@ class Ui_MainWindow
 {
 public:
     QWidget *centralwidget;
-    QFrame *frame;
+    RenderHostWidgets *frame;
     QMenuBar *menubar;
     QStatusBar *statusbar;
 
@@ -34,7 +34,7 @@ public:
         MainWindow->resize(1568, 806);
         centralwidget = new QWidget(MainWindow);
         centralwidget->setObjectName("centralwidget");
-        frame = new QFrame(centralwidget);
+        frame = new RenderHostWidgets(centralwidget);
         frame->setObjectName("frame");
         frame->setGeometry(QRect(20, 20, 1280, 720));
         QSizePolicy sizePolicy(QSizePolicy::Policy::Expanding, QSizePolicy::Policy::Expanding);

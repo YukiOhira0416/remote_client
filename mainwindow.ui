@@ -14,7 +14,7 @@
    <string>MainWindow</string>
   </property>
   <widget class="QWidget" name="centralwidget">
-   <widget class="QFrame" name="frame">
+   <widget class="RenderHostWidgets" name="frame">
     <property name="geometry">
      <rect>
       <x>20</x>
@@ -49,6 +49,14 @@
   </widget>
   <widget class="QStatusBar" name="statusbar"/>
  </widget>
+ <customwidgets>
+  <customwidget>
+   <class>RenderHostWidgets</class>
+   <extends>QFrame</extends>
+   <header>renderhostwidgets.h</header>
+   <container>1</container>
+  </customwidget>
+ </customwidgets>
  <resources/>
  <connections/>
 </ui>
