@@ -1,3 +1,6 @@
+#ifndef WINDOW_H
+#define WINDOW_H
+
 #include <windows.h>
 #include <wrl/client.h>
 #include <atomic>
@@ -12,3 +15,5 @@ void CleanupD3DRenderResources();
 void WaitForGpu();
 void SnapToKnownResolution(int srcW, int srcH, int& outW, int& outH);
 void NotifyResolutionChange(int cw, int ch);
+
+#endif // WINDOW_H
