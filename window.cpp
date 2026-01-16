@@ -122,6 +122,8 @@ static bool CreateWindowOnBestMonitor(HINSTANCE hInstance, int nCmdShow,
         y = 0;
         winW = parentRect.right - parentRect.left;
         winH = parentRect.bottom - parentRect.top;
+        desiredClientWidth = winW;
+        desiredClientHeight = winH;
     } else {
         x = mi.rcWork.left + ((mi.rcWork.right  - mi.rcWork.left) - winW) / 2;
         y = mi.rcWork.top  + ((mi.rcWork.bottom - mi.rcWork.top) - winH) / 2;
@@ -405,28 +407,20 @@ static void HandleDeviceRemovedAndReinit() noexcept {
 
 // ==== [Resize helpers - BEGIN] ====
 
-// --- Window client padding around the video (in pixels) ---
-static constexpr int kClientPaddingX = 16;
-static constexpr int kClientPaddingY = 16;
-
-// 「既知解像度」テーブルを共通化
-struct TargetResolution { int width; int height; };
-// Dense 16:9 ladder from 8K to 360p + practical intermediate widths.
-static const TargetResolution kKnownResolutions[] = {
-    {3840, 2160}, // 4K UHD
-    {2560, 1440}, // QHD
-    {1920, 1080}, // FHD
-    {1280, 720},  // HD
-};
-
-// 既知解像度にスナップするユーティリティ
+// 16:9のアスペクト比を維持するようにサイズを調整するユーティリティ
 void SnapToKnownResolution(int srcW, int srcH, int& outW, int& outH) {
-    int bestW = srcW, bestH = srcH, best = INT_MAX;
-    for (auto& r : kKnownResolutions) {
-        int d = abs(srcW - r.width) + abs(srcH - r.height);
-        if (d < best) { best = d; bestW = r.width; bestH = r.height; }
+    if (srcW <= 0 || srcH <= 0) {
+        outW = 1280; outH = 720;
+        return;
     }
-    outW = bestW; outH = bestH;
+    // 16:9を維持しつつ、元の矩形に収まる最大のサイズを計算する
+    if (srcW * 9 > srcH * 16) {
+        outW = srcH * 16 / 9;
+        outH = srcH;
+    } else {
+        outW = srcW;
+        outH = srcW * 9 / 16;
+    }
 }
 
 // サーバーへ最終解像度を送る（旧 SendWindowSize 代替）
@@ -577,7 +571,7 @@ struct VertexPosTex { float x, y, z; float u, v; };
 
 void CleanupD3DRenderResources(); // Forward declaration
 
-// Helper to handle the logic for snapping, padding, and notifying after a resize event.
+// Helper to handle the logic for snapping, and notifying after a resize event.
 static void FinalizeResize(HWND hWnd, bool forceAnnounce = false)
 {
     // 子ウィンドウ（埋め込み）の場合はトップレベルウィンドウの調整をスキップ
@@ -605,13 +599,10 @@ static void FinalizeResize(HWND hWnd, bool forceAnnounce = false)
     int tw = 0, th = 0;
     SnapToKnownResolution(cw, ch, tw, th); // tw,th = snapped *video* size (16:9)
 
-    const int paddedClientW = tw + kClientPaddingX * 2;
-    const int paddedClientH = th + kClientPaddingY * 2;
-
-    // If the snapped resolution and padded size are already correct, do nothing,
+    // If the snapped resolution and size are already correct, do nothing,
     // UNLESS a force announce is requested (e.g., after a monitor move).
     if (currentResolutionWidth.load() == tw && currentResolutionHeight.load() == th &&
-        cw == paddedClientW && ch == paddedClientH) {
+        cw == tw && ch == th) {
         if (forceAnnounce) {
             // This nudge ensures the server gets a resolution update even if the
             // window size itself didn't change, which can happen on monitor moves.
@@ -624,8 +615,8 @@ static void FinalizeResize(HWND hWnd, bool forceAnnounce = false)
     currentResolutionWidth  = tw;
     currentResolutionHeight = th;
 
-    // Adjust *outer* window so that client becomes padded size
-    RECT wr{0, 0, paddedClientW, paddedClientH};
+    // Adjust *outer* window so that client becomes exactly tw x th
+    RECT wr{0, 0, tw, th};
     DWORD style = GetWindowLong(hWnd, GWL_STYLE);
     DWORD ex    = GetWindowLong(hWnd, GWL_EXSTYLE);
     AdjustWindowRectEx(&wr, style, GetMenu(hWnd)!=NULL, ex);
@@ -637,11 +628,9 @@ static void FinalizeResize(HWND hWnd, bool forceAnnounce = false)
                      SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
-    // Enqueue swap-chain resize to *padded client size*.
-    // This might be redundant if SetWindowPos triggers a WM_SIZE that is handled,
-    // but it's important to ensure the resize is correctly queued.
-    g_pendingResize.w.store(paddedClientW, std::memory_order_relaxed);
-    g_pendingResize.h.store(paddedClientH, std::memory_order_relaxed);
+    // Enqueue swap-chain resize to exactly tw x th.
+    g_pendingResize.w.store(tw, std::memory_order_relaxed);
+    g_pendingResize.h.store(th, std::memory_order_relaxed);
     g_pendingResize.has.store(true, std::memory_order_release);
 
     // Notify server (single gate) with the *video* resolution ONLY
@@ -918,13 +907,22 @@ bool InitWindow(HINSTANCE hInstance, int nCmdShow, HWND parentHwnd) {
         }
     }
 
-    const int initialWidth = 1920;
-    const int initialHeight = 1080;
+    int initialWidth = 1920;
+    int initialHeight = 1080;
+    if (parentHwnd) {
+        RECT pr;
+        GetClientRect(parentHwnd, &pr);
+        initialWidth = pr.right - pr.left;
+        initialHeight = pr.bottom - pr.top;
+        if (initialWidth <= 0 || initialHeight <= 0) {
+            initialWidth = 1280; initialHeight = 720;
+        }
+    }
     if (!CreateWindowOnBestMonitor(hInstance, nCmdShow, initialWidth, initialHeight, parentHwnd)) {
         return false;
     }
 
-    // クライアント実寸から既知解像度へスナップして一回送信
+    // クライアント実寸からアスペクト比を維持するように一回送信
     RECT rc{}; GetClientRect(g_hWnd, &rc);
     int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
     int tw, th;
@@ -933,13 +931,9 @@ bool InitWindow(HINSTANCE hInstance, int nCmdShow, HWND parentHwnd) {
     currentResolutionWidth = tw;
     currentResolutionHeight = th;
 
-    // Make the *client area* slightly larger than the video to leave margins
-    const int paddedClientW = tw + kClientPaddingX * 2;
-    const int paddedClientH = th + kClientPaddingY * 2;
-
-    // If the initial client size differs from the snapped+padded size, adjust the window.
-    if (cw != paddedClientW || ch != paddedClientH) {
-        RECT wr = {0, 0, paddedClientW, paddedClientH};
+    // 初期クライアントサイズが16:9でない場合は調整
+    if (cw != tw || ch != th) {
+        RECT wr = {0, 0, tw, th};
         DWORD style = GetWindowLong(g_hWnd, GWL_STYLE);
         DWORD ex    = GetWindowLong(g_hWnd, GWL_EXSTYLE);
         AdjustWindowRectEx(&wr, style, GetMenu(g_hWnd) != NULL, ex);
