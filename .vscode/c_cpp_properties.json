@@ -10,7 +10,8 @@
                 "${workspaceFolder}/enet_x64-windows/include",
                 "${workspaceFolder}/isa-l/include",
                 "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.9/include",
-                "C:/Program Files/NVIDIA Corporation/Video_Codec_SDK_13.0.19/Interface"
+                "C:/Program Files/NVIDIA Corporation/Video_Codec_SDK_13.0.19/Interface",
+                "C:/Qt/6.9.3/msvc2022_64/include"
             ],
             "defines": [
                 "_DEBUG",
