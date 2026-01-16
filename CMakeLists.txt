@@ -33,6 +33,13 @@ add_definitions(-DUNICODE -D_UNICODE)
 # プリプロセッサ定義
 add_definitions(-DNOMINMAX -DWIN32_LEAN_AND_MEAN)
 
+# Qt support
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTOUIC ON)
+set(CMAKE_AUTORCC ON)
+
+find_package(Qt6 REQUIRED COMPONENTS Widgets Core Gui)
+
 # インクルードディレクトリ
 include_directories(
     ${CMAKE_SOURCE_DIR}
@@ -94,6 +101,9 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 
 # ライブラリのリンク
 target_link_libraries(${PROJECT_NAME}
+    Qt6::Widgets
+    Qt6::Core
+    Qt6::Gui
     # Windows基本ライブラリ
     user32.lib
     ws2_32.lib

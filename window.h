@@ -4,7 +4,7 @@
 
 extern std::atomic<bool> g_isSizing;
 
-bool InitWindow(HINSTANCE hInstance, int nCmdShow);
+bool InitWindow(HINSTANCE hInstance, int nCmdShow, HWND hParent = NULL);
 bool InitD3D();
 void RenderFrame();
 void SendWindowSize();

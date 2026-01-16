@@ -1,74 +1,26 @@
-/********************************************************************************
-** Form generated from reading UI file 'mainwindow.ui'
-**
-** Created by: Qt User Interface Compiler version 6.9.3
-**
-** WARNING! All changes made in this file will be lost when recompiling UI file!
-********************************************************************************/
+#ifndef MAINWINDOW_ACTUAL_H
+#define MAINWINDOW_ACTUAL_H
 
-#ifndef MAINWINDOW_H
-#define MAINWINDOW_H
-
-#include <QtCore/QVariant>
-#include <QtWidgets/QApplication>
-#include <QtWidgets/QMainWindow>
-#include <QtWidgets/QMenuBar>
-#include <QtWidgets/QStatusBar>
-#include <QtWidgets/QWidget>
+#include <QMainWindow>
+#include "ui_mainwindow.h"
 #include "renderhostwidgets.h"
 
-QT_BEGIN_NAMESPACE
-
-class Ui_MainWindow
-{
+class MainWindow : public QMainWindow {
+    Q_OBJECT
 public:
-    QWidget *centralwidget;
-    RenderHostWidgets *frame;
-    QMenuBar *menubar;
-    QStatusBar *statusbar;
+    explicit MainWindow(QWidget* parent = nullptr) : QMainWindow(parent), ui(new Ui::MainWindow) {
+        ui->setupUi(this);
+    }
+    ~MainWindow() {
+        delete ui;
+    }
 
-    void setupUi(QMainWindow *MainWindow)
-    {
-        if (MainWindow->objectName().isEmpty())
-            MainWindow->setObjectName("MainWindow");
-        MainWindow->resize(1568, 806);
-        centralwidget = new QWidget(MainWindow);
-        centralwidget->setObjectName("centralwidget");
-        frame = new RenderHostWidgets(centralwidget);
-        frame->setObjectName("frame");
-        frame->setGeometry(QRect(20, 20, 1280, 720));
-        QSizePolicy sizePolicy(QSizePolicy::Policy::Expanding, QSizePolicy::Policy::Expanding);
-        sizePolicy.setHorizontalStretch(0);
-        sizePolicy.setVerticalStretch(0);
-        sizePolicy.setHeightForWidth(frame->sizePolicy().hasHeightForWidth());
-        frame->setSizePolicy(sizePolicy);
-        frame->setFrameShape(QFrame::Shape::StyledPanel);
-        frame->setFrameShadow(QFrame::Shadow::Raised);
-        MainWindow->setCentralWidget(centralwidget);
-        menubar = new QMenuBar(MainWindow);
-        menubar->setObjectName("menubar");
-        menubar->setGeometry(QRect(0, 0, 1568, 33));
-        MainWindow->setMenuBar(menubar);
-        statusbar = new QStatusBar(MainWindow);
-        statusbar->setObjectName("statusbar");
-        MainWindow->setStatusBar(statusbar);
+    RenderHostWidgets* getRenderHost() const {
+        return ui->frame;
+    }
 
-        retranslateUi(MainWindow);
-
-        QMetaObject::connectSlotsByName(MainWindow);
-    } // setupUi
-
-    void retranslateUi(QMainWindow *MainWindow)
-    {
-        MainWindow->setWindowTitle(QCoreApplication::translate("MainWindow", "MainWindow", nullptr));
-    } // retranslateUi
-
+private:
+    Ui::MainWindow* ui;
 };
 
-namespace Ui {
-    class MainWindow: public Ui_MainWindow {};
-} // namespace Ui
-
-QT_END_NAMESPACE
-
-#endif // MAINWINDOW_H
+#endif // MAINWINDOW_ACTUAL_H

@@ -76,45 +76,53 @@ static UINT GetDpiForMonitorOrDefault(HMONITOR hMon) {
 }
 
 static bool CreateWindowOnBestMonitor(HINSTANCE hInstance, int nCmdShow,
-                                      int desiredClientWidth, int desiredClientHeight) {
-    // カーソル位置のモニタを初期ターゲットにする
-    POINT pt; GetCursorPos(&pt);
-    HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO mi{ sizeof(MONITORINFO) };
-    if (!GetMonitorInfoW(hMon, &mi)) {
-        mi.rcWork = {0, 0, desiredClientWidth, desiredClientHeight};
-    }
-    UINT dpi = GetDpiForMonitorOrDefault(hMon);
+                                      int desiredClientWidth, int desiredClientHeight,
+                                      HWND hParent = nullptr) {
+    if (hParent) {
+        DWORD dwStyle = WS_CHILD | WS_VISIBLE;
+        g_hWnd = CreateWindowExW(0, L"MyWindowClass", L"Remote Desktop Viewer",
+                                 dwStyle, 0, 0, desiredClientWidth, desiredClientHeight,
+                                 hParent, nullptr, hInstance, nullptr);
+    } else {
+        // カーソル位置のモニタを初期ターゲットにする
+        POINT pt; GetCursorPos(&pt);
+        HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi{ sizeof(MONITORINFO) };
+        if (!GetMonitorInfoW(hMon, &mi)) {
+            mi.rcWork = { 0, 0, desiredClientWidth, desiredClientHeight };
+        }
+        UINT dpi = GetDpiForMonitorOrDefault(hMon);
 
-    DWORD dwStyle = WS_OVERLAPPEDWINDOW;
-    DWORD dwExStyle = 0;
+        DWORD dwStyle = WS_OVERLAPPEDWINDOW;
+        DWORD dwExStyle = 0;
 
-    RECT rc = {0, 0, desiredClientWidth, desiredClientHeight};
+        RECT rc = { 0, 0, desiredClientWidth, desiredClientHeight };
 
-    // AdjustWindowRectExForDpi が使えるなら正しいDPIで枠を計算
-    HMODULE hUser32 = LoadLibraryW(L"user32.dll");
-    if (hUser32) {
-        typedef BOOL (WINAPI *AdjustForDpi)(LPRECT, DWORD, BOOL, DWORD, UINT);
-        auto pAdj = (AdjustForDpi)GetProcAddress(hUser32, "AdjustWindowRectExForDpi");
-        if (pAdj) {
-            pAdj(&rc, dwStyle, FALSE, dwExStyle, dpi);
+        // AdjustWindowRectExForDpi が使えるなら正しいDPIで枠を計算
+        HMODULE hUser32 = LoadLibraryW(L"user32.dll");
+        if (hUser32) {
+            typedef BOOL(WINAPI *AdjustForDpi)(LPRECT, DWORD, BOOL, DWORD, UINT);
+            auto pAdj = (AdjustForDpi)GetProcAddress(hUser32, "AdjustWindowRectExForDpi");
+            if (pAdj) {
+                pAdj(&rc, dwStyle, FALSE, dwExStyle, dpi);
+            } else {
+                AdjustWindowRectEx(&rc, dwStyle, FALSE, dwExStyle);
+            }
+            FreeLibrary(hUser32);
         } else {
             AdjustWindowRectEx(&rc, dwStyle, FALSE, dwExStyle);
         }
-        FreeLibrary(hUser32);
-    } else {
-        AdjustWindowRectEx(&rc, dwStyle, FALSE, dwExStyle);
+
+        int winW = rc.right - rc.left;
+        int winH = rc.bottom - rc.top;
+
+        int x = mi.rcWork.left + ((mi.rcWork.right - mi.rcWork.left) - winW) / 2;
+        int y = mi.rcWork.top + ((mi.rcWork.bottom - mi.rcWork.top) - winH) / 2;
+
+        g_hWnd = CreateWindowExW(dwExStyle, L"MyWindowClass", L"Remote Desktop Viewer",
+                                 dwStyle, x, y, winW, winH,
+                                 nullptr, nullptr, hInstance, nullptr);
     }
-
-    int winW = rc.right - rc.left;
-    int winH = rc.bottom - rc.top;
-
-    int x = mi.rcWork.left + ((mi.rcWork.right  - mi.rcWork.left) - winW) / 2;
-    int y = mi.rcWork.top  + ((mi.rcWork.bottom - mi.rcWork.top) - winH) / 2;
-
-    g_hWnd = CreateWindowExW(dwExStyle, L"MyWindowClass", L"Remote Desktop Viewer",
-                             dwStyle, x, y, winW, winH,
-                             nullptr, nullptr, hInstance, nullptr);
     if (!g_hWnd) {
         DebugLog(L"InitWindow: CreateWindowExW failed. Error: " + std::to_wstring(GetLastError()));
         return false;
@@ -868,7 +876,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     return 0;
 }
 
-bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
+bool InitWindow(HINSTANCE hInstance, int nCmdShow, HWND hParent) {
     WNDCLASSW wc = {};
     wc.lpfnWndProc   = WndProc;
     wc.style         = CS_HREDRAW | CS_VREDRAW;
@@ -877,14 +885,16 @@ bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
     wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
 
-    if (!RegisterClassW(&wc)) {
-        DebugLog(L"InitWindow: Failed to register window class. Error: " + std::to_wstring(GetLastError()));
-        return false;
+    if (!GetClassInfoW(hInstance, L"MyWindowClass", &wc)) {
+        if (!RegisterClassW(&wc)) {
+            DebugLog(L"InitWindow: Failed to register window class. Error: " + std::to_wstring(GetLastError()));
+            return false;
+        }
     }
 
     const int initialWidth = 1920;
     const int initialHeight = 1080;
-    if (!CreateWindowOnBestMonitor(hInstance, nCmdShow, initialWidth, initialHeight)) {
+    if (!CreateWindowOnBestMonitor(hInstance, nCmdShow, initialWidth, initialHeight, hParent)) {
         return false;
     }
 
