@@ -3,6 +3,7 @@
 
 #include <QFrame>
 #include <QResizeEvent>
+#include <QSizePolicy>
 #include <windows.h>
 #include "Globals.h"
 
@@ -15,6 +16,16 @@ public:
         // Qtの描画システムを介さず直接描写する場合の設定
         setAttribute(Qt::WA_PaintOnScreen);
         setAttribute(Qt::WA_NoSystemBackground);
+
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    }
+
+    // 16:9のアスペクト比を維持するための設定
+    bool hasHeightForWidth() const override { return true; }
+    int heightForWidth(int w) const override { return w * 9 / 16; }
+
+    QSize sizeHint() const override {
+        return QSize(1280, 720);
     }
 
     HWND getHostHwnd() const {
