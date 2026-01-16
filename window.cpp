@@ -75,24 +75,6 @@ static UINT GetDpiForMonitorOrDefault(HMONITOR hMon) {
     return 96;
 }
 
-// Runtime opt-in for excluding this window from OS-level capture.
-// Default: disabled to ensure the viewer remains visible in server captures.
-static bool IsCaptureExclusionEnabled()
-{
-    // Accept: 1/true/yes (case-insensitive). Anything else = OFF.
-    wchar_t buf[16] = {0};
-    DWORD n = GetEnvironmentVariableW(L"VIEWER_EXCLUDE_FROM_CAPTURE", buf, (DWORD)(sizeof(buf)/sizeof(buf[0])));
-    if (n == 0 || n >= (DWORD)(sizeof(buf)/sizeof(buf[0]))) return false;
-    wchar_t c0 = buf[0];
-    if (c0 == L'1' || c0 == L'Y' || c0 == L'y' || c0 == L'T' || c0 == L't') return true;
-    // Also accept "yes"/"true"
-    if (_wcsicmp(buf, L"yes") == 0 || _wcsicmp(buf, L"true") == 0) return true;
-    return false;
-}
-
-// Forward declare the capture-exclusion helper to resolve call-before-definition.
-static void TryExcludeThisWindowFromCapture(HWND hwnd);
-
 static bool CreateWindowOnBestMonitor(HINSTANCE hInstance, int nCmdShow,
                                       int desiredClientWidth, int desiredClientHeight) {
     // カーソル位置のモニタを初期ターゲットにする
@@ -138,13 +120,6 @@ static bool CreateWindowOnBestMonitor(HINSTANCE hInstance, int nCmdShow,
         return false;
     }
 
-    // NEW (gated): exclude viewer from OS-level screen capture only when explicitly enabled.
-    // Default OFF so the viewer remains visible in the server's monitor capture.
-    // Enable by setting environment variable: VIEWER_EXCLUDE_FROM_CAPTURE=1
-    if (IsCaptureExclusionEnabled()) {
-        TryExcludeThisWindowFromCapture(g_hWnd);
-    }
-
     ShowWindow(g_hWnd, nCmdShow);
     UpdateWindow(g_hWnd);
 
@@ -159,79 +134,6 @@ static bool CreateWindowOnBestMonitor(HINSTANCE hInstance, int nCmdShow,
     return true;
 }
 // ==== [Multi-monitor helpers - END] ====
-
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#include <dwmapi.h>
-#pragma comment(lib, "Dwmapi.lib")
-
-#ifndef DWMWA_EXCLUDED_FROM_CAPTURE
-// Windows 10, version 2004+; provide fallback define if SDK is older
-#define DWMWA_EXCLUDED_FROM_CAPTURE 0x0011
-#endif
-
-#ifndef WDA_EXCLUDEFROMCAPTURE
-// Fallback for SetWindowDisplayAffinity
-#define WDA_EXCLUDEFROMCAPTURE 0x00000011
-#endif
-
-static void TryExcludeThisWindowFromCapture(HWND hwnd)
-{
-    if (!hwnd) return;
-
-    // First try DwmSetWindowAttribute(DWMWA_EXCLUDED_FROM_CAPTURE)
-    BOOL enable = TRUE;
-    HMODULE hDwm = LoadLibraryW(L"dwmapi.dll");
-    if (hDwm) {
-        typedef HRESULT (WINAPI *PFNDwmSetWindowAttribute)(
-            HWND, DWORD, LPCVOID, DWORD);
-        auto pDwmSetWindowAttribute = reinterpret_cast<PFNDwmSetWindowAttribute>(
-            GetProcAddress(hDwm, "DwmSetWindowAttribute"));
-        if (pDwmSetWindowAttribute) {
-            HRESULT hr = pDwmSetWindowAttribute(
-                hwnd, DWMWA_EXCLUDED_FROM_CAPTURE, &enable, sizeof(enable));
-            if (SUCCEEDED(hr)) {
-                DebugLog(L"CaptureExclusion: DWMWA_EXCLUDED_FROM_CAPTURE applied.");
-                FreeLibrary(hDwm);
-                return;
-            } else {
-                DebugLog(L"CaptureExclusion: DwmSetWindowAttribute failed (will try WDA).");
-            }
-        } else {
-            DebugLog(L"CaptureExclusion: DwmSetWindowAttribute not available (will try WDA).");
-        }
-        FreeLibrary(hDwm);
-    } else {
-        DebugLog(L"CaptureExclusion: dwmapi.dll not available (will try WDA).");
-    }
-
-    // Fallback: SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)
-    HMODULE hUser = LoadLibraryW(L"user32.dll");
-    if (hUser) {
-        typedef BOOL (WINAPI *PFNSetWindowDisplayAffinity)(HWND, DWORD);
-        auto pSetWindowDisplayAffinity = reinterpret_cast<PFNSetWindowDisplayAffinity>(
-            GetProcAddress(hUser, "SetWindowDisplayAffinity"));
-        if (pSetWindowDisplayAffinity) {
-            if (pSetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)) {
-                DebugLog(L"CaptureExclusion: WDA_EXCLUDEFROMCAPTURE applied.");
-                FreeLibrary(hUser);
-                return;
-            } else {
-                DebugLog(L"CaptureExclusion: SetWindowDisplayAffinity failed.");
-            }
-        } else {
-            DebugLog(L"CaptureExclusion: SetWindowDisplayAffinity not available.");
-        }
-        FreeLibrary(hUser);
-    } else {
-        DebugLog(L"CaptureExclusion: user32.dll LoadLibrary failed.");
-    }
-
-    // If both mechanisms unavailable, continue gracefully.
-    DebugLog(L"CaptureExclusion: No exclusion mechanism applied (continuing).");
-}
 
 #pragma comment(lib, "User32.lib")
 #pragma comment(lib, "ws2_32.lib")
