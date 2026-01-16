@@ -453,6 +453,12 @@ void OnResolutionChanged_GatedSend(int w, int h, bool forceResendNow = false)
     }
 }
 
+void NotifyResolutionChange(int cw, int ch) {
+    int tw, th;
+    SnapToKnownResolution(cw, ch, tw, th);
+    OnResolutionChanged_GatedSend(tw, th, true);
+}
+
 // 送信フレーム番号で並べる小さなバッファ
 static std::map<uint32_t, ReadyGpuFrame> g_reorderBuffer;
 static std::mutex g_reorderMutex;

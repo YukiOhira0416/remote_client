@@ -11,3 +11,4 @@ void SendWindowSize();
 void CleanupD3DRenderResources();
 void WaitForGpu();
 void SnapToKnownResolution(int srcW, int srcH, int& outW, int& outH);
+void NotifyResolutionChange(int cw, int ch);
