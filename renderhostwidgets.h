@@ -18,6 +18,10 @@ public:
         setAttribute(Qt::WA_PaintOnScreen);
         setAttribute(Qt::WA_NoSystemBackground);
 
+        // 枠線を消して中身を埋め尽くすように設定
+        setFrameShape(QFrame::NoFrame);
+        setContentsMargins(0, 0, 0, 0);
+
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     }
 
@@ -37,10 +41,17 @@ protected:
     void resizeEvent(QResizeEvent *event) override {
         QFrame::resizeEvent(event);
         if (g_hWnd) {
-            // 子HWND（描写ウインドウ）のサイズを同期
-            MoveWindow(g_hWnd, 0, 0, width(), height(), TRUE);
-            // サーバーへ解像度変更を通知
-            NotifyResolutionChange(width(), height());
+            // GetClientRectを使って物理ピクセルでのサイズを取得（High DPI対策）
+            RECT rc;
+            if (GetClientRect((HWND)winId(), &rc)) {
+                int physicalW = rc.right - rc.left;
+                int physicalH = rc.bottom - rc.top;
+
+                // 子HWND（描写ウインドウ）のサイズを同期
+                MoveWindow(g_hWnd, 0, 0, physicalW, physicalH, TRUE);
+                // サーバーへ解像度変更を通知
+                NotifyResolutionChange(physicalW, physicalH);
+            }
         }
     }
 };
