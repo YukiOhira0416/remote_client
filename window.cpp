@@ -32,11 +32,6 @@
 #include "TimeSyncClient.h"
 #include "AudioClient.h"
 
-// Condition variable to signal when the window is shown
-extern std::mutex g_windowShownMutex;
-extern std::condition_variable g_windowShownCv;
-extern bool g_windowShown;
-
 // CUDA includes
 #include <cuda.h>
 #include <cuda_runtime_api.h>

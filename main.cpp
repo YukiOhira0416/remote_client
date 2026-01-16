@@ -49,26 +49,6 @@
 #include "InputSender.h"
 using namespace DebugLogAsync;
 
-// === 新規：ネットワーク準備・解像度ペンディング管理 ===
-std::atomic<bool> g_networkReady(false);
-std::atomic<bool> g_pendingResolutionValid(false);
-std::atomic<int>  g_pendingW(0), g_pendingH(0);
-std::atomic<bool> g_didInitialAnnounce(false);
-
-// Condition variable to signal when the window is shown
-std::mutex g_windowShownMutex;
-std::condition_variable g_windowShownCv;
-bool g_windowShown = false;
-
-// HEVC 出力ファイル保存用のミューテックス
-std::mutex hevcoutputMutex;
-
-// window.cpp 側で実装されている既存API（エクスポート）
-void SendFinalResolution(int width, int height); // Existing function from window.h
-void ClearReorderState();                        // New function to be implemented in window.cpp
-extern std::atomic<int> currentResolutionWidth;  // Assumed to be in window.cpp per instructions
-extern std::atomic<int> currentResolutionHeight; // Assumed to be in window.cpp per instructions
-
 // ==== [GPU Policy Support - BEGIN] ====
 #include <dxgi1_6.h>
 #pragma comment(lib, "dxgi.lib")
@@ -179,7 +159,17 @@ struct ParsedShardInfo {
     uint64_t generation;
 };
 
+// === 新規：ネットワーク準備・解像度ペンディング管理 ===
+std::atomic<bool> g_networkReady(false);
+std::atomic<bool> g_pendingResolutionValid(false);
+std::atomic<int>  g_pendingW(0), g_pendingH(0);
+std::atomic<bool> g_didInitialAnnounce(false);
 
+// HEVC 出力ファイル保存用のミューテックス
+std::mutex hevcoutputMutex;
+
+void SendFinalResolution(int width, int height);
+void ClearReorderState();
 
 // Comparator for ParsedShardInfo to prioritize by wgcCaptureTimestamp (older first)
 struct ParsedShardInfoComparator {

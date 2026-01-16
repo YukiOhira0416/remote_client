@@ -52,6 +52,11 @@ extern std::atomic<uint64_t> g_lastIdrMs;
 // String conversion utility
 std::wstring ConvertToWString(const std::string& str);
 
+// Window shown synchronization
+extern std::mutex g_windowShownMutex;
+extern std::condition_variable g_windowShownCv;
+extern bool g_windowShown;
+
 inline void BumpStreamGeneration() {
     g_streamGeneration.fetch_add(1, std::memory_order_acq_rel);
     g_latencyEpochMs.store(SteadyNowMs(), std::memory_order_release);

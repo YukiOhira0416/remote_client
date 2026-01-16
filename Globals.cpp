@@ -46,6 +46,11 @@ std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
 
 Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;
 
+// Window shown synchronization
+std::mutex g_windowShownMutex;
+std::condition_variable g_windowShownCv;
+bool g_windowShown = false;
+
 // String conversion utility implementation
 std::wstring ConvertToWString(const std::string& str) {
     if (str.empty()) return L"";
