@@ -5,6 +5,11 @@ project(RemoteClient LANGUAGES CXX CUDA)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Qt 自動処理設定
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTOUIC ON)
+set(CMAKE_AUTORCC ON)
+
 # CUDA 20 標準を設定
 set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
@@ -33,6 +38,9 @@ add_definitions(-DUNICODE -D_UNICODE)
 # プリプロセッサ定義
 add_definitions(-DNOMINMAX -DWIN32_LEAN_AND_MEAN)
 
+# Qt6 の検索
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
+
 # インクルードディレクトリ
 include_directories(
     ${CMAKE_SOURCE_DIR}
@@ -57,6 +65,7 @@ set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 set(SOURCES
     main.cpp
     window.cpp
+    main_window.cpp
     DebugLog.cpp
     Globals.cpp
     ReedSolomon.cpp
@@ -71,6 +80,9 @@ set(SOURCES
 set(HEADERS
     main.h
     window.h
+    main_window.h
+    mainwindow.h
+    renderhostwidgets.h
     DebugLog.h
     Globals.h
     ReedSolomon.h
@@ -116,6 +128,9 @@ target_link_libraries(${PROJECT_NAME}
     
     # NVDEC ライブラリ (Video Codec SDK)
     "C:/Program Files/NVIDIA Corporation/Video_Codec_SDK_13.0.19/Lib/x64/nvcuvid.lib"
+
+    # Qt6 ライブラリ
+    Qt6::Widgets
 
     # ENetライブラリ
     ${CMAKE_SOURCE_DIR}/enet_x64-windows/lib/enet.lib

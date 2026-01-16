@@ -76,7 +76,8 @@ static UINT GetDpiForMonitorOrDefault(HMONITOR hMon) {
 }
 
 static bool CreateWindowOnBestMonitor(HINSTANCE hInstance, int nCmdShow,
-                                      int desiredClientWidth, int desiredClientHeight) {
+                                      int desiredClientWidth, int desiredClientHeight,
+                                      HWND parentHwnd = NULL) {
     // カーソル位置のモニタを初期ターゲットにする
     POINT pt; GetCursorPos(&pt);
     HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
@@ -88,6 +89,10 @@ static bool CreateWindowOnBestMonitor(HINSTANCE hInstance, int nCmdShow,
 
     DWORD dwStyle = WS_OVERLAPPEDWINDOW;
     DWORD dwExStyle = 0;
+
+    if (parentHwnd) {
+        dwStyle = WS_CHILD | WS_VISIBLE;
+    }
 
     RECT rc = {0, 0, desiredClientWidth, desiredClientHeight};
 
@@ -109,12 +114,22 @@ static bool CreateWindowOnBestMonitor(HINSTANCE hInstance, int nCmdShow,
     int winW = rc.right - rc.left;
     int winH = rc.bottom - rc.top;
 
-    int x = mi.rcWork.left + ((mi.rcWork.right  - mi.rcWork.left) - winW) / 2;
-    int y = mi.rcWork.top  + ((mi.rcWork.bottom - mi.rcWork.top) - winH) / 2;
+    int x, y;
+    if (parentHwnd) {
+        RECT parentRect;
+        GetClientRect(parentHwnd, &parentRect);
+        x = 0;
+        y = 0;
+        winW = parentRect.right - parentRect.left;
+        winH = parentRect.bottom - parentRect.top;
+    } else {
+        x = mi.rcWork.left + ((mi.rcWork.right  - mi.rcWork.left) - winW) / 2;
+        y = mi.rcWork.top  + ((mi.rcWork.bottom - mi.rcWork.top) - winH) / 2;
+    }
 
     g_hWnd = CreateWindowExW(dwExStyle, L"MyWindowClass", L"Remote Desktop Viewer",
                              dwStyle, x, y, winW, winH,
-                             nullptr, nullptr, hInstance, nullptr);
+                             parentHwnd, nullptr, hInstance, nullptr);
     if (!g_hWnd) {
         DebugLog(L"InitWindow: CreateWindowExW failed. Error: " + std::to_wstring(GetLastError()));
         return false;
@@ -565,6 +580,25 @@ void CleanupD3DRenderResources(); // Forward declaration
 // Helper to handle the logic for snapping, padding, and notifying after a resize event.
 static void FinalizeResize(HWND hWnd, bool forceAnnounce = false)
 {
+    // 子ウィンドウ（埋め込み）の場合はトップレベルウィンドウの調整をスキップ
+    if (GetWindowLong(hWnd, GWL_STYLE) & WS_CHILD) {
+        RECT rc{}; GetClientRect(hWnd, &rc);
+        int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
+        int tw, th;
+        SnapToKnownResolution(cw, ch, tw, th);
+
+        currentResolutionWidth = tw;
+        currentResolutionHeight = th;
+
+        g_pendingResize.w.store(cw, std::memory_order_relaxed);
+        g_pendingResize.h.store(ch, std::memory_order_relaxed);
+        g_pendingResize.has.store(true, std::memory_order_release);
+
+        OnResolutionChanged_GatedSend(tw, th, /*force=*/true);
+        InvalidateRect(hWnd, nullptr, FALSE);
+        return;
+    }
+
     RECT rc{}; GetClientRect(hWnd, &rc);
     int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
 
@@ -868,7 +902,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     return 0;
 }
 
-bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
+bool InitWindow(HINSTANCE hInstance, int nCmdShow, HWND parentHwnd) {
     WNDCLASSW wc = {};
     wc.lpfnWndProc   = WndProc;
     wc.style         = CS_HREDRAW | CS_VREDRAW;
@@ -878,13 +912,15 @@ bool InitWindow(HINSTANCE hInstance, int nCmdShow) {
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
 
     if (!RegisterClassW(&wc)) {
-        DebugLog(L"InitWindow: Failed to register window class. Error: " + std::to_wstring(GetLastError()));
-        return false;
+        if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            DebugLog(L"InitWindow: Failed to register window class. Error: " + std::to_wstring(GetLastError()));
+            return false;
+        }
     }
 
     const int initialWidth = 1920;
     const int initialHeight = 1080;
-    if (!CreateWindowOnBestMonitor(hInstance, nCmdShow, initialWidth, initialHeight)) {
+    if (!CreateWindowOnBestMonitor(hInstance, nCmdShow, initialWidth, initialHeight, parentHwnd)) {
         return false;
     }
 

@@ -47,6 +47,9 @@
 #include "TimeSyncClient.h"
 #include "AudioClient.h"
 #include "InputSender.h"
+#include <QApplication>
+#include <QTimer>
+#include "main_window.h"
 using namespace DebugLogAsync;
 
 // ==== [GPU Policy Support - BEGIN] ====
@@ -1031,8 +1034,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         return 1;
     }
 
+    int argc = __argc;
+    char** argv = __argv;
+    QApplication a(argc, argv);
+
+    MainWindow mainWindow;
+    mainWindow.show();
+
+    HWND parentHwnd = mainWindow.getRenderFrame()->getHostHwnd();
+
     // Initialize window and DirectX
-    if (!InitWindow(hInstance, nCmdShow)) {
+    if (!InitWindow(hInstance, nCmdShow, parentHwnd)) {
         timeEndPeriod(1);
         WSACleanup();
         enet_deinitialize();
@@ -1096,47 +1108,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     // The app_running_atomic is now a global atomic defined in Globals.cpp
     // The windowSenderThread is removed as it's part of the old logic.
 
-    // Main render loop
-    // Verified: The following loop correctly handles rendering during live-resize
-    // by calling RenderFrame() unconditionally. No functional change was needed.
-    auto lastFrameRenderTime = std::chrono::high_resolution_clock::now();
+    // Main render loop integrated into Qt
+    QTimer renderTimer;
+    QObject::connect(&renderTimer, &QTimer::timeout, []() {
+        RenderFrame();
+    });
+    renderTimer.start(0); // Pacing is handled inside RenderFrame by DXGI waitable object
 
-    MSG msg = {};
-    while (msg.message != WM_QUIT) {
-        // Process all pending messages in the queue first.
-        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_QUIT) {
-                break;
-            }
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-
-        if (msg.message == WM_QUIT) {
-            break;
-        }
-
-        // BEFORE computing timeSinceLastRender:
-        if (g_lastFrameRenderTimeForKick.time_since_epoch().count() != 0) {
-            lastFrameRenderTime = g_lastFrameRenderTimeForKick;
-            g_lastFrameRenderTimeForKick = {};
-        }
-
-        // After processing messages, render a frame, respecting the frame rate.
-        // This ensures rendering continues even during a message-heavy event like resizing.
-        auto currentTime = std::chrono::high_resolution_clock::now();
-        auto timeSinceLastRender = currentTime - lastFrameRenderTime;
-
-        // Keep a tiny throttle while sizing, but do NOT skip rendering.
-        if (g_isSizing) {
-            // While user is dragging the window, avoid busy spin.
-            Sleep(1);
-        }
-
-        // Always render, even during live-resize.
-        RenderFrame(); // pacing handled by DXGI frame-latency waitable on the render side
-        lastFrameRenderTime = currentTime;
-    }
+    a.exec();
 
     // Centralized Cleanup
     StopAudioThreads();
