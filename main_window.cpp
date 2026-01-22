@@ -1,12 +1,22 @@
 #include "main_window.h"
 #include <QCloseEvent>
+#include <QVBoxLayout>
 #include "AppShutdown.h"
 #include "window.h"
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     ui.setupUi(this);
 
-    // 手動でリサイズ制御を行うため、自動レイアウト設定を削除
+    // 初期値サイズ 1502*845
+    resize(1502, 845);
+
+    // centralwidgetにレイアウトを追加してtabWidgetを追従させる
+    if (ui.centralwidget) {
+        QVBoxLayout* layout = new QVBoxLayout(ui.centralwidget);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(0);
+        layout->addWidget(ui.tabWidget);
+    }
 }
 
 MainWindow::~MainWindow() {}
@@ -21,15 +31,30 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event) {
+    // MainWindowのアスペクト比を16:9に維持する
+    int w = width();
+    int h = height();
+    int tw, th;
+    SnapToKnownResolution(w, h, tw, th);
+    if (w != tw || h != th) {
+        resize(tw, th);
+        return;
+    }
+
     QMainWindow::resizeEvent(event);
-    if (ui.centralwidget && ui.frame) {
-        int cw = ui.centralwidget->width();
-        int ch = ui.centralwidget->height();
-        // 左上のマージン(20, 20)を確保しつつ、16:9を維持して最大化
-        int availableW = std::max(0, cw - 40);
-        int availableH = std::max(0, ch - 40);
-        int targetW, targetH;
-        SnapToKnownResolution(availableW, availableH, targetW, targetH);
-        ui.frame->setGeometry(20, 20, targetW, targetH);
+
+    // タブ内のRenderHostWidgetsのサイズと位置を調整
+    if (ui.tabWidget && ui.frame) {
+        QWidget* currentTab = ui.tabWidget->currentWidget();
+        if (currentTab) {
+            int tw = currentTab->width();
+            int th = currentTab->height();
+
+            int targetW, targetH;
+            SnapToKnownResolution(tw, th, targetW, targetH);
+
+            // 左上(0, 0)に合わせて配置
+            ui.frame->setGeometry(0, 0, targetW, targetH);
+        }
     }
 }

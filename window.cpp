@@ -937,15 +937,17 @@ bool InitWindow(HINSTANCE hInstance, int nCmdShow, HWND parentHwnd) {
     currentResolutionWidth = tw;
     currentResolutionHeight = th;
 
-    // 初期クライアントサイズが16:9でない場合は調整
-    if (cw != tw || ch != th) {
-        RECT wr = {0, 0, tw, th};
-        DWORD style = GetWindowLong(g_hWnd, GWL_STYLE);
-        DWORD ex    = GetWindowLong(g_hWnd, GWL_EXSTYLE);
-        AdjustWindowRectEx(&wr, style, GetMenu(g_hWnd) != NULL, ex);
-        const int ww = wr.right - wr.left;
-        const int wh = wr.bottom - wr.top;
-        SetWindowPos(g_hWnd, nullptr, 0, 0, ww, wh, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    // 初期クライアントサイズが16:9でない場合は調整 (トップレベルウィンドウのみ)
+    if (!(GetWindowLong(g_hWnd, GWL_STYLE) & WS_CHILD)) {
+        if (cw != tw || ch != th) {
+            RECT wr = {0, 0, tw, th};
+            DWORD style = GetWindowLong(g_hWnd, GWL_STYLE);
+            DWORD ex    = GetWindowLong(g_hWnd, GWL_EXSTYLE);
+            AdjustWindowRectEx(&wr, style, GetMenu(g_hWnd) != NULL, ex);
+            const int ww = wr.right - wr.left;
+            const int wh = wr.bottom - wr.top;
+            SetWindowPos(g_hWnd, nullptr, 0, 0, ww, wh, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
     }
 
     // Notify the server with the *video* resolution only.
