@@ -1,21 +1,57 @@
 #include "main_window.h"
 #include <QCloseEvent>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QGridLayout>
 #include "AppShutdown.h"
 #include "window.h"
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     ui.setupUi(this);
 
-    // 初期値サイズ 1502*845
-    resize(1502, 845);
+    // 初期値サイズ 1504*846 (16:9)
+    resize(1504, 846);
+    setMinimumSize(1504, 846);
 
-    // centralwidgetにレイアウトを追加してtabWidgetを追従させる
+    // centralwidgetにレイアウトを追加して各ウィジェットを適切に配置
     if (ui.centralwidget) {
-        QVBoxLayout* layout = new QVBoxLayout(ui.centralwidget);
-        layout->setContentsMargins(0, 0, 0, 0);
-        layout->setSpacing(0);
-        layout->addWidget(ui.tabWidget);
+        QHBoxLayout* mainLayout = new QHBoxLayout(ui.centralwidget);
+        mainLayout->setContentsMargins(5, 5, 5, 5);
+        mainLayout->setSpacing(5);
+
+        // 左側にタブウィジェットを追加
+        if (ui.tabWidget) {
+            mainLayout->addWidget(ui.tabWidget);
+        }
+
+        // 右側に操作パネル用のレイアウトを作成
+        QVBoxLayout* sideLayout = new QVBoxLayout();
+        sideLayout->setSpacing(10);
+
+        if (ui.groupBox) {
+            sideLayout->addWidget(ui.groupBox);
+        }
+
+        sideLayout->addStretch();
+
+        if (ui.label) {
+            sideLayout->addWidget(ui.label);
+        }
+        if (ui.comboBox) {
+            sideLayout->addWidget(ui.comboBox);
+        }
+
+        mainLayout->addLayout(sideLayout);
+        mainLayout->setStretch(0, 1); // tabWidgetを伸縮させる
+        mainLayout->setStretch(1, 0); // 操作パネルは固定幅に近い扱い
+    }
+
+    // タブ内にレイアウトを設定してRenderHostWidgetsをアスペクト比維持で配置
+    if (ui.tab && ui.frame) {
+        QGridLayout* tabLayout = new QGridLayout(ui.tab);
+        tabLayout->setContentsMargins(0, 0, 0, 0);
+        // RenderHostWidgetsはheightForWidthを持つため、中央配置で16:9が維持される
+        tabLayout->addWidget(ui.frame, 0, 0, Qt::AlignCenter);
     }
 }
 
@@ -42,19 +78,5 @@ void MainWindow::resizeEvent(QResizeEvent *event) {
     }
 
     QMainWindow::resizeEvent(event);
-
-    // タブ内のRenderHostWidgetsのサイズと位置を調整
-    if (ui.tabWidget && ui.frame) {
-        QWidget* currentTab = ui.tabWidget->currentWidget();
-        if (currentTab) {
-            int tw = currentTab->width();
-            int th = currentTab->height();
-
-            int targetW, targetH;
-            SnapToKnownResolution(tw, th, targetW, targetH);
-
-            // 左上(0, 0)に合わせて配置
-            ui.frame->setGeometry(0, 0, targetW, targetH);
-        }
-    }
+    // 子ウィジェット（RenderHostWidgets等）のサイズ調整は、設定したレイアウトにより自動で行われます
 }
