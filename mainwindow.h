@@ -57,12 +57,12 @@ public:
         centralwidget->setObjectName("centralwidget");
         tabWidget = new QTabWidget(centralwidget);
         tabWidget->setObjectName("tabWidget");
-        tabWidget->setGeometry(QRect(10, 10, 1311, 771));
+        tabWidget->setGeometry(QRect(10, 10, 1320, 760));
         tab = new QWidget();
         tab->setObjectName("tab");
         frame = new RenderHostWidgets(tab);
         frame->setObjectName("frame");
-        frame->setGeometry(QRect(20, 10, 1280, 720));
+        frame->setGeometry(QRect(16, 5, 1280, 720));
         sizePolicy.setHeightForWidth(frame->sizePolicy().hasHeightForWidth());
         frame->setSizePolicy(sizePolicy);
         frame->setFrameShape(QFrame::Shape::StyledPanel);
