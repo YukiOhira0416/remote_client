@@ -13,6 +13,7 @@ void RenderFrame();
 void SendWindowSize();
 void CleanupD3DRenderResources();
 void WaitForGpu();
+void ClearReorderState(bool keepLastFrame = false);
 void SnapToKnownResolution(int srcW, int srcH, int& outW, int& outH);
 void NotifyResolutionChange(int cw, int ch);
 

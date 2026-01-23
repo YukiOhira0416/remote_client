@@ -468,7 +468,7 @@ static uint32_t g_expectedStreamFrame = 0;
 static bool     g_expectedInitialized = false;
 
 // 描画側の「期待フレーム番号」やバッファをクリアして“待ち”を防ぐ
-void ClearReorderState()
+void ClearReorderState(bool keepLastFrame)
 {
     // Keep this to preserve current behavior and logs:
     WaitForGpu(); // drains graphics queue only (CUDA is handled per frame)  // (implementation references)
@@ -499,6 +499,7 @@ void ClearReorderState()
     }
 
     // Handle the cached last-drawn frame the same way
+    if (!keepLastFrame)
     {
         RetiredGpuResources r;
         r.y = std::move(g_lastDrawnFrame.hw_decoded_texture_Y);
@@ -517,7 +518,7 @@ void ClearReorderState()
 
     g_expectedInitialized = false;
     g_expectedStreamFrame = 0;
-    DebugLog(L"ClearReorderState: reorder state moved to retire bin.");
+    DebugLog(L"ClearReorderState: reorder state moved to retire bin. keepLastFrame=" + std::to_wstring(keepLastFrame));
 }
 
 // 調整パラメータ
@@ -1951,7 +1952,8 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
         // The ComPtrs in the deque will automatically be released.
         g_readyGpuFrameQueue.clear();
     }
-    ClearReorderState(); // This clears the reorder buffer and resets sequence.
+    // リサイズ中も最後のフレームを維持して黒画面を防ぐ
+    ClearReorderState(true); // This clears the reorder buffer and resets sequence.
 
     for (UINT i = 0; i < kSwapChainBufferCount; ++i) g_renderTargets[i].Reset();
 
@@ -2041,7 +2043,7 @@ void RenderFrame() {
                     DWORD r = MsgWaitForMultipleObjectsEx(
                         1,
                         handles,
-                        100, // タイムアウトを100msに設定してフリーズを回避
+                        g_isSizing ? 0 : 100, // リサイズ中はUIレスポンス維持のため待機しない
                         QS_ALLINPUT,
                         MWMO_INPUTAVAILABLE | MWMO_ALERTABLE
                     );

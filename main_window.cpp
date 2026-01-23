@@ -3,8 +3,10 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
+#include <windows.h>
 #include "AppShutdown.h"
 #include "window.h"
+#include "Globals.h"
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     ui.setupUi(this);
@@ -68,32 +70,65 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event) {
-    // RenderHostWidgetsのアスペクト比を16:9に維持するようにMainWindowをスナップさせる
-    // 1504x846のときに1280x720のレンダー領域を確保する場合、固定のオーバーヘッドは横224px, 縦126pxとなる
-    const int horizontalOverhead = 224;
-    const int verticalOverhead = 126;
-
-    int currentW = width();
-    int currentH = height();
-
-    int renderW = currentW - horizontalOverhead;
-    int renderH = currentH - verticalOverhead;
-
-    int snappedRenderW, snappedRenderH;
-    SnapToKnownResolution(renderW, renderH, snappedRenderW, snappedRenderH);
-
-    int targetWindowW = snappedRenderW + horizontalOverhead;
-    int targetWindowH = snappedRenderH + verticalOverhead;
-
-    // 現在のサイズがターゲットと異なる場合のみresizeを呼び出す
-    if (currentW != targetWindowW || currentH != targetWindowH) {
-        resize(targetWindowW, targetWindowH);
-        return; // 再帰的なイベント呼び出しを待つ
-    }
-
     // 基本クラスのイベントを呼び出してレイアウトを更新
     QMainWindow::resizeEvent(event);
 
     // リサイズ中に描写が止まらないよう、フレーム描画を強制的に1回呼び出す
     RenderFrame();
+}
+
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result) {
+    MSG* msg = static_cast<MSG*>(message);
+    if (msg->message == WM_SIZING) {
+        RECT* rect = reinterpret_cast<RECT*>(msg->lParam);
+        int w = rect->right - rect->left;
+        int h = rect->bottom - rect->top;
+
+        // 1504x846 (16:9) のウィンドウで 1280x720 のレンダー領域を確保する場合のオーバーヘッド
+        const int horizontalOverhead = 224;
+        const int verticalOverhead = 126;
+
+        int renderW = w - horizontalOverhead;
+        int renderH = h - verticalOverhead;
+
+        int snappedRenderW, snappedRenderH;
+        SnapToKnownResolution(renderW, renderH, snappedRenderW, snappedRenderH);
+
+        int targetWindowW = snappedRenderW + horizontalOverhead;
+        int targetWindowH = snappedRenderH + verticalOverhead;
+
+        // ドラッグされている方向に応じて矩形を調整
+        switch (msg->wParam) {
+        case WMSZ_BOTTOM:
+        case WMSZ_BOTTOMRIGHT:
+        case WMSZ_RIGHT:
+            rect->right = rect->left + targetWindowW;
+            rect->bottom = rect->top + targetWindowH;
+            break;
+        case WMSZ_TOP:
+        case WMSZ_TOPLEFT:
+        case WMSZ_LEFT:
+            rect->left = rect->right - targetWindowW;
+            rect->top = rect->bottom - targetWindowH;
+            break;
+        case WMSZ_TOPRIGHT:
+            rect->right = rect->left + targetWindowW;
+            rect->top = rect->bottom - targetWindowH;
+            break;
+        case WMSZ_BOTTOMLEFT:
+            rect->left = rect->right - targetWindowW;
+            rect->bottom = rect->top + targetWindowH;
+            break;
+        }
+
+        *result = TRUE;
+        return true;
+    } else if (msg->message == WM_ENTERSIZEMOVE) {
+        g_isSizing = true;
+    } else if (msg->message == WM_EXITSIZEMOVE) {
+        g_isSizing = false;
+        // リサイズ終了時に描画を確実に更新
+        RenderFrame();
+    }
+    return QMainWindow::nativeEvent(eventType, message, result);
 }
