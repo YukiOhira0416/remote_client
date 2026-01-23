@@ -51,8 +51,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // タブ内にレイアウトを設定してRenderHostWidgetsをアスペクト比維持で配置
     if (ui.tab && ui.frame) {
         QGridLayout* tabLayout = new QGridLayout(ui.tab);
-        // X=16を維持しつつ、上によりすぎるのを防ぐためY=20に設定。合計40pxのサイズ差を維持する。
-        tabLayout->setContentsMargins(16, 20, 24, 20);
+        // 左上を(16, 5)に配置。上下左右20pxずつのサイズ差（合計40px）を維持するためのマージン設定。
+        tabLayout->setContentsMargins(16, 5, 24, 35);
         // マージンで位置を固定するため、AlignCenterを削除して追加
         tabLayout->addWidget(ui.frame, 0, 0);
     }
