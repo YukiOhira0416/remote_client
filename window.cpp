@@ -654,7 +654,7 @@ static bool isRightButtonDown = false;
 // Helper function to transform window coordinates to video coordinates
 bool TransformCursorPos(HWND hWnd, int& outX, int& outY) {
     RECT clientRect;
-    GetClientRect(hWnd, &clientRect);
+    if (!GetClientRect(hWnd, &clientRect)) return false;
 
     POINT p;
     GetCursorPos(&p);
@@ -669,38 +669,23 @@ bool TransformCursorPos(HWND hWnd, int& outX, int& outY) {
         return false;
     }
 
-    const float bbAspect = bbWidth / bbHeight;
-    const float videoAspect = videoW / videoH;
+    // Since we now stretch/fit the video to the entire backbuffer,
+    // we map the client coordinates directly to the video resolution.
+    float u = static_cast<float>(p.x) / bbWidth;
+    float v = static_cast<float>(p.y) / bbHeight;
 
-    float vpW, vpH, vpX, vpY;
-    if (bbAspect > videoAspect) { // Pillarbox
-        vpH = bbHeight;
-        vpW = vpH * videoAspect;
-        vpX = (bbWidth - vpW) * 0.5f;
-        vpY = 0.0f;
-    } else { // Letterbox
-        vpW = bbWidth;
-        vpH = vpW / videoAspect;
-        vpX = 0.0f;
-        vpY = (bbHeight - vpH) * 0.5f;
-    }
+    outX = static_cast<int>(round(u * (videoW - 1)));
+    outY = static_cast<int>(round(v * (videoH - 1)));
 
-    bool isInside = (p.x >= vpX && p.x < vpX + vpW && p.y >= vpY && p.y < vpY + vpH);
+    // Clamp to be safe
+    outX = std::max(0, std::min((int)videoW - 1, outX));
+    outY = std::max(0, std::min((int)videoH - 1, outY));
 
-    if (isInside) {
-        float u = (p.x - vpX) / vpW;
-        float v = (p.y - vpY) / vpH;
-        outX = static_cast<int>(round(u * (videoW - 1)));
-        outY = static_cast<int>(round(v * (videoH - 1)));
-        // Clamp to be safe
-        outX = std::max(0, std::min((int)videoW - 1, outX));
-        outY = std::max(0, std::min((int)videoH - 1, outY));
+    lastValidX = outX;
+    lastValidY = outY;
 
-        lastValidX = outX;
-        lastValidY = outY;
-    }
-
-    return isInside;
+    // Return true if the original point was within the client area
+    return (p.x >= 0 && p.x < clientRect.right && p.y >= 0 && p.y < clientRect.bottom);
 }
 
 
@@ -1678,8 +1663,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
     g_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
 
     // [修正点 2] クラッシュの原因となっていた冗長な SetViewportScissorToBackbuffer 呼び出しを削除 (※このコメントは元コードの意図を汲んだものです)
-    // この処理は、描画するフレームがある場合は SetLetterboxViewport で、
-    // ない場合は後段の else ブロックで安全に実行されるため、ここでの呼び出しは不要です。
+    // この処理は、描画するフレームがある場合もない場合も後段で安全に実行されるため、ここでの呼び出しは不要です。
 
     // --- Crash and Flicker Fix ---
     bool isNewFrame = false;
@@ -1789,12 +1773,9 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
         g_commandList->SetPipelineState(g_pipelineStateYuv444.Get());
 
-        // Use display dimensions for letterboxing, not coded dimensions or window dimensions.
-        const int videoW = frameToDraw.displayW;
-        const int videoH = frameToDraw.displayH;
         ID3D12Resource* backbuffer = g_renderTargets[g_currentFrameBufferIndex].Get();
         if (backbuffer) {
-            SetLetterboxViewport(g_commandList.Get(), backbuffer->GetDesc(), videoW, videoH);
+            SetViewportScissorToBackbuffer(g_commandList.Get(), backbuffer);
         }
 
         // --- Update and bind crop constant buffer ---
