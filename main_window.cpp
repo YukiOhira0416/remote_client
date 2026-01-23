@@ -16,7 +16,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // centralwidgetにレイアウトを追加して各ウィジェットを適切に配置
     if (ui.centralwidget) {
         QHBoxLayout* mainLayout = new QHBoxLayout(ui.centralwidget);
-        mainLayout->setContentsMargins(5, 5, 5, 5);
+        mainLayout->setContentsMargins(10, 10, 10, 10);
         mainLayout->setSpacing(5);
 
         // 左側にタブウィジェットを追加
@@ -29,6 +29,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         sideLayout->setSpacing(10);
 
         if (ui.groupBox) {
+            ui.groupBox->setFixedWidth(161);
             sideLayout->addWidget(ui.groupBox);
         }
 
@@ -49,9 +50,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // タブ内にレイアウトを設定してRenderHostWidgetsをアスペクト比維持で配置
     if (ui.tab && ui.frame) {
         QGridLayout* tabLayout = new QGridLayout(ui.tab);
-        tabLayout->setContentsMargins(0, 0, 0, 0);
-        // RenderHostWidgetsはheightForWidthを持つため、中央配置で16:9が維持される
-        tabLayout->addWidget(ui.frame, 0, 0, Qt::AlignCenter);
+        tabLayout->setContentsMargins(16, 5, 24, 35);
+        // RenderHostWidgetsはheightForWidthを持つため、レイアウト内で16:9が維持されるように配置
+        tabLayout->addWidget(ui.frame, 0, 0);
     }
 }
 
@@ -67,16 +68,29 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event) {
-    // MainWindowのアスペクト比を16:9に維持する
-    int w = width();
-    int h = height();
-    int tw, th;
-    SnapToKnownResolution(w, h, tw, th);
-    if (w != tw || h != th) {
-        resize(tw, th);
+    // 必要なオーバーヘッドを計算
+    // 横: 余白(10+10) + タブの差分(16+24=40) + 間隔(5) + サイドパネル(161) = 226
+    // 縦: 余白(10+10) + タブの差分(5+35=40) = 60
+    // これにウィンドウの非クライアント領域（フレーム、タイトルバー、メニュー等）のサイズを加算する
+    int oh_w = (width() - ui.centralwidget->width()) + 226;
+    int oh_h = (height() - ui.centralwidget->height()) + 60;
+
+    int targetW = width() - oh_w;
+    int targetH = height() - oh_h;
+
+    int snappedW, snappedH;
+    SnapToKnownResolution(targetW, targetH, snappedW, snappedH);
+
+    int nextW = snappedW + oh_w;
+    int nextH = snappedH + oh_h;
+
+    if (width() != nextW || height() != nextH) {
+        resize(nextW, nextH);
         return;
     }
 
     QMainWindow::resizeEvent(event);
-    // 子ウィジェット（RenderHostWidgets等）のサイズ調整は、設定したレイアウトにより自動で行われます
+
+    // リサイズ中も描画を継続するためにRenderFrameを呼び出す
+    RenderFrame();
 }
