@@ -22,6 +22,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
         // 左側にタブウィジェットを追加
         if (ui.tabWidget) {
+            ui.tabWidget->setDocumentMode(true);
             mainLayout->addWidget(ui.tabWidget);
         }
 
@@ -117,6 +118,25 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
                 *result = HTBORDER;
                 return true;
             }
+        } else if (msg->message == WM_SIZING) {
+            // 右下のリサイズのみを許可している前提で、アスペクト比16:9を維持
+            RECT *rect = reinterpret_cast<RECT *>(msg->lParam);
+            int w = rect->right - rect->left;
+
+            // 幅に基づいて高さを16:9に調整
+            int targetH = w * 9 / 16;
+
+            // 最小サイズ(1504x846)を維持
+            if (w < 1504) {
+                w = 1504;
+                targetH = 846;
+                rect->right = rect->left + w;
+            }
+
+            rect->bottom = rect->top + targetH;
+
+            *result = TRUE;
+            return true;
         }
     }
     return QMainWindow::nativeEvent(eventType, message, result);
