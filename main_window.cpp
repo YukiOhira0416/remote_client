@@ -50,7 +50,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // タブ内にレイアウトを設定してRenderHostWidgetsをアスペクト比維持で配置
     if (ui.tab && ui.frame) {
         QGridLayout* tabLayout = new QGridLayout(ui.tab);
-        tabLayout->setContentsMargins(16, 5, 24, 35);
+        tabLayout->setContentsMargins(16, 20, 24, 20); // 垂直方向のマージンを均等化して中央に配置
         // RenderHostWidgetsはheightForWidthを持つため、レイアウト内で16:9が維持されるように配置
         tabLayout->addWidget(ui.frame, 0, 0);
     }
@@ -68,12 +68,16 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event) {
-    // 必要なオーバーヘッドを計算
-    // 横: 余白(10+10) + タブの差分(16+24=40) + 間隔(5) + サイドパネル(161) = 226
-    // 縦: 余白(10+10) + タブの差分(5+35=40) = 60
-    // これにウィンドウの非クライアント領域（フレーム、タイトルバー、メニュー等）のサイズを加算する
-    int oh_w = (width() - ui.centralwidget->width()) + 226;
-    int oh_h = (height() - ui.centralwidget->height()) + 60;
+    // 再帰呼び出しを防ぐためのガード
+    static bool inResize = false;
+    if (inResize) return;
+    inResize = true;
+
+    // 内部レイアウトの固定オーバーヘッドを差し引いてレンダリング領域を計算
+    // 横: 余白(10+10) + タブ内余白(16+24=40) + 間隔(5) + サイドパネル(161) = 226
+    // 縦: 余白(10+10) + タブ内余白(20+20=40) = 60
+    const int oh_w = 226;
+    const int oh_h = 60;
 
     int targetW = width() - oh_w;
     int targetH = height() - oh_h;
@@ -86,11 +90,14 @@ void MainWindow::resizeEvent(QResizeEvent *event) {
 
     if (width() != nextW || height() != nextH) {
         resize(nextW, nextH);
+        inResize = false;
         return;
     }
 
     QMainWindow::resizeEvent(event);
+    inResize = false;
 
     // リサイズ中も描画を継続するためにRenderFrameを呼び出す
+    // window.cpp側で非ブロッキング化されているため安全に呼び出せる
     RenderFrame();
 }

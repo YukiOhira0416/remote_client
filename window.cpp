@@ -2002,75 +2002,11 @@ static void ResizeSwapChainOnRenderThread(int newW, int newH) {
 }
 
 void RenderFrame() {
-    // Frame latency wait scope
-    {
-        bool hasReadyFrame = false;
-        bool hasReorderFrame = false;
-
-        // Check ready-queue (GPU-ready frames)
-        {
-            std::lock_guard<std::mutex> qlock(g_readyGpuFrameQueueMutex);
-            hasReadyFrame = !g_readyGpuFrameQueue.empty();
-        }
-
-        // Check reorder buffer
-        {
-            std::lock_guard<std::mutex> rlock(g_reorderMutex);
-            hasReorderFrame = !g_reorderBuffer.empty();
-        }
-
-        // If we already have something to render, skip the blocking wait.
-        // Pump messages briefly so UI remains responsive, then continue.
-        if (hasReadyFrame || hasReorderFrame) {
-            // Non-blocking message pump (preserve layout & surrounding comments)
-            MSG msg;
-            while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-                if (msg.message == WM_QUIT) {
-                    PostQuitMessage((int)msg.wParam);
-                    return; // keep existing behavior: let the main loop handle exit
-                }
-                TranslateMessage(&msg);
-                DispatchMessage(&msg);
-            }
-            // Skip the blocking wait; proceed with the rest of RenderFrame()
-        } else {
-            if (g_frameLatencyWaitableObject) {
-                // Wait on frame-latency object but remain responsive to window messages.
-                HANDLE handles[1] = { g_frameLatencyWaitableObject };
-                for (;;) {
-                    DWORD r = MsgWaitForMultipleObjectsEx(
-                        1,
-                        handles,
-                        100, // タイムアウトを100msに設定してフリーズを回避
-                        QS_ALLINPUT,
-                        MWMO_INPUTAVAILABLE | MWMO_ALERTABLE
-                    );
-                    if (r == WAIT_OBJECT_0) {
-                        // frame-latency object signaled -> proceed to next frame
-                        break;
-                    } else if (r == WAIT_OBJECT_0 + 1) {
-                        // pump messages; preserve layout and existing logging if present
-                        MSG msg;
-                        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-                            if (msg.message == WM_QUIT) {
-                                PostQuitMessage((int)msg.wParam);
-                                return; // メインループに終了を任せるため、即時復帰
-                            }
-                            TranslateMessage(&msg);
-                            DispatchMessage(&msg);
-                        }
-                        // loop and wait again
-                        continue;
-                    } else if (r == WAIT_TIMEOUT) {
-                        // タイムアウトは想定内の動作。ループを抜けて処理を続ける
-                        break;
-                    }
-                    else {
-                        // Unexpected; if you already have logging, reuse it.
-                        break;
-                    }
-                }
-            }
+    // UIスレッドで実行されるため、メッセージポンプやブロッキングな待機は行わず、
+    // フレーム準備ができていない場合は即座にリターンする。
+    if (g_frameLatencyWaitableObject) {
+        if (WaitForSingleObject(g_frameLatencyWaitableObject, 0) != WAIT_OBJECT_0) {
+            return;
         }
     }
     // Use existing fence and queue types; keep comments and layout intact.
