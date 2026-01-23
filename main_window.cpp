@@ -16,8 +16,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // centralwidgetにレイアウトを追加して各ウィジェットを適切に配置
     if (ui.centralwidget) {
         QHBoxLayout* mainLayout = new QHBoxLayout(ui.centralwidget);
-        mainLayout->setContentsMargins(5, 5, 5, 5);
-        mainLayout->setSpacing(5);
+        mainLayout->setContentsMargins(10, 10, 10, 10);
+        mainLayout->setSpacing(10);
 
         // 左側にタブウィジェットを追加
         if (ui.tabWidget) {
@@ -49,9 +49,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // タブ内にレイアウトを設定してRenderHostWidgetsをアスペクト比維持で配置
     if (ui.tab && ui.frame) {
         QGridLayout* tabLayout = new QGridLayout(ui.tab);
-        tabLayout->setContentsMargins(0, 0, 0, 0);
-        // RenderHostWidgetsはheightForWidthを持つため、中央配置で16:9が維持される
-        tabLayout->addWidget(ui.frame, 0, 0, Qt::AlignCenter);
+        // RenderHostWidgetsの左上を(16, 5)に配置し、タブを上下左右20px相当(合計40px)大きく保つマージン設定
+        tabLayout->setContentsMargins(16, 5, 24, 35);
+        // マージンで位置を固定するため、AlignCenterを削除して追加
+        tabLayout->addWidget(ui.frame, 0, 0);
     }
 }
 
@@ -67,13 +68,25 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event) {
-    // MainWindowのアスペクト比を16:9に維持する
-    int w = width();
-    int h = height();
-    int tw, th;
-    SnapToKnownResolution(w, h, tw, th);
-    if (w != tw || h != th) {
-        resize(tw, th);
+    // RenderHostWidgetsのアスペクト比を16:9に維持するようにMainWindowをスナップさせる
+    // 1504x846のときに1280x720のレンダー領域を確保する場合、固定のオーバーヘッドは横224px, 縦126pxとなる
+    const int horizontalOverhead = 224;
+    const int verticalOverhead = 126;
+
+    int currentW = width();
+    int currentH = height();
+
+    int renderW = currentW - horizontalOverhead;
+    int renderH = currentH - verticalOverhead;
+
+    int snappedRenderW, snappedRenderH;
+    SnapToKnownResolution(renderW, renderH, snappedRenderW, snappedRenderH);
+
+    int targetWindowW = snappedRenderW + horizontalOverhead;
+    int targetWindowH = snappedRenderH + verticalOverhead;
+
+    if (currentW != targetWindowW || currentH != targetWindowH) {
+        resize(targetWindowW, targetWindowH);
         return;
     }
 
