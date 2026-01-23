@@ -49,6 +49,8 @@ protected:
 
                 // 子HWND（描写ウインドウ）のサイズを同期
                 MoveWindow(g_hWnd, 0, 0, physicalW, physicalH, TRUE);
+                // リサイズ中も描写を継続させる
+                RenderFrame();
                 // サーバーへ解像度変更を通知
                 NotifyResolutionChange(physicalW, physicalH);
             }

@@ -49,8 +49,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // タブ内にレイアウトを設定してRenderHostWidgetsをアスペクト比維持で配置
     if (ui.tab && ui.frame) {
         QGridLayout* tabLayout = new QGridLayout(ui.tab);
-        // RenderHostWidgetsの左上を(16, 5)に配置し、タブを上下左右20px相当(合計40px)大きく保つマージン設定
-        tabLayout->setContentsMargins(16, 5, 24, 35);
+        // X=16を維持しつつ、上によりすぎるのを防ぐためY=20に設定。合計40pxのサイズ差を維持する。
+        tabLayout->setContentsMargins(16, 20, 24, 20);
         // マージンで位置を固定するため、AlignCenterを削除して追加
         tabLayout->addWidget(ui.frame, 0, 0);
     }
@@ -85,11 +85,15 @@ void MainWindow::resizeEvent(QResizeEvent *event) {
     int targetWindowW = snappedRenderW + horizontalOverhead;
     int targetWindowH = snappedRenderH + verticalOverhead;
 
+    // 現在のサイズがターゲットと異なる場合のみresizeを呼び出す
     if (currentW != targetWindowW || currentH != targetWindowH) {
         resize(targetWindowW, targetWindowH);
-        return;
+        return; // 再帰的なイベント呼び出しを待つ
     }
 
+    // 基本クラスのイベントを呼び出してレイアウトを更新
     QMainWindow::resizeEvent(event);
-    // 子ウィジェット（RenderHostWidgets等）のサイズ調整は、設定したレイアウトにより自動で行われます
+
+    // リサイズ中に描写が止まらないよう、フレーム描画を強制的に1回呼び出す
+    RenderFrame();
 }
