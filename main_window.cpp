@@ -17,16 +17,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // centralwidgetにレイアウトを追加して各ウィジェットを適切に配置
     if (ui.centralwidget) {
         QHBoxLayout* mainLayout = new QHBoxLayout(ui.centralwidget);
-        mainLayout->setContentsMargins(10, 10, 10, 10);
-        mainLayout->setSpacing(5);
+        mainLayout->setContentsMargins(0, 0, 0, 0);
+        mainLayout->setSpacing(0);
 
         // 左側にタブウィジェットを追加
         if (ui.tabWidget) {
+            ui.tabWidget->setDocumentMode(true);
             mainLayout->addWidget(ui.tabWidget);
         }
 
         // 右側に操作パネル用のレイアウトを作成
         QVBoxLayout* sideLayout = new QVBoxLayout();
+        sideLayout->setContentsMargins(0, 0, 0, 0);
         sideLayout->setSpacing(10);
 
         if (ui.groupBox) {
@@ -51,7 +53,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // タブ内にレイアウトを設定してRenderHostWidgetsをアスペクト比維持で配置
     if (ui.tab && ui.frame) {
         QGridLayout* tabLayout = new QGridLayout(ui.tab);
-        tabLayout->setContentsMargins(16, 20, 24, 20); // 垂直方向のマージンを均等化して中央に配置
+        tabLayout->setContentsMargins(0, 0, 0, 0);
+        tabLayout->setSpacing(0);
         // RenderHostWidgetsはheightForWidthを持つため、レイアウト内で16:9が維持されるように配置
         tabLayout->addWidget(ui.frame, 0, 0);
     }
@@ -74,11 +77,18 @@ void MainWindow::resizeEvent(QResizeEvent *event) {
     if (inResize) return;
     inResize = true;
 
-    // 内部レイアウトの固定オーバーヘッドを差し引いてレンダリング領域を計算
-    // 横: 余白(10+10) + タブ内余白(16+24=40) + 間隔(5) + サイドパネル(161) = 226
-    // 縦: 余白(10+10) + タブ内余白(20+20=40) + メニューバー・タブバー等(~66) = 126
-    const int oh_w = 226;
-    const int oh_h = 126;
+    // 内部レイアウトの固定オーバーヘッドを動的に計算
+    static int oh_w = -1;
+    static int oh_h = -1;
+    if (oh_w == -1 || oh_h == -1) {
+        // レイアウトを強制的にアクティブにして現在のウィジェットサイズを確定させる
+        if (ui.centralwidget->layout()) {
+            ui.centralwidget->layout()->activate();
+        }
+        // ウィンドウ全体サイズとレンダーターゲット（ui.frame）のサイズの差分をオーバーヘッドとする
+        oh_w = width() - ui.frame->width();
+        oh_h = height() - ui.frame->height();
+    }
 
     int targetW = width() - oh_w;
     int targetH = height() - oh_h;
