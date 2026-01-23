@@ -9,9 +9,10 @@
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     ui.setupUi(this);
 
-    // 初期値サイズ 1504*846 (16:9)
-    resize(1504, 846);
-    setMinimumSize(1504, 846);
+    // 初期値サイズ 1506*846 (16:9 領域 1280*720 を確保)
+    // 横: 1280 + 226 = 1506, 縦: 720 + 126 = 846
+    resize(1506, 846);
+    setMinimumSize(1506, 846);
 
     // centralwidgetにレイアウトを追加して各ウィジェットを適切に配置
     if (ui.centralwidget) {
@@ -75,9 +76,9 @@ void MainWindow::resizeEvent(QResizeEvent *event) {
 
     // 内部レイアウトの固定オーバーヘッドを差し引いてレンダリング領域を計算
     // 横: 余白(10+10) + タブ内余白(16+24=40) + 間隔(5) + サイドパネル(161) = 226
-    // 縦: 余白(10+10) + タブ内余白(20+20=40) = 60
+    // 縦: 余白(10+10) + タブ内余白(20+20=40) + メニューバー・タブバー等(~66) = 126
     const int oh_w = 226;
-    const int oh_h = 60;
+    const int oh_h = 126;
 
     int targetW = width() - oh_w;
     int targetH = height() - oh_h;
