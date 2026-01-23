@@ -37,9 +37,8 @@ public:
         return (HWND)winId();
     }
 
-protected:
-    void resizeEvent(QResizeEvent *event) override {
-        QFrame::resizeEvent(event);
+    // 子HWND（描写ウインドウ）のサイズを同期し、サーバーへ通知する
+    void syncChildWindow() {
         if (g_hWnd) {
             // GetClientRectを使って物理ピクセルでのサイズを取得（High DPI対策）
             RECT rc;
@@ -53,6 +52,12 @@ protected:
                 NotifyResolutionChange(physicalW, physicalH);
             }
         }
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override {
+        QFrame::resizeEvent(event);
+        syncChildWindow();
     }
 };
 

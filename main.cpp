@@ -1056,6 +1056,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         return -1;
     }
 
+    // 子HWNDを親ウィジェットに同期させ、初回解像度をサーバーに通知
+    mainWindow.getRenderFrame()->syncChildWindow();
+
     // After InitWindow(...) and InitD3D() == true
     RECT rc{}; GetClientRect(g_hWnd, &rc);
     int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
