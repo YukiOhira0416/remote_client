@@ -1789,12 +1789,11 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
         g_commandList->SetPipelineState(g_pipelineStateYuv444.Get());
 
-        // Use display dimensions for letterboxing, not coded dimensions or window dimensions.
-        const int videoW = frameToDraw.displayW;
-        const int videoH = frameToDraw.displayH;
+        // UI側で16:9を強制しているため、ここでは常にバックバッファ全体に描画する。
+        // これにより、アスペクト比が僅かにずれた場合でも黒帯が発生せず、親ウィジェットと完全に重なる。
         ID3D12Resource* backbuffer = g_renderTargets[g_currentFrameBufferIndex].Get();
         if (backbuffer) {
-            SetLetterboxViewport(g_commandList.Get(), backbuffer->GetDesc(), videoW, videoH);
+            SetViewportScissorToBackbuffer(g_commandList.Get(), backbuffer);
         }
 
         // --- Update and bind crop constant buffer ---

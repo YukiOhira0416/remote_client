@@ -50,8 +50,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     // タブ内にレイアウトを設定してRenderHostWidgetsをアスペクト比維持で配置
     if (ui.tab && ui.frame) {
+        // TabWidget自体の余白を排除
+        ui.tabWidget->setDocumentMode(true);
+        ui.tabWidget->setContentsMargins(0, 0, 0, 0);
+
         QGridLayout* tabLayout = new QGridLayout(ui.tab);
-        tabLayout->setContentsMargins(16, 20, 24, 20); // 垂直方向のマージンを均等化して中央に配置
+        tabLayout->setContentsMargins(20, 20, 20, 20); // 上下左右20pxの余白を設定
+        tabLayout->setSpacing(0);
         // RenderHostWidgetsはheightForWidthを持つため、レイアウト内で16:9が維持されるように配置
         tabLayout->addWidget(ui.frame, 0, 0);
     }
@@ -75,10 +80,19 @@ void MainWindow::resizeEvent(QResizeEvent *event) {
     inResize = true;
 
     // 内部レイアウトの固定オーバーヘッドを差し引いてレンダリング領域を計算
-    // 横: 余白(10+10) + タブ内余白(16+24=40) + 間隔(5) + サイドパネル(161) = 226
-    // 縦: 余白(10+10) + タブ内余白(20+20=40) + メニューバー・タブバー等(~66) = 126
-    const int oh_w = 226;
-    const int oh_h = 126;
+    // 初回実行時に実際のウィジェットサイズからオーバーヘッドを動的に計算する
+    static int oh_w = -1;
+    static int oh_h = -1;
+
+    if (oh_w == -1 || oh_h == -1) {
+        // レイアウトを強制的に反映させて正確なサイズを取得する
+        ui.centralwidget->layout()->activate();
+        ui.tabWidget->layout()->activate();
+        ui.tab->layout()->activate();
+
+        oh_w = width() - ui.frame->width();
+        oh_h = height() - ui.frame->height();
+    }
 
     int targetW = width() - oh_w;
     int targetH = height() - oh_h;
