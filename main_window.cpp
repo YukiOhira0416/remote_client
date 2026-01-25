@@ -237,9 +237,9 @@ static MainWindow::BusType DetectBusType(const QString& deviceInstanceId) {
     for (int depth = 0; depth < 10 && CM_Get_Parent(&parent, current, 0) == CR_SUCCESS; ++depth) {
         if (CM_Get_Device_IDW(parent, buf, MAX_DEVICE_ID_LEN, 0) == CR_SUCCESS) {
             QString parentId = QString::fromWCharArray(buf).toUpper();
-            if (parentId.startsWith(QLatin1String("USB\\"))) return MainWindow::BusType::USB;
             if (parentId.startsWith(QLatin1String("BTHENUM\\")) || parentId.startsWith(QLatin1String("BTHLEENUM\\")))
                 return MainWindow::BusType::Bluetooth;
+            if (parentId.startsWith(QLatin1String("USB\\"))) return MainWindow::BusType::USB;
             if (parentId.startsWith(QLatin1String("ACPI\\")) || parentId.startsWith(QLatin1String("PCI\\")))
                 return MainWindow::BusType::BuiltIn;
         }
@@ -250,8 +250,9 @@ static MainWindow::BusType DetectBusType(const QString& deviceInstanceId) {
     QString upperId = deviceInstanceId.toUpper();
     if (upperId.startsWith(QLatin1String("ACPI\\")) || upperId.contains(QLatin1String("I8042PRT")))
         return MainWindow::BusType::BuiltIn;
+    if (upperId.startsWith(QLatin1String("BTHENUM\\")) || upperId.startsWith(QLatin1String("BTHLEENUM\\")))
+        return MainWindow::BusType::Bluetooth;
     if (upperId.startsWith(QLatin1String("USB\\"))) return MainWindow::BusType::USB;
-    if (upperId.startsWith(QLatin1String("BTHENUM\\"))) return MainWindow::BusType::Bluetooth;
 
     return MainWindow::BusType::Other;
 }
@@ -790,6 +791,8 @@ void MainWindow::refreshKeyboardList() {
             break;
         }
 
+        // Construct the display label in the format: Prefix#（VID:xxxx PID:xxxx）
+        // Using full-width parentheses as requested by the user.
         const QString label = QStringLiteral(u"%1%2（VID:%3 PID:%4）")
             .arg(prefix)
             .arg(no)
