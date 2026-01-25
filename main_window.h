@@ -5,13 +5,22 @@
 #include <QResizeEvent>
 #include <QtGlobal>
 #include <QString>
+#include <QMap>
 #include <vector>
+#include <windows.h>
 #include "mainwindow.h"
 #include "renderhostwidgets.h"
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
+    enum class BusType {
+        BuiltIn = 0,
+        USB = 1,
+        Bluetooth = 2,
+        Other = 3
+    };
+
     explicit MainWindow(QWidget *parent = nullptr);
     virtual ~MainWindow();
 
@@ -33,6 +42,7 @@ private:
         bool hasVidPid = false;
         QString devicePath; // RawInput device path (RIDI_DEVICENAME)
         QString uniqueKey;  // Deduplication key (ContainerId or normalized path)
+        BusType busType = BusType::Other;
     };
 
     void registerKeyboardDeviceNotifications();
@@ -42,7 +52,9 @@ private:
 
     bool m_keyboardRefreshPending = false;
     QString m_selectedKeyboardPath; // combo selection cache
-    HANDLE m_selectedKeyboardHandle = nullptr;
+    QString m_selectedKeyboardUniqueKey;
+    QMap<HANDLE, QString> m_handleToUniqueKey;
+    HHOOK m_kbdHook = nullptr;
 };
 
 #endif // MAIN_WINDOW_H

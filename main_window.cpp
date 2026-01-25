@@ -24,6 +24,9 @@
 #include "AppShutdown.h"
 #include "window.h"
 
+// Global/Static pointer for hook callback
+static MainWindow* g_mainWindow = nullptr;
+
 namespace {
 // --- Fix for LNK2001: DEVPKEY_Device_* unresolved ---
 // 一部のWindows SDKでは devpkey.h の DEVPKEY_Device_* が extern 宣言のみになり、
@@ -216,10 +219,47 @@ static bool IsVirtualKeyboardDevicePath(const QString& path) {
     }
     return false;
 }
+
+static MainWindow::BusType DetectBusType(const QString& deviceInstanceId) {
+    if (deviceInstanceId.isEmpty()) return MainWindow::BusType::Other;
+
+    DEVINST devInst = 0;
+    std::wstring idW = deviceInstanceId.toStdWString();
+    CONFIGRET cr = CM_Locate_DevNodeW(&devInst, idW.data(), CM_LOCATE_DEVNODE_NORMAL);
+    if (cr != CR_SUCCESS) return MainWindow::BusType::Other;
+
+    // 親を辿ってバスを特定する
+    DEVINST parent = 0;
+    wchar_t buf[MAX_DEVICE_ID_LEN];
+
+    DEVINST current = devInst;
+    // 最大10階層まで辿る（無限ループ防止）
+    for (int depth = 0; depth < 10 && CM_Get_Parent(&parent, current, 0) == CR_SUCCESS; ++depth) {
+        if (CM_Get_Device_IDW(parent, buf, MAX_DEVICE_ID_LEN, 0) == CR_SUCCESS) {
+            QString parentId = QString::fromWCharArray(buf).toUpper();
+            if (parentId.startsWith(QLatin1String("USB\\"))) return MainWindow::BusType::USB;
+            if (parentId.startsWith(QLatin1String("BTHENUM\\")) || parentId.startsWith(QLatin1String("BTHLEENUM\\")))
+                return MainWindow::BusType::Bluetooth;
+            if (parentId.startsWith(QLatin1String("ACPI\\")) || parentId.startsWith(QLatin1String("PCI\\")))
+                return MainWindow::BusType::BuiltIn;
+        }
+        current = parent;
+    }
+
+    // フォールバック: 自身のIDから判定
+    QString upperId = deviceInstanceId.toUpper();
+    if (upperId.startsWith(QLatin1String("ACPI\\")) || upperId.contains(QLatin1String("I8042PRT")))
+        return MainWindow::BusType::BuiltIn;
+    if (upperId.startsWith(QLatin1String("USB\\"))) return MainWindow::BusType::USB;
+    if (upperId.startsWith(QLatin1String("BTHENUM\\"))) return MainWindow::BusType::Bluetooth;
+
+    return MainWindow::BusType::Other;
+}
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     ui.setupUi(this);
+    g_mainWindow = this;
 
     // 初期値サイズ 1504*846 (16:9 領域 1280*720 を確保)
     // 横: 1280 + 224 = 1504, 縦: 720 + 126 = 846
@@ -318,17 +358,34 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     // --- Keyboard ComboBox init / hotplug ---
     registerKeyboardDeviceNotifications();
+
+    // WH_KEYBOARD_LL hook for Hankaku/Zenkaku suppression
+    m_kbdHook = SetWindowsHookEx(WH_KEYBOARD_LL, [](int nCode, WPARAM wParam, LPARAM lParam) -> LRESULT {
+        if (nCode == HC_ACTION && g_mainWindow && g_mainWindow->isActiveWindow()) {
+            KBDLLHOOKSTRUCT* hs = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+            // Hankaku/Zenkaku (VK_OEM_AUTO 0xF3, VK_OEM_ENLW 0xF4)
+            if (hs->vkCode == VK_OEM_AUTO || hs->vkCode == VK_OEM_ENLW) {
+                const bool isUp = (hs->flags & LLKHF_UP);
+                // リモートへ送信 (scancode 0x29)
+                EnqueueKeyboardRawEvent(0x29, isUp ? RI_KEY_BREAK : RI_KEY_MAKE);
+                // ローカル抑止 (swallow)
+                return 1;
+            }
+        }
+        return CallNextHookEx(nullptr, nCode, wParam, lParam);
+    }, GetModuleHandle(nullptr), 0);
+
     refreshKeyboardList();
 
     // selection cache
     if (ui.comboBox) {
         m_selectedKeyboardPath = ui.comboBox->currentData().toString();
-        m_selectedKeyboardHandle = (HANDLE)ui.comboBox->currentData(Qt::UserRole + 1).value<void*>();
+        m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString();
         QObject::connect(ui.comboBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int index) {
                 if (!ui.comboBox || index < 0) return;
                 m_selectedKeyboardPath = ui.comboBox->currentData().toString();
-                m_selectedKeyboardHandle = (HANDLE)ui.comboBox->currentData(Qt::UserRole + 1).value<void*>();
+                m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString();
             });
     }
 
@@ -336,7 +393,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     EnqueueKeyboardFocusChanged(this->isActiveWindow());
 }
 
-MainWindow::~MainWindow() {}
+MainWindow::~MainWindow() {
+    if (m_kbdHook) {
+        UnhookWindowsHookEx(m_kbdHook);
+        m_kbdHook = nullptr;
+    }
+    if (g_mainWindow == this) g_mainWindow = nullptr;
+}
 
 RenderHostWidgets* MainWindow::getRenderFrame() const {
     return ui.frame;
@@ -457,8 +520,33 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
                 return false;
             }
 
-            if (header.dwType != RIM_TYPEKEYBOARD || header.hDevice != m_selectedKeyboardHandle) {
-                // 選択外のデバイス、またはキーボード以外は無視
+            if (header.dwType != RIM_TYPEKEYBOARD) {
+                *result = 0;
+                return false;
+            }
+
+            QString uniqueKey;
+            auto it = m_handleToUniqueKey.find(header.hDevice);
+            if (it != m_handleToUniqueKey.end()) {
+                uniqueKey = it.value();
+            } else {
+                // 初見のハンドルの場合、パスから解決してキャッシュ
+                UINT nameChars = 0;
+                if (GetRawInputDeviceInfo(header.hDevice, RIDI_DEVICENAME, nullptr, &nameChars) != (UINT)-1 && nameChars > 0) {
+                    std::wstring name(nameChars, L'\0');
+                    if (GetRawInputDeviceInfo(header.hDevice, RIDI_DEVICENAME, name.data(), &nameChars) != (UINT)-1) {
+                        if (!name.empty() && name.back() == L'\0') name.pop_back();
+                        QString path = QString::fromWCharArray(name.c_str());
+                        if (!TryGetContainerIdKey(path, uniqueKey)) {
+                            uniqueKey = NormalizeDevicePathForKey(path);
+                        }
+                        m_handleToUniqueKey[header.hDevice] = uniqueKey;
+                    }
+                }
+            }
+
+            if (uniqueKey != m_selectedKeyboardUniqueKey) {
+                // 選択外のデバイスは無視
                 *result = 0;
                 return false;
             }
@@ -479,6 +567,13 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
 
             const RAWINPUT* ri = (const RAWINPUT*)buf.data();
             const RAWKEYBOARD& k = ri->data.keyboard;
+
+            // Hankaku/Zenkaku (scancode 0x29) は LLHook 側で送るため、ここではスキップして二重送信を防ぐ
+            if (k.MakeCode == 0x29) {
+                *result = 0;
+                return false;
+            }
+
             // MakeCode + Flags を送る（文字変換はしない）
             EnqueueKeyboardRawEvent((uint16_t)k.MakeCode, (uint16_t)k.Flags);
 
@@ -497,7 +592,9 @@ void MainWindow::registerKeyboardDeviceNotifications() {
     RAWINPUTDEVICE rid{};
     rid.usUsagePage = HID_USAGE_PAGE_GENERIC;          // 0x01
     rid.usUsage = HID_USAGE_GENERIC_KEYBOARD;         // 0x06
-    rid.dwFlags = RIDEV_DEVNOTIFY;                    // WM_INPUT_DEVICE_CHANGE を受ける
+    // RIDEV_INPUTSINK: フォーカスがなくても入力を受ける（Winキー対策）
+    // RIDEV_DEVNOTIFY: デバイス変更通知を受ける
+    rid.dwFlags = RIDEV_DEVNOTIFY | RIDEV_INPUTSINK;
     rid.hwndTarget = hwnd;
 
     RegisterRawInputDevices(&rid, 1, sizeof(rid));
@@ -581,6 +678,10 @@ std::vector<MainWindow::KeyboardEntry> MainWindow::enumerateKeyboards() const {
             e.uniqueKey = NormalizeDevicePathForKey(devicePath);
         }
 
+        QString instanceId;
+        TryDeriveDeviceInstanceId(devicePath, instanceId);
+        e.busType = DetectBusType(instanceId);
+
         quint16 vid = 0xFFFF, pid = 0xFFFF;
         if (TryExtractVidPid(devicePath, vid, pid)) {
             e.vid = vid;
@@ -593,8 +694,7 @@ std::vector<MainWindow::KeyboardEntry> MainWindow::enumerateKeyboards() const {
             e.hasVidPid = true;
         } else {
             // RIM_TYPEKEYBOARD でも HardwareIds から狙う
-            QString instanceId;
-            if (TryDeriveDeviceInstanceId(devicePath, instanceId)) {
+            if (!instanceId.isEmpty()) {
                 QStringList hwids;
                 if (TryGetHardwareIdsFromDevNode(instanceId, hwids)) {
                     quint16 v2 = 0xFFFF, p2 = 0xFFFF;
@@ -620,6 +720,7 @@ std::vector<MainWindow::KeyboardEntry> MainWindow::enumerateKeyboards() const {
     }
 
     std::sort(out.begin(), out.end(), [](const KeyboardEntry& a, const KeyboardEntry& b) {
+        if (a.busType != b.busType) return static_cast<int>(a.busType) < static_cast<int>(b.busType);
         if (a.vid != b.vid) return a.vid < b.vid;
         if (a.pid != b.pid) return a.pid < b.pid;
         return a.uniqueKey < b.uniqueKey;
@@ -656,8 +757,16 @@ void MainWindow::refreshKeyboardList() {
         // userData に devicePath を入れて選択維持に使う
         ui.comboBox->addItem(label, k.devicePath);
         ui.comboBox->setItemData(i, k.devicePath, Qt::ToolTipRole);
-        // UserRole + 1 に HANDLE を隠し持つ
+        // UserRole + 1 に HANDLE を隠し持つ (レガシー/互換用)
         ui.comboBox->setItemData(i, QVariant::fromValue((void*)k.hDevice), Qt::UserRole + 1);
+        // UserRole + 2 に uniqueKey を持つ (堅牢なマッチング用)
+        ui.comboBox->setItemData(i, k.uniqueKey, Qt::UserRole + 2);
+    }
+
+    // 更新ごとにハンドルマップをリセット
+    m_handleToUniqueKey.clear();
+    for (const auto& k : keyboards) {
+        m_handleToUniqueKey[k.hDevice] = k.uniqueKey;
     }
 
     // 選択維持
