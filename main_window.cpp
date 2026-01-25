@@ -5,8 +5,47 @@
 #include <QGridLayout>
 #include <QTabBar>
 #include <QSizePolicy>
+#include <QTimer>
+#include <QSignalBlocker>
+#include <QRegularExpression>
+#include <algorithm>
+#include <windows.h>
+#include <hidusage.h>
+#include <dbt.h>
 #include "AppShutdown.h"
 #include "window.h"
+
+namespace {
+static bool TryExtractVidPid(const QString& path, quint16& outVid, quint16& outPid) {
+    // 例: \\?\HID#VID_046D&PID_C31C&MI_00#...#{...}
+    static const QRegularExpression re(QStringLiteral("VID_([0-9A-Fa-f]{4}).*PID_([0-9A-Fa-f]{4})"));
+    const QRegularExpressionMatch m = re.match(path);
+    if (!m.hasMatch()) return false;
+    bool ok1 = false, ok2 = false;
+    const int vid = m.captured(1).toInt(&ok1, 16);
+    const int pid = m.captured(2).toInt(&ok2, 16);
+    if (!ok1 || !ok2) return false;
+    outVid = static_cast<quint16>(vid & 0xFFFF);
+    outPid = static_cast<quint16>(pid & 0xFFFF);
+    return true;
+}
+
+static QString Hex4(quint16 v) {
+    return QStringLiteral("%1").arg(v, 4, 16, QChar('0')).toUpper();
+}
+
+static bool IsVirtualKeyboardDevicePath(const QString& path) {
+    // 要件: 仮想キーボードは除外、内蔵は含める
+    // 実用優先のヒューリスティック（まずRDPを確実に落とす）
+    static const char* kTokens[] = {
+        "RDP_KBD", "VMBUS", "HYPERV", "VIRTUAL", "VMWARE", "VBOX"
+    };
+    for (const char* t : kTokens) {
+        if (path.contains(QLatin1String(t), Qt::CaseInsensitive)) return true;
+    }
+    return false;
+}
+} // namespace
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     ui.setupUi(this);
@@ -105,6 +144,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         // RenderHostWidgetsはheightForWidthを持つため、レイアウト内で16:9が維持されるように配置
         tabLayout->addWidget(ui.frame, 0, 0);
     }
+
+    // --- Keyboard ComboBox init / hotplug ---
+    registerKeyboardDeviceNotifications();
+    refreshKeyboardList();
 }
 
 MainWindow::~MainWindow() {}
@@ -186,7 +229,171 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
 
             *result = TRUE;
             return true;
+        } else if (msg->message == WM_INPUT_DEVICE_CHANGE) {
+            // Raw Input device hotplug notification (arrival/removal)
+            // wParam: GIDC_ARRIVAL / GIDC_REMOVAL, lParam: HANDLE of device
+            scheduleKeyboardListRefresh();
+            *result = 0;
+            return false;
+        } else if (msg->message == WM_DEVICECHANGE) {
+            // 環境差フォールバック（重い処理はデバウンス後に行う）
+            scheduleKeyboardListRefresh();
+            *result = 0;
+            return false;
         }
     }
     return QMainWindow::nativeEvent(eventType, message, result);
+}
+
+void MainWindow::registerKeyboardDeviceNotifications() {
+    // HWND生成を強制（Qtのネイティブハンドル）
+    const HWND hwnd = reinterpret_cast<HWND>(winId());
+    if (!hwnd) return;
+
+    RAWINPUTDEVICE rid{};
+    rid.usUsagePage = HID_USAGE_PAGE_GENERIC;          // 0x01
+    rid.usUsage = HID_USAGE_GENERIC_KEYBOARD;         // 0x06
+    rid.dwFlags = RIDEV_DEVNOTIFY;                    // WM_INPUT_DEVICE_CHANGE を受ける
+    rid.hwndTarget = hwnd;
+
+    RegisterRawInputDevices(&rid, 1, sizeof(rid));
+}
+
+void MainWindow::scheduleKeyboardListRefresh() {
+    if (m_keyboardRefreshPending) return;
+    m_keyboardRefreshPending = true;
+    QTimer::singleShot(100, this, [this]() {
+        m_keyboardRefreshPending = false;
+        refreshKeyboardList();
+    });
+}
+
+std::vector<MainWindow::KeyboardEntry> MainWindow::enumerateKeyboards() const {
+    std::vector<KeyboardEntry> out;
+
+    UINT deviceCount = 0;
+    if (GetRawInputDeviceList(nullptr, &deviceCount, sizeof(RAWINPUTDEVICELIST)) != 0) {
+        return out;
+    }
+    if (deviceCount == 0) return out;
+
+    std::vector<RAWINPUTDEVICELIST> list(deviceCount);
+    if (GetRawInputDeviceList(list.data(), &deviceCount, sizeof(RAWINPUTDEVICELIST)) == (UINT)-1) {
+        return out;
+    }
+
+    out.reserve(deviceCount);
+
+    for (UINT i = 0; i < deviceCount; ++i) {
+        const HANDLE hDev = list[i].hDevice;
+        const DWORD type = list[i].dwType;
+
+        RID_DEVICE_INFO info{};
+        info.cbSize = sizeof(info);
+        UINT infoSize = sizeof(info);
+        if (GetRawInputDeviceInfo(hDev, RIDI_DEVICEINFO, &info, &infoSize) == (UINT)-1) {
+            continue;
+        }
+
+        bool isKeyboard = false;
+        if (type == RIM_TYPEKEYBOARD) {
+            isKeyboard = true;
+        } else if (type == RIM_TYPEHID) {
+            if (info.hid.usUsagePage == HID_USAGE_PAGE_GENERIC &&
+                info.hid.usUsage == HID_USAGE_GENERIC_KEYBOARD) {
+                isKeyboard = true;
+            }
+        }
+        if (!isKeyboard) continue;
+
+        // device path
+        UINT nameChars = 0;
+        if (GetRawInputDeviceInfo(hDev, RIDI_DEVICENAME, nullptr, &nameChars) == (UINT)-1 || nameChars == 0) {
+            continue;
+        }
+        std::wstring name;
+        name.resize(nameChars);
+        if (GetRawInputDeviceInfo(hDev, RIDI_DEVICENAME, name.data(), &nameChars) == (UINT)-1) {
+            continue;
+        }
+        if (!name.empty() && name.back() == L'\0') name.pop_back();
+        const QString devicePath = QString::fromWCharArray(name.c_str());
+
+        // 仮想キーボード除外（要件）
+        if (IsVirtualKeyboardDevicePath(devicePath)) {
+            continue;
+        }
+
+        KeyboardEntry e;
+        e.devicePath = devicePath;
+
+        quint16 vid = 0xFFFF, pid = 0xFFFF;
+        if (TryExtractVidPid(devicePath, vid, pid)) {
+            e.vid = vid;
+            e.pid = pid;
+            e.hasVidPid = true;
+        } else if (type == RIM_TYPEHID) {
+            // フォールバック: HIDのVendor/Product
+            e.vid = static_cast<quint16>(info.hid.dwVendorId & 0xFFFF);
+            e.pid = static_cast<quint16>(info.hid.dwProductId & 0xFFFF);
+            e.hasVidPid = true;
+        } else {
+            // 内蔵(ACPI/PS2等)はVID/PIDが取れないことがある
+            e.vid = 0xFFFF;
+            e.pid = 0xFFFF;
+            e.hasVidPid = false;
+        }
+
+        out.push_back(std::move(e));
+    }
+
+    std::sort(out.begin(), out.end(), [](const KeyboardEntry& a, const KeyboardEntry& b) {
+        if (a.vid != b.vid) return a.vid < b.vid;
+        if (a.pid != b.pid) return a.pid < b.pid;
+        return a.devicePath < b.devicePath;
+    });
+
+    // devicePath で重複排除
+    out.erase(std::unique(out.begin(), out.end(), [](const KeyboardEntry& a, const KeyboardEntry& b) {
+        return a.devicePath == b.devicePath;
+    }), out.end());
+
+    return out;
+}
+
+void MainWindow::refreshKeyboardList() {
+    if (!ui.comboBox) return;
+
+    const QString prevPath = ui.comboBox->currentData().toString();
+    const auto keyboards = enumerateKeyboards();
+
+    QSignalBlocker blocker(ui.comboBox);
+    ui.comboBox->clear();
+
+    for (int i = 0; i < static_cast<int>(keyboards.size()); ++i) {
+        const auto& k = keyboards[i];
+
+        const QString vidStr = k.hasVidPid ? Hex4(k.vid) : QStringLiteral("N/A");
+        const QString pidStr = k.hasVidPid ? Hex4(k.pid) : QStringLiteral("N/A");
+
+        const QString label = QStringLiteral(u"キーボード%1 (VID:%2 PID:%3)")
+            .arg(i + 1)
+            .arg(vidStr)
+            .arg(pidStr);
+
+        // userData に devicePath を入れて選択維持に使う
+        ui.comboBox->addItem(label, k.devicePath);
+        ui.comboBox->setItemData(i, k.devicePath, Qt::ToolTipRole);
+    }
+
+    // 選択維持
+    if (!prevPath.isEmpty()) {
+        for (int i = 0; i < ui.comboBox->count(); ++i) {
+            if (ui.comboBox->itemData(i).toString() == prevPath) {
+                ui.comboBox->setCurrentIndex(i);
+                return;
+            }
+        }
+    }
+    if (ui.comboBox->count() > 0) ui.comboBox->setCurrentIndex(0);
 }
