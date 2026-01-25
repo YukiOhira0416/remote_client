@@ -30,6 +30,7 @@ private:
         quint16 pid = 0xFFFF;
         bool hasVidPid = false;
         QString devicePath; // RawInput device path (RIDI_DEVICENAME)
+        QString uniqueKey;  // Deduplication key (ContainerId or normalized path)
     };
 
     void registerKeyboardDeviceNotifications();

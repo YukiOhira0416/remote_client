@@ -116,6 +116,9 @@ target_link_libraries(${PROJECT_NAME}
     Strmiids.lib
     winmm.lib
     secur32.lib
+    setupapi.lib
+    hid.lib
+    cfgmgr32.lib
     
     # DirectX/D3D12ライブラリ
     d3d12.lib
