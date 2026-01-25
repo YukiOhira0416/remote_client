@@ -1,0 +1,284 @@
+#include "KeyboardSender.h"
+#include "Globals.h"
+#include "ReedSolomon.h"
+#include "concurrentqueue/concurrentqueue.h"
+#include "DebugLog.h"
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <unordered_set>
+#include <vector>
+#include <thread>
+#include <chrono>
+#include <cstring>
+#include <string>
+
+// Link with Ws2_32.lib
+#pragma comment(lib, "Ws2_32.lib")
+
+// Internal queue
+namespace {
+enum class MsgType : uint8_t { Event = 1, Focus = 2 };
+
+struct Msg {
+    MsgType type;
+    uint8_t active;     // for focus
+    uint16_t makeCode;  // for event
+    uint16_t flags;     // WIRE flags (not RAW flags)
+};
+
+moodycamel::ConcurrentQueue<Msg> g_q;
+
+// WIRE flags (Matching server expectations)
+constexpr uint16_t KBD_KEYUP = 0x0001;
+constexpr uint16_t KBD_E0    = 0x0002;
+constexpr uint16_t KBD_E1    = 0x0004;
+
+// Convert RAWKEYBOARD.Flags to wire flags
+static uint16_t RawToWireFlags(uint16_t rawFlags)
+{
+    uint16_t f = 0;
+    if (rawFlags & RI_KEY_BREAK) f |= KBD_KEYUP;
+    if (rawFlags & RI_KEY_E0)    f |= KBD_E0;
+    if (rawFlags & RI_KEY_E1)    f |= KBD_E1;
+    return f;
+}
+
+static inline uint32_t MakeKeyId(uint16_t makeCode, uint16_t flagsNoKeyUp)
+{
+    const uint16_t f = (uint16_t)(flagsNoKeyUp & (KBD_E0 | KBD_E1));
+    return (uint32_t)makeCode | ((uint32_t)f << 16);
+}
+
+#pragma pack(push, 1)
+struct KeyboardWireHeaderV1 {
+    uint32_t magic;    // 'K''I''N''1'
+    uint16_t version;  // 1
+    uint16_t msgType;  // 1=EVENT, 2=STATE_SYNC
+    uint32_t seq;
+};
+struct KeyboardWireEventV1 {
+    uint16_t makeCode;
+    uint16_t flags;    // KEYUP/E0/E1
+};
+struct KeyboardWireStateV1 {
+    uint16_t count;
+    uint16_t reserved;
+    // followed by count * KeyboardWireEventV1 (KEYUP bit must be 0)
+};
+#pragma pack(pop)
+
+constexpr uint32_t KEYBOARD_MAGIC   = 'K' | ('I' << 8) | ('N' << 16) | ('1' << 24);
+constexpr uint16_t KEYBOARD_VERSION = 1;
+constexpr uint16_t MSG_EVENT        = 1;
+constexpr uint16_t MSG_STATE_SYNC   = 2;
+
+static std::vector<uint8_t> BuildEventPayload(uint32_t seq, uint16_t makeCode, uint16_t flags)
+{
+    KeyboardWireHeaderV1 h{};
+    h.magic   = KEYBOARD_MAGIC;
+    h.version = KEYBOARD_VERSION;
+    h.msgType = MSG_EVENT;
+    h.seq     = seq;
+
+    KeyboardWireEventV1 e{};
+    e.makeCode = makeCode;
+    e.flags    = flags;
+
+    std::vector<uint8_t> out(sizeof(h) + sizeof(e));
+    memcpy(out.data(), &h, sizeof(h));
+    memcpy(out.data() + sizeof(h), &e, sizeof(e));
+    return out;
+}
+
+static std::vector<uint8_t> BuildStatePayload(uint32_t seq, const std::unordered_set<uint32_t>& pressed)
+{
+    KeyboardWireHeaderV1 h{};
+    h.magic   = KEYBOARD_MAGIC;
+    h.version = KEYBOARD_VERSION;
+    h.msgType = MSG_STATE_SYNC;
+    h.seq     = seq;
+
+    KeyboardWireStateV1 st{};
+    st.count = (uint16_t)pressed.size();
+    st.reserved = 0;
+
+    std::vector<uint8_t> out;
+    out.resize(sizeof(h) + sizeof(st) + pressed.size() * sizeof(KeyboardWireEventV1));
+
+    memcpy(out.data(), &h, sizeof(h));
+    memcpy(out.data() + sizeof(h), &st, sizeof(st));
+
+    auto* p = out.data() + sizeof(h) + sizeof(st);
+    for (const auto& id : pressed) {
+        KeyboardWireEventV1 e{};
+        e.makeCode = (uint16_t)(id & 0xFFFF);
+        e.flags    = (uint16_t)((id >> 16) & 0xFFFF); // No KEYUP bit
+        memcpy(p, &e, sizeof(e));
+        p += sizeof(e);
+    }
+    return out;
+}
+
+static bool SendWithFEC(SOCKET s, const sockaddr_in& dst, uint32_t frameNumber, const std::vector<uint8_t>& payload)
+{
+    std::vector<std::vector<uint8_t>> dataShards, parityShards;
+    size_t shard_len = 0;
+
+    if (!EncodeFEC_ISAL(payload.data(), payload.size(), dataShards, parityShards, shard_len, RS_K, RS_M)) {
+        return false;
+    }
+
+    // data shards
+    for (int i = 0; i < RS_K; ++i) {
+        ShardInfoHeader header{};
+        header.frameNumber       = htonl(frameNumber);
+        header.shardIndex        = htonl((uint32_t)i);
+        header.totalDataShards   = htonl((uint32_t)RS_K);
+        header.totalParityShards = htonl((uint32_t)RS_M);
+        header.originalDataLen   = htonl((uint32_t)payload.size());
+
+        std::vector<uint8_t> pkt(sizeof(header) + shard_len);
+        memcpy(pkt.data(), &header, sizeof(header));
+        memcpy(pkt.data() + sizeof(header), dataShards[i].data(), shard_len);
+
+        sendto(s, (const char*)pkt.data(), (int)pkt.size(), 0, (const sockaddr*)&dst, sizeof(dst));
+    }
+
+    // parity shards
+    for (int i = 0; i < RS_M; ++i) {
+        ShardInfoHeader header{};
+        header.frameNumber       = htonl(frameNumber);
+        header.shardIndex        = htonl((uint32_t)(RS_K + i));
+        header.totalDataShards   = htonl((uint32_t)RS_K);
+        header.totalParityShards = htonl((uint32_t)RS_M);
+        header.originalDataLen   = htonl((uint32_t)payload.size());
+
+        std::vector<uint8_t> pkt(sizeof(header) + shard_len);
+        memcpy(pkt.data(), &header, sizeof(header));
+        memcpy(pkt.data() + sizeof(header), parityShards[i].data(), shard_len);
+
+        sendto(s, (const char*)pkt.data(), (int)pkt.size(), 0, (const sockaddr*)&dst, sizeof(dst));
+    }
+
+    return true;
+}
+} // namespace
+
+void EnqueueKeyboardRawEvent(uint16_t makeCode, uint16_t rawFlags)
+{
+    Msg m{};
+    m.type = MsgType::Event;
+    m.active = 0;
+    m.makeCode = makeCode;
+    m.flags = RawToWireFlags(rawFlags);
+    g_q.enqueue(m);
+}
+
+void EnqueueKeyboardFocusChanged(bool active)
+{
+    Msg m{};
+    m.type = MsgType::Focus;
+    m.active = active ? 1 : 0;
+    m.makeCode = 0;
+    m.flags = 0;
+    g_q.enqueue(m);
+}
+
+void KeyboardSendThread(std::atomic<bool>& running)
+{
+    DebugLog(L"KeyboardSendThread started.");
+
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET) {
+        DebugLog(L"KeyboardSendThread: socket() failed: " + std::to_wstring(WSAGetLastError()));
+        return;
+    }
+
+    // bind source: 192.168.0.3:8400
+    sockaddr_in local{};
+    local.sin_family = AF_INET;
+    local.sin_port = htons(KEYBOARD_BIND_PORT);
+    if (inet_pton(AF_INET, KEYBOARD_BIND_IP, &local.sin_addr) <= 0) {
+        DebugLog(L"KeyboardSendThread: invalid KEYBOARD_BIND_IP.");
+        closesocket(sock);
+        return;
+    }
+    if (bind(sock, (sockaddr*)&local, sizeof(local)) == SOCKET_ERROR) {
+        DebugLog(L"KeyboardSendThread: bind() failed: " + std::to_wstring(WSAGetLastError()));
+        closesocket(sock);
+        return;
+    }
+
+    // destination: 192.168.0.2:8400
+    sockaddr_in dst{};
+    dst.sin_family = AF_INET;
+    dst.sin_port = htons(KEYBOARD_SEND_PORT);
+    inet_pton(AF_INET, KEYBOARD_SEND_IP, &dst.sin_addr);
+
+    bool active = false;
+    std::unordered_set<uint32_t> pressed;
+    uint32_t seq = 0;
+
+    auto lastSync = std::chrono::steady_clock::now();
+    auto lastActivity = std::chrono::steady_clock::now();
+    const auto syncInterval = std::chrono::milliseconds(30);
+
+    while (running.load()) {
+        Msg msg{};
+        bool didWork = false;
+
+        while (g_q.try_dequeue(msg)) {
+            didWork = true;
+
+            if (msg.type == MsgType::Focus) {
+                active = (msg.active != 0);
+
+                // Send empty SYNC when focus is lost to release keys on server
+                pressed.clear();
+                const uint32_t fnum = seq++;
+                auto payload = BuildStatePayload(fnum, pressed);
+                SendWithFEC(sock, dst, fnum, payload);
+
+                lastSync = std::chrono::steady_clock::now();
+                lastActivity = lastSync;
+                continue;
+            }
+
+            if (!active) {
+                // Ignore events when not active
+                continue;
+            }
+
+            // EVENT
+            const uint32_t fnum = seq++;
+            auto payload = BuildEventPayload(fnum, msg.makeCode, msg.flags);
+            SendWithFEC(sock, dst, fnum, payload);
+
+            // Update pressed state
+            const bool isUp = (msg.flags & KBD_KEYUP) != 0;
+            const uint32_t id = MakeKeyId(msg.makeCode, msg.flags);
+            if (isUp) pressed.erase(id);
+            else      pressed.insert(id);
+
+            lastActivity = std::chrono::steady_clock::now();
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (active) {
+            // Periodic STATE_SYNC to handle packet loss
+            const bool recent = (now - lastActivity) < std::chrono::seconds(1);
+            if ((now - lastSync) >= syncInterval && (!pressed.empty() || recent)) {
+                const uint32_t fnum = seq++;
+                auto payload = BuildStatePayload(fnum, pressed);
+                SendWithFEC(sock, dst, fnum, payload);
+                lastSync = now;
+            }
+        }
+
+        if (!didWork) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    closesocket(sock);
+    DebugLog(L"KeyboardSendThread exiting.");
+}

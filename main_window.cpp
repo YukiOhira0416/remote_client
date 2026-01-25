@@ -1,4 +1,6 @@
 #include "main_window.h"
+#include "KeyboardSender.h"
+#include <QEvent>
 #include <QCloseEvent>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -317,6 +319,21 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // --- Keyboard ComboBox init / hotplug ---
     registerKeyboardDeviceNotifications();
     refreshKeyboardList();
+
+    // selection cache
+    if (ui.comboBox) {
+        m_selectedKeyboardPath = ui.comboBox->currentData().toString();
+        m_selectedKeyboardHandle = (HANDLE)ui.comboBox->currentData(Qt::UserRole + 1).value<void*>();
+        QObject::connect(ui.comboBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int index) {
+                if (!ui.comboBox || index < 0) return;
+                m_selectedKeyboardPath = ui.comboBox->currentData().toString();
+                m_selectedKeyboardHandle = (HANDLE)ui.comboBox->currentData(Qt::UserRole + 1).value<void*>();
+            });
+    }
+
+    // initial focus state
+    EnqueueKeyboardFocusChanged(this->isActiveWindow());
 }
 
 MainWindow::~MainWindow() {}
@@ -328,6 +345,16 @@ RenderHostWidgets* MainWindow::getRenderFrame() const {
 void MainWindow::closeEvent(QCloseEvent *event) {
     RequestShutdown();
     QMainWindow::closeEvent(event);
+}
+
+bool MainWindow::event(QEvent* e)
+{
+    if (e->type() == QEvent::WindowActivate) {
+        EnqueueKeyboardFocusChanged(true);
+    } else if (e->type() == QEvent::WindowDeactivate) {
+        EnqueueKeyboardFocusChanged(false);
+    }
+    return QMainWindow::event(e);
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event) {
@@ -407,6 +434,54 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
         } else if (msg->message == WM_DEVICECHANGE) {
             // 環境差フォールバック（重い処理はデバウンス後に行う）
             scheduleKeyboardListRefresh();
+            *result = 0;
+            return false;
+        } else if (msg->message == WM_INPUT) {
+            // フォーカス中のみ（Qt側でもactive制御しているが保険）
+            if (!this->isActiveWindow()) {
+                *result = 0;
+                return false;
+            }
+            if (!m_selectedKeyboardHandle) {
+                *result = 0;
+                return false;
+            }
+
+            HRAWINPUT hRaw = (HRAWINPUT)msg->lParam;
+
+            // 1. まずヘッダーだけ取得してデバイス判定を先に行う (効率化)
+            RAWINPUTHEADER header;
+            UINT headerSize = sizeof(RAWINPUTHEADER);
+            if (GetRawInputData(hRaw, RID_HEADER, &header, &headerSize, sizeof(RAWINPUTHEADER)) == (UINT)-1) {
+                *result = 0;
+                return false;
+            }
+
+            if (header.dwType != RIM_TYPEKEYBOARD || header.hDevice != m_selectedKeyboardHandle) {
+                // 選択外のデバイス、またはキーボード以外は無視
+                *result = 0;
+                return false;
+            }
+
+            // 2. 選択デバイスと一致した場合のみ、全データを取得
+            UINT size = 0;
+            GetRawInputData(hRaw, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER));
+            if (size == 0) {
+                *result = 0;
+                return false;
+            }
+
+            std::vector<uint8_t> buf(size);
+            if (GetRawInputData(hRaw, RID_INPUT, buf.data(), &size, sizeof(RAWINPUTHEADER)) != size) {
+                *result = 0;
+                return false;
+            }
+
+            const RAWINPUT* ri = (const RAWINPUT*)buf.data();
+            const RAWKEYBOARD& k = ri->data.keyboard;
+            // MakeCode + Flags を送る（文字変換はしない）
+            EnqueueKeyboardRawEvent((uint16_t)k.MakeCode, (uint16_t)k.Flags);
+
             *result = 0;
             return false;
         }
@@ -540,6 +615,7 @@ std::vector<MainWindow::KeyboardEntry> MainWindow::enumerateKeyboards() const {
             }
         }
 
+        e.hDevice = hDev;
         out.push_back(std::move(e));
     }
 
@@ -580,6 +656,8 @@ void MainWindow::refreshKeyboardList() {
         // userData に devicePath を入れて選択維持に使う
         ui.comboBox->addItem(label, k.devicePath);
         ui.comboBox->setItemData(i, k.devicePath, Qt::ToolTipRole);
+        // UserRole + 1 に HANDLE を隠し持つ
+        ui.comboBox->setItemData(i, QVariant::fromValue((void*)k.hDevice), Qt::UserRole + 1);
     }
 
     // 選択維持

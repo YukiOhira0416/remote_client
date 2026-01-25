@@ -47,6 +47,7 @@
 #include "TimeSyncClient.h"
 #include "AudioClient.h"
 #include "InputSender.h"
+#include "KeyboardSender.h"
 #include <QApplication>
 #include <QTimer>
 #include "main_window.h"
@@ -1099,11 +1100,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
     // Start worker threads
     std::atomic<bool> input_sender_running(true);
+    std::atomic<bool> keyboard_sender_running(true);
     std::thread timeSyncThread(TimeSyncClientThread);
     StartAudioThreads();
     std::thread bandwidthThread(CountBandW);
     std::thread rebootListenerThread(ListenForRebootCommands);
     std::thread inputSenderThread(InputSendThread, std::ref(input_sender_running));
+    std::thread keyboardSenderThread(KeyboardSendThread, std::ref(keyboard_sender_running));
 
     std::vector<std::thread> receiverThreads;
     for (int i = 0; i < getOptimalThreadConfig().receiver; ++i) {
@@ -1143,6 +1146,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     appThreads.nvdecThreads = &nvdecThreads;
     appThreads.inputSenderThread = &inputSenderThread;
     appThreads.input_sender_running = &input_sender_running;
+    appThreads.keyboardSenderThread = &keyboardSenderThread;
+    appThreads.keyboard_sender_running = &keyboard_sender_running;
 
     // This single call handles joining all threads and releasing all resources idempotently.
     ReleaseAllResources(appThreads);

@@ -31,6 +31,14 @@
 #define INPUT_SEND_IP "192.168.0.2"
 #define INPUT_SEND_PORT 8300
 
+// Keyboard sender constants
+// server real IP: 192.168.0.2:8400 (bind is 0.0.0.0:8400 on server)
+#define KEYBOARD_SEND_IP   "192.168.0.2"
+#define KEYBOARD_SEND_PORT 8400
+// client real IP: 192.168.0.3:8400 (must bind)
+#define KEYBOARD_BIND_IP   "192.168.0.3"
+#define KEYBOARD_BIND_PORT 8400
+
 // CUDA includes
 #include <cuda.h>
 
