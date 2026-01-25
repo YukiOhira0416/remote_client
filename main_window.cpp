@@ -4,6 +4,7 @@
 #include <QHBoxLayout>
 #include <QGridLayout>
 #include <QTabBar>
+#include <QSizePolicy>
 #include "AppShutdown.h"
 #include "window.h"
 
@@ -38,7 +39,49 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
         if (ui.groupBox) {
             ui.groupBox->setFixedWidth(159);
-            sideLayout->addWidget(ui.groupBox);
+            // 重要: groupBox配下が"絶対配置"(geometry)のみだと、外側レイアウトに組み込んだ瞬間
+            //       groupBoxのsizeHintが極小になり、タイトル行だけの高さに潰れて中のRadioButtonが
+            //       クリップされることがある。
+            //       → groupBox内部にもレイアウトを付け、sizeHint/最小高さがRadioButtonを含むようにする。
+            if (ui.groupBox->layout() == nullptr) {
+                auto* gbLayout = new QVBoxLayout(ui.groupBox);
+                // タイトル領域の分だけ上マージンを多めに取る
+                gbLayout->setContentsMargins(10, 24, 10, 10);
+                gbLayout->setSpacing(6);
+
+                auto addIf = [&](QWidget* w) {
+                    if (w) gbLayout->addWidget(w);
+                };
+                addIf(ui.radioButton);
+                addIf(ui.radioButton_2);
+                addIf(ui.radioButton_3);
+                addIf(ui.radioButton_4);
+
+                // groupBox自体が縮み過ぎないよう、RadioButtonのsizeHintから最小高さを計算して設定
+                int visibleCount = 0;
+                int minH = gbLayout->contentsMargins().top() + gbLayout->contentsMargins().bottom();
+                for (auto* rb : {ui.radioButton, ui.radioButton_2, ui.radioButton_3, ui.radioButton_4}) {
+                    if (!rb) continue;
+                    ++visibleCount;
+                    minH += rb->sizeHint().height();
+                }
+                if (visibleCount >= 2) {
+                    minH += gbLayout->spacing() * (visibleCount - 1);
+                }
+                // フレーム/スタイルの誤差吸収
+                minH += 8;
+
+                // Designer上の想定サイズ(高さ161)を下回らないようにする
+                if (minH < 161) {
+                    minH = 161;
+                }
+
+                ui.groupBox->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
+                ui.groupBox->setMinimumHeight(minH);
+            }
+
+            // 上寄せで配置（間にstretchが入るため、意図した高さを維持したまま上に貼り付く）
+            sideLayout->addWidget(ui.groupBox, 0, Qt::AlignTop);
         }
 
         sideLayout->addStretch();
