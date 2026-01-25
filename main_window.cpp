@@ -363,6 +363,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     m_kbdHook = SetWindowsHookEx(WH_KEYBOARD_LL, [](int nCode, WPARAM wParam, LPARAM lParam) -> LRESULT {
         if (nCode == HC_ACTION && g_mainWindow && g_mainWindow->isActiveWindow()) {
             KBDLLHOOKSTRUCT* hs = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+
+            // Windowsキー（LWIN/RWIN）は、フォーカス中はローカル無効化する。
+            // 要件: ローカルでも効かない / リモートにも送らない（今回は再現不要、単純に抑止）
+            if (hs->vkCode == VK_LWIN || hs->vkCode == VK_RWIN) {
+                // ローカル抑止 (swallow)
+                return 1;
+            }
+
             // Hankaku/Zenkaku (VK_OEM_AUTO 0xF3, VK_OEM_ENLW 0xF4)
             if (hs->vkCode == VK_OEM_AUTO || hs->vkCode == VK_OEM_ENLW) {
                 const bool isUp = (hs->flags & LLKHF_UP);
@@ -574,6 +582,13 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
                 return false;
             }
 
+            // Windowsキー（LWIN/RWIN）は、フォーカス中はリモート送信もしない。
+            // ※LLHookでローカル抑止してもRawInputで拾えるケースに備え、ここでも遮断する。
+            if (this->isActiveWindow() && (k.VKey == VK_LWIN || k.VKey == VK_RWIN)) {
+                *result = 0;
+                return false;
+            }
+
             // MakeCode + Flags を送る（文字変換はしない）
             EnqueueKeyboardRawEvent((uint16_t)k.MakeCode, (uint16_t)k.Flags);
 
@@ -743,14 +758,41 @@ void MainWindow::refreshKeyboardList() {
     QSignalBlocker blocker(ui.comboBox);
     ui.comboBox->clear();
 
+    int builtInNo = 0;
+    int usbNo = 0;
+    int btNo = 0;
+    int otherNo = 0;
+
     for (int i = 0; i < static_cast<int>(keyboards.size()); ++i) {
         const auto& k = keyboards[i];
 
         const QString vidStr = k.hasVidPid ? Hex4(k.vid) : QStringLiteral("N/A");
         const QString pidStr = k.hasVidPid ? Hex4(k.pid) : QStringLiteral("N/A");
 
-        const QString label = QStringLiteral(u"キーボード%1 (VID:%2 PID:%3)")
-            .arg(i + 1)
+        QString prefix;
+        int no = 0;
+        switch (k.busType) {
+        case BusType::BuiltIn:
+            prefix = QStringLiteral(u"内蔵キーボード");
+            no = ++builtInNo;
+            break;
+        case BusType::USB:
+            prefix = QStringLiteral(u"USBキーボード");
+            no = ++usbNo;
+            break;
+        case BusType::Bluetooth:
+            prefix = QStringLiteral(u"BTキーボード");
+            no = ++btNo;
+            break;
+        default:
+            prefix = QStringLiteral(u"その他キーボード");
+            no = ++otherNo;
+            break;
+        }
+
+        const QString label = QStringLiteral(u"%1%2（VID:%3 PID:%4）")
+            .arg(prefix)
+            .arg(no)
             .arg(vidStr)
             .arg(pidStr);
 
