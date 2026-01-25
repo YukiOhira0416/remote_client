@@ -21,11 +21,13 @@ protected:
     void closeEvent(QCloseEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
+    bool event(QEvent* event) override;
 
 private:
     Ui::MainWindow ui;
 
     struct KeyboardEntry {
+        HANDLE hDevice = nullptr;
         quint16 vid = 0xFFFF;
         quint16 pid = 0xFFFF;
         bool hasVidPid = false;
@@ -39,6 +41,8 @@ private:
     std::vector<KeyboardEntry> enumerateKeyboards() const;
 
     bool m_keyboardRefreshPending = false;
+    QString m_selectedKeyboardPath; // combo selection cache
+    HANDLE m_selectedKeyboardHandle = nullptr;
 };
 
 #endif // MAIN_WINDOW_H
