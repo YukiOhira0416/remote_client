@@ -950,12 +950,59 @@ void ListenForRebootCommands() {
 }
 
 void IsIntelorNVIDIAGPU() {
-    // AMDGPUを検出した場合はメッセージウインドウを出して、「対応するGPUが検出できませんでした。
-    // アプリを終了します」と表示し、メッセージウインドウのOKボタンでアプリを終了する。
-    // IntelGPU（iGPU,eGPU両方）のみ検出したら、Global.cppのIsIntelorNVIDIAGPU変数をtrueに設定する。
-    // NVIDIA GPUのみ検出したら、IsIntelorNVIDIAGPU変数をfalseに設定する。
-    // Intel + NVIDIA 両方検出したら、IsIntelorNVIDIAGPU変数をfalseに設定する。
-    // 正確に検出してほしい
+    Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
+    HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+    if (FAILED(hr)) {
+        DebugLog(L"IsIntelorNVIDIAGPU: CreateDXGIFactory1 failed. hr=" + HResultToHexWString(hr));
+        return;
+    }
+
+    bool hasIntel = false;
+    bool hasNvidia = false;
+    bool hasAmd = false;
+
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+        DXGI_ADAPTER_DESC1 desc;
+        if (SUCCEEDED(adapter->GetDesc1(&desc))) {
+            // ソフトウェアレンダラーはスキップ
+            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
+                adapter.Reset();
+                continue;
+            }
+
+            std::wstringstream wss;
+            wss << L"GPU Detected: " << desc.Description << L" (VendorID: 0x" << std::hex << desc.VendorId << L")";
+            DebugLog(wss.str());
+
+            if (desc.VendorId == 0x10DE) { // NVIDIA
+                hasNvidia = true;
+            } else if (desc.VendorId == 0x8086) { // Intel
+                hasIntel = true;
+            } else if (desc.VendorId == 0x1002 || desc.VendorId == 0x1022) { // AMD
+                hasAmd = true;
+            }
+        }
+        adapter.Reset();
+    }
+
+    if (hasAmd) {
+        DebugLog(L"AMD GPU detected. Exiting application.");
+        MessageBoxW(NULL, L"対応するGPUが検出できませんでした。 アプリを終了します", L"エラー", MB_OK | MB_ICONERROR);
+        ExitProcess(0);
+    }
+
+    if (hasNvidia) {
+        DebugLog(L"NVIDIA GPU detected (Intel may also be present). Setting g_IsIntelorNVIDIAGPU to false.");
+        g_IsIntelorNVIDIAGPU = false;
+    } else if (hasIntel) {
+        DebugLog(L"Intel GPU detected (NVIDIA NOT present). Setting g_IsIntelorNVIDIAGPU to true.");
+        g_IsIntelorNVIDIAGPU = true;
+    } else {
+        DebugLog(L"No compatible GPU (Intel or NVIDIA) found. Exiting application.");
+        MessageBoxW(NULL, L"対応するGPUが検出できませんでした。 アプリを終了します", L"エラー", MB_OK | MB_ICONERROR);
+        ExitProcess(0);
+    }
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
