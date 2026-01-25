@@ -233,21 +233,20 @@ void KeyboardSendThread(std::atomic<bool>& running)
 
             if (msg.type == MsgType::Focus) {
                 active = (msg.active != 0);
-
-                // Send empty SYNC when focus is lost to release keys on server
-                pressed.clear();
-                const uint32_t fnum = seq++;
-                auto payload = BuildStatePayload(fnum, pressed);
-                SendWithFEC(sock, dst, fnum, payload);
-
+                // We no longer clear 'pressed' on focus loss to maintain sync with physical keys.
+                // We also no longer send an empty SYNC immediately.
                 lastSync = std::chrono::steady_clock::now();
                 lastActivity = lastSync;
                 continue;
             }
 
             if (!active) {
-                // Ignore events when not active
-                continue;
+                // Ignore new key-downs when not active, but allow key-ups for keys that are currently pressed.
+                const bool isUp = (msg.flags & KBD_KEYUP) != 0;
+                const uint32_t id = MakeKeyId(msg.makeCode, msg.flags);
+                if (!isUp || pressed.find(id) == pressed.end()) {
+                    continue;
+                }
             }
 
             // EVENT
@@ -265,10 +264,18 @@ void KeyboardSendThread(std::atomic<bool>& running)
         }
 
         const auto now = std::chrono::steady_clock::now();
-        if (active) {
-            // Periodic STATE_SYNC to handle packet loss
+        // Periodic STATE_SYNC to handle packet loss.
+        // We continue syncing even when inactive if there are keys currently held down.
+        if ((now - lastSync) >= syncInterval) {
+            bool shouldSync = false;
             const bool recent = (now - lastActivity) < std::chrono::seconds(1);
-            if ((now - lastSync) >= syncInterval && (!pressed.empty() || recent)) {
+            if (active) {
+                if (!pressed.empty() || recent) shouldSync = true;
+            } else {
+                if (!pressed.empty()) shouldSync = true;
+            }
+
+            if (shouldSync) {
                 const uint32_t fnum = seq++;
                 auto payload = BuildStatePayload(fnum, pressed);
                 SendWithFEC(sock, dst, fnum, payload);
