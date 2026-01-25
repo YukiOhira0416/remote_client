@@ -1036,6 +1036,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
     int argc = __argc;
     char** argv = __argv;
+
+    // --- HiDPI対策: DPIスケールに関係なく「指定ピクセル数」通りのサイズで表示したい ---
+    // Qt6は既定でHigh-DPIスケーリングが有効で、resize(1504,846) がDIP扱いになり、
+    // Windows 125% では物理ピクセル相当で約 1880x1058 になってしまう。
+    //
+    // ここでQtの座標系を 96DPI 固定に寄せ、1Qt単位≒1物理px として扱うことで、
+    // DPI倍率に関係なく初期サイズを 1504x846 に固定する。
+    //
+    // 注意: これらは QApplication 生成前に行う必要がある。
+    qputenv("QT_ENABLE_HIGHDPI_SCALING", "0");
+    qputenv("QT_FONT_DPI", "96");
+
     QApplication a(argc, argv);
 
     MainWindow mainWindow;
