@@ -3,6 +3,9 @@
 
 #include <QMainWindow>
 #include <QResizeEvent>
+#include <QtGlobal>
+#include <QString>
+#include <vector>
 #include "mainwindow.h"
 #include "renderhostwidgets.h"
 
@@ -21,6 +24,20 @@ protected:
 
 private:
     Ui::MainWindow ui;
+
+    struct KeyboardEntry {
+        quint16 vid = 0xFFFF;
+        quint16 pid = 0xFFFF;
+        bool hasVidPid = false;
+        QString devicePath; // RawInput device path (RIDI_DEVICENAME)
+    };
+
+    void registerKeyboardDeviceNotifications();
+    void scheduleKeyboardListRefresh();
+    void refreshKeyboardList();
+    std::vector<KeyboardEntry> enumerateKeyboards() const;
+
+    bool m_keyboardRefreshPending = false;
 };
 
 #endif // MAIN_WINDOW_H
