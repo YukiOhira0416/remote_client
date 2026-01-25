@@ -12,6 +12,13 @@
 #include <windows.h>
 #include <hidusage.h>
 #include <dbt.h>
+#include <setupapi.h>
+#include <devpkey.h>
+#include <cfgmgr32.h>
+#include <hidsdi.h>
+#include <hidpi.h>
+#include <objbase.h>
+#include <cwchar>
 #include "AppShutdown.h"
 #include "window.h"
 
@@ -28,6 +35,153 @@ static bool TryExtractVidPid(const QString& path, quint16& outVid, quint16& outP
     outVid = static_cast<quint16>(vid & 0xFFFF);
     outPid = static_cast<quint16>(pid & 0xFFFF);
     return true;
+}
+
+static QString FixupForWin32DevicePath(QString path) {
+    // RawInput の RIDI_DEVICENAME が "\\??\\" で始まる環境がある。
+    // SetupAPI / CreateFile は通常 "\\\\?\\" 形式を期待するため補正する。
+    const QString ntPrefix = QStringLiteral("\\\\??\\\\");
+    if (path.startsWith(ntPrefix)) {
+        path.remove(0, ntPrefix.size());
+        path.prepend(QStringLiteral("\\\\?\\"));
+    }
+    return path;
+}
+
+static bool TryDeriveDeviceInstanceId(const QString& rawDeviceName, QString& outInstanceId) {
+    // RawInput名から PnP インスタンスID相当を作る。
+    QString s = FixupForWin32DevicePath(rawDeviceName);
+    const QString win32Prefix = QStringLiteral("\\\\?\\");
+    if (s.startsWith(win32Prefix)) {
+        s = s.mid(win32Prefix.size());
+    }
+    static const QRegularExpression reTail(QStringLiteral(R"(\#\{[0-9A-Fa-f\-]{36}\}$)"));
+    s.remove(reTail);
+    s.replace('#', '\\');
+    outInstanceId = s;
+    return !outInstanceId.isEmpty();
+}
+
+static bool TryGetContainerIdFromDevNode(const QString& instanceId, QString& outKey) {
+    DEVINST devInst = 0;
+    std::wstring idW = instanceId.toStdWString();
+    CONFIGRET cr = CM_Locate_DevNodeW(&devInst, idW.data(), CM_LOCATE_DEVNODE_NORMAL);
+    if (cr != CR_SUCCESS) return false;
+
+    DEVPROPTYPE propType = 0;
+    GUID container{};
+    ULONG size = sizeof(container);
+    cr = CM_Get_DevNode_PropertyW(devInst, &DEVPKEY_Device_ContainerId, &propType, reinterpret_cast<PBYTE>(&container), &size, 0);
+    if (cr != CR_SUCCESS) return false;
+
+    wchar_t guidBuf[64]{};
+    if (StringFromGUID2(container, guidBuf, 64) <= 0) return false;
+    outKey = QString::fromWCharArray(guidBuf).toUpper();
+    return true;
+}
+
+static bool TryGetHardwareIdsFromDevNode(const QString& instanceId, QStringList& outIds) {
+    outIds.clear();
+    DEVINST devInst = 0;
+    std::wstring idW = instanceId.toStdWString();
+    CONFIGRET cr = CM_Locate_DevNodeW(&devInst, idW.data(), CM_LOCATE_DEVNODE_NORMAL);
+    if (cr != CR_SUCCESS) return false;
+
+    DEVPROPTYPE propType = 0;
+    ULONG size = 0;
+    cr = CM_Get_DevNode_PropertyW(devInst, &DEVPKEY_Device_HardwareIds, &propType, nullptr, &size, 0);
+    if (cr != CR_BUFFER_SMALL || size == 0) return false;
+    if (propType != DEVPROP_TYPE_STRING_LIST) return false;
+
+    std::vector<wchar_t> buf(size / sizeof(wchar_t));
+    cr = CM_Get_DevNode_PropertyW(devInst, &DEVPKEY_Device_HardwareIds, &propType, reinterpret_cast<PBYTE>(buf.data()), &size, 0);
+    if (cr != CR_SUCCESS) return false;
+
+    const wchar_t* p = buf.data();
+    while (*p) {
+        outIds.push_back(QString::fromWCharArray(p));
+        p += wcslen(p) + 1;
+    }
+    return !outIds.isEmpty();
+}
+
+static QString NormalizeDevicePathForKey(QString path) {
+    path = FixupForWin32DevicePath(path);
+    static const QRegularExpression reTail(QStringLiteral(R"(\#\{[0-9A-Fa-f\-]{36}\}$)"));
+    path.remove(reTail);
+    return path.toUpper();
+}
+
+static bool TryGetContainerIdKey(const QString& deviceInterfacePath, QString& outKey) {
+    const QString fixedPath = FixupForWin32DevicePath(deviceInterfacePath);
+    const std::wstring pathW = fixedPath.toStdWString();
+
+    HDEVINFO devInfo = SetupDiCreateDeviceInfoList(nullptr, nullptr);
+    if (devInfo == INVALID_HANDLE_VALUE) return false;
+
+    SP_DEVICE_INTERFACE_DATA ifData{};
+    ifData.cbSize = sizeof(ifData);
+
+    if (!SetupDiOpenDeviceInterfaceW(devInfo, pathW.c_str(), 0, &ifData)) {
+        SetupDiDestroyDeviceInfoList(devInfo);
+        QString instanceId;
+        if (TryDeriveDeviceInstanceId(deviceInterfacePath, instanceId)) {
+            return TryGetContainerIdFromDevNode(instanceId, outKey);
+        }
+        return false;
+    }
+
+    SP_DEVINFO_DATA devData{};
+    devData.cbSize = sizeof(devData);
+    if (!SetupDiGetDeviceInterfaceDetailW(devInfo, &ifData, nullptr, 0, nullptr, &devData)) {
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+            SetupDiDestroyDeviceInfoList(devInfo);
+            return false;
+        }
+    }
+
+    DEVPROPTYPE propType = 0;
+    GUID containerId{};
+    if (!SetupDiGetDevicePropertyW(devInfo, &devData, &DEVPKEY_Device_ContainerId, &propType, (PBYTE)&containerId, sizeof(containerId), nullptr, 0)) {
+        SetupDiDestroyDeviceInfoList(devInfo);
+        return false;
+    }
+
+    SetupDiDestroyDeviceInfoList(devInfo);
+    wchar_t guidBuf[64]{};
+    if (StringFromGUID2(containerId, guidBuf, 64) <= 0) return false;
+    outKey = QString::fromWCharArray(guidBuf).toUpper();
+    return true;
+}
+
+static bool IsHidKeyboardByPreparsedData(const QString& deviceInterfacePath) {
+    const QString fixedPath = FixupForWin32DevicePath(deviceInterfacePath);
+    const std::wstring pathW = fixedPath.toStdWString();
+
+    HANDLE h = CreateFileW(pathW.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        h = CreateFileW(pathW.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    }
+    if (h == INVALID_HANDLE_VALUE) return false;
+
+    PHIDP_PREPARSED_DATA ppd = nullptr;
+    if (!HidD_GetPreparsedData(h, &ppd)) {
+        CloseHandle(h);
+        return false;
+    }
+
+    HIDP_CAPS caps{};
+    bool isKeyboard = false;
+    if (HidP_GetCaps(ppd, &caps) == HIDP_STATUS_SUCCESS) {
+        if (caps.UsagePage == HID_USAGE_PAGE_GENERIC &&
+            (caps.Usage == HID_USAGE_GENERIC_KEYBOARD || caps.Usage == HID_USAGE_GENERIC_KEYPAD)) {
+            isKeyboard = true;
+        }
+    }
+
+    HidD_FreePreparsedData(ppd);
+    CloseHandle(h);
+    return isKeyboard;
 }
 
 static QString Hex4(quint16 v) {
@@ -288,25 +442,7 @@ std::vector<MainWindow::KeyboardEntry> MainWindow::enumerateKeyboards() const {
         const HANDLE hDev = list[i].hDevice;
         const DWORD type = list[i].dwType;
 
-        RID_DEVICE_INFO info{};
-        info.cbSize = sizeof(info);
-        UINT infoSize = sizeof(info);
-        if (GetRawInputDeviceInfo(hDev, RIDI_DEVICEINFO, &info, &infoSize) == (UINT)-1) {
-            continue;
-        }
-
-        bool isKeyboard = false;
-        if (type == RIM_TYPEKEYBOARD) {
-            isKeyboard = true;
-        } else if (type == RIM_TYPEHID) {
-            if (info.hid.usUsagePage == HID_USAGE_PAGE_GENERIC &&
-                info.hid.usUsage == HID_USAGE_GENERIC_KEYBOARD) {
-                isKeyboard = true;
-            }
-        }
-        if (!isKeyboard) continue;
-
-        // device path
+        // device path を先に取得（判定に使うため）
         UINT nameChars = 0;
         if (GetRawInputDeviceInfo(hDev, RIDI_DEVICENAME, nullptr, &nameChars) == (UINT)-1 || nameChars == 0) {
             continue;
@@ -319,13 +455,41 @@ std::vector<MainWindow::KeyboardEntry> MainWindow::enumerateKeyboards() const {
         if (!name.empty() && name.back() == L'\0') name.pop_back();
         const QString devicePath = QString::fromWCharArray(name.c_str());
 
-        // 仮想キーボード除外（要件）
+        // 仮想キーボード除外
         if (IsVirtualKeyboardDevicePath(devicePath)) {
             continue;
         }
 
+        RID_DEVICE_INFO info{};
+        info.cbSize = sizeof(info);
+        UINT infoSize = sizeof(info);
+        if (GetRawInputDeviceInfo(hDev, RIDI_DEVICEINFO, &info, &infoSize) == (UINT)-1) {
+            continue;
+        }
+
+        bool isKeyboard = false;
+        if (type == RIM_TYPEKEYBOARD) {
+            isKeyboard = true;
+        } else if (type == RIM_TYPEHID) {
+            if (info.hid.usUsagePage == HID_USAGE_PAGE_GENERIC &&
+                (info.hid.usUsage == HID_USAGE_GENERIC_KEYBOARD || info.hid.usUsage == HID_USAGE_GENERIC_KEYPAD)) {
+                isKeyboard = true;
+            } else {
+                // Usage が取れない/違う場合でも、CAPSから判定を試みる（Bluetooth等）
+                if (IsHidKeyboardByPreparsedData(devicePath)) {
+                    isKeyboard = true;
+                }
+            }
+        }
+        if (!isKeyboard) continue;
+
         KeyboardEntry e;
         e.devicePath = devicePath;
+
+        // 重複排除のためのキー生成 (ContainerId優先)
+        if (!TryGetContainerIdKey(devicePath, e.uniqueKey)) {
+            e.uniqueKey = NormalizeDevicePathForKey(devicePath);
+        }
 
         quint16 vid = 0xFFFF, pid = 0xFFFF;
         if (TryExtractVidPid(devicePath, vid, pid)) {
@@ -338,10 +502,27 @@ std::vector<MainWindow::KeyboardEntry> MainWindow::enumerateKeyboards() const {
             e.pid = static_cast<quint16>(info.hid.dwProductId & 0xFFFF);
             e.hasVidPid = true;
         } else {
-            // 内蔵(ACPI/PS2等)はVID/PIDが取れないことがある
-            e.vid = 0xFFFF;
-            e.pid = 0xFFFF;
-            e.hasVidPid = false;
+            // RIM_TYPEKEYBOARD でも HardwareIds から狙う
+            QString instanceId;
+            if (TryDeriveDeviceInstanceId(devicePath, instanceId)) {
+                QStringList hwids;
+                if (TryGetHardwareIdsFromDevNode(instanceId, hwids)) {
+                    quint16 v2 = 0xFFFF, p2 = 0xFFFF;
+                    for (const QString& h : hwids) {
+                        if (TryExtractVidPid(h, v2, p2)) {
+                            e.vid = v2;
+                            e.pid = p2;
+                            e.hasVidPid = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!e.hasVidPid) {
+                e.vid = 0xFFFF;
+                e.pid = 0xFFFF;
+                e.hasVidPid = false;
+            }
         }
 
         out.push_back(std::move(e));
@@ -350,12 +531,12 @@ std::vector<MainWindow::KeyboardEntry> MainWindow::enumerateKeyboards() const {
     std::sort(out.begin(), out.end(), [](const KeyboardEntry& a, const KeyboardEntry& b) {
         if (a.vid != b.vid) return a.vid < b.vid;
         if (a.pid != b.pid) return a.pid < b.pid;
-        return a.devicePath < b.devicePath;
+        return a.uniqueKey < b.uniqueKey;
     });
 
-    // devicePath で重複排除
+    // uniqueKey で重複排除
     out.erase(std::unique(out.begin(), out.end(), [](const KeyboardEntry& a, const KeyboardEntry& b) {
-        return a.devicePath == b.devicePath;
+        return a.uniqueKey == b.uniqueKey;
     }), out.end());
 
     return out;
