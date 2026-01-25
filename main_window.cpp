@@ -505,7 +505,7 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
                 *result = 0;
                 return false;
             }
-            if (!m_selectedKeyboardHandle) {
+            if (m_selectedKeyboardUniqueKey.isEmpty()) {
                 *result = 0;
                 return false;
             }
