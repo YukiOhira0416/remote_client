@@ -13,7 +13,7 @@
 #include <hidusage.h>
 #include <dbt.h>
 #include <setupapi.h>
-#include <devpkey.h>
+#include <devpropdef.h>
 #include <cfgmgr32.h>
 #include <hidsdi.h>
 #include <hidpi.h>
@@ -23,6 +23,21 @@
 #include "window.h"
 
 namespace {
+// --- Fix for LNK2001: DEVPKEY_Device_* unresolved ---
+// 一部のWindows SDKでは devpkey.h の DEVPKEY_Device_* が extern 宣言のみになり、
+// INITGUID の扱い次第で実体が生成されず LNK2001 になることがある。
+// そのため、必要な DEVPROPKEY をこの翻訳単位で確実に定義して使用する。
+// ContainerId: formatID 8C7ED206-3F8A-4827-B3AB-AE9E1FAEFC6C, propID 2
+static const DEVPROPKEY kDevpkey_Device_ContainerId = {
+    { 0x8c7ed206, 0x3f8a, 0x4827, { 0xb3, 0xab, 0xae, 0x9e, 0x1f, 0xae, 0xfc, 0x6c } },
+    2
+};
+// HardwareIds: formatID A45C254E-DF1C-4EFD-8020-67D146A850E0, propID 3
+static const DEVPROPKEY kDevpkey_Device_HardwareIds = {
+    { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } },
+    3
+};
+
 static bool TryExtractVidPid(const QString& path, quint16& outVid, quint16& outPid) {
     // 例: \\?\HID#VID_046D&PID_C31C&MI_00#...#{...}
     static const QRegularExpression re(QStringLiteral("VID_([0-9A-Fa-f]{4}).*PID_([0-9A-Fa-f]{4})"));
@@ -71,7 +86,7 @@ static bool TryGetContainerIdFromDevNode(const QString& instanceId, QString& out
     DEVPROPTYPE propType = 0;
     GUID container{};
     ULONG size = sizeof(container);
-    cr = CM_Get_DevNode_PropertyW(devInst, &DEVPKEY_Device_ContainerId, &propType, reinterpret_cast<PBYTE>(&container), &size, 0);
+    cr = CM_Get_DevNode_PropertyW(devInst, &kDevpkey_Device_ContainerId, &propType, reinterpret_cast<PBYTE>(&container), &size, 0);
     if (cr != CR_SUCCESS) return false;
 
     wchar_t guidBuf[64]{};
@@ -89,12 +104,12 @@ static bool TryGetHardwareIdsFromDevNode(const QString& instanceId, QStringList&
 
     DEVPROPTYPE propType = 0;
     ULONG size = 0;
-    cr = CM_Get_DevNode_PropertyW(devInst, &DEVPKEY_Device_HardwareIds, &propType, nullptr, &size, 0);
+    cr = CM_Get_DevNode_PropertyW(devInst, &kDevpkey_Device_HardwareIds, &propType, nullptr, &size, 0);
     if (cr != CR_BUFFER_SMALL || size == 0) return false;
     if (propType != DEVPROP_TYPE_STRING_LIST) return false;
 
     std::vector<wchar_t> buf(size / sizeof(wchar_t));
-    cr = CM_Get_DevNode_PropertyW(devInst, &DEVPKEY_Device_HardwareIds, &propType, reinterpret_cast<PBYTE>(buf.data()), &size, 0);
+    cr = CM_Get_DevNode_PropertyW(devInst, &kDevpkey_Device_HardwareIds, &propType, reinterpret_cast<PBYTE>(buf.data()), &size, 0);
     if (cr != CR_SUCCESS) return false;
 
     const wchar_t* p = buf.data();
@@ -142,7 +157,7 @@ static bool TryGetContainerIdKey(const QString& deviceInterfacePath, QString& ou
 
     DEVPROPTYPE propType = 0;
     GUID containerId{};
-    if (!SetupDiGetDevicePropertyW(devInfo, &devData, &DEVPKEY_Device_ContainerId, &propType, (PBYTE)&containerId, sizeof(containerId), nullptr, 0)) {
+    if (!SetupDiGetDevicePropertyW(devInfo, &devData, &kDevpkey_Device_ContainerId, &propType, (PBYTE)&containerId, sizeof(containerId), nullptr, 0)) {
         SetupDiDestroyDeviceInfoList(devInfo);
         return false;
     }
