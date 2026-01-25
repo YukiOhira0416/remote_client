@@ -949,7 +949,19 @@ void ListenForRebootCommands() {
     DebugLog(L"ListenForRebootCommands thread stopped.");
 }
 
+void IsIntelorNVIDIAGPU() {
+    // AMDGPUを検出した場合はメッセージウインドウを出して、「対応するGPUが検出できませんでした。
+    // アプリを終了します」と表示し、メッセージウインドウのOKボタンでアプリを終了する。
+    // IntelGPU（iGPU,eGPU両方）のみ検出したら、Global.cppのIsIntelorNVIDIAGPU変数をtrueに設定する。
+    // NVIDIA GPUのみ検出したら、IsIntelorNVIDIAGPU変数をfalseに設定する。
+    // Intel + NVIDIA 両方検出したら、IsIntelorNVIDIAGPU変数をfalseに設定する。
+    // 正確に検出してほしい
+}
+
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
+    // 対応するGPUが搭載されていない場合は終了する
+    IsIntelorNVIDIAGPU();
+    
     // SetProcessDpiAwarenessContextが使えない場合はSetProcessDPIAwareを使う
     timeBeginPeriod(1);
 

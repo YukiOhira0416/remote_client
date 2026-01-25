@@ -39,6 +39,7 @@ std::unique_ptr<FrameDecoder> g_frameDecoder;
 std::atomic<bool> g_fec_worker_Running(true);
 std::atomic<bool> g_decode_worker_Running(true);
 std::atomic<bool> reboot_listener_running(true);
+std::atomic<bool> g_IsIntelorNVIDIAGPU(true); // 0: AMDGPU, 1: IntelOnly, 2: NVIDIAOnly or Both
 std::atomic<int> currentResolutionWidth(0);
 std::atomic<int> currentResolutionHeight(0);
 
