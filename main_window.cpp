@@ -3,6 +3,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
+#include <QTabBar>
 #include "AppShutdown.h"
 #include "window.h"
 
@@ -23,6 +24,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         // 左側にタブウィジェットを追加
         if (ui.tabWidget) {
             ui.tabWidget->setDocumentMode(true);
+            // タブバーとページ領域の境界線（QTabBarのベースライン）を描画しない
+            // QTabWidget::tabBar() は protected のため findChild で取得する
+            if (auto *bar = ui.tabWidget->findChild<QTabBar*>()) {
+                bar->setDrawBase(false);
+            }
             mainLayout->addWidget(ui.tabWidget);
         }
 
