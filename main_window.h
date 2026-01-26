@@ -55,6 +55,9 @@ private:
     QString m_selectedKeyboardUniqueKey;
     QMap<HANDLE, QString> m_handleToUniqueKey;
     HHOOK m_kbdHook = nullptr;
+    HWND m_mainHwnd = nullptr;
+
+    bool isClientFocusedWin32() const;
 };
 
 #endif // MAIN_WINDOW_H

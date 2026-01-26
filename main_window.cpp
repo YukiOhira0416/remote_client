@@ -220,6 +220,18 @@ static bool IsVirtualKeyboardDevicePath(const QString& path) {
     return false;
 }
 
+static bool TryGetDevNodeEnumeratorName(DEVINST devInst, QString& outEnumNameUpper) {
+    outEnumNameUpper.clear();
+    ULONG size = 0;
+    CONFIGRET cr = CM_Get_DevNode_Registry_PropertyW(devInst, CM_DRP_ENUMERATOR_NAME, nullptr, nullptr, &size, 0);
+    if (cr != CR_BUFFER_SMALL || size == 0) return false;
+    std::vector<wchar_t> buf((size / sizeof(wchar_t)) + 1);
+    cr = CM_Get_DevNode_Registry_PropertyW(devInst, CM_DRP_ENUMERATOR_NAME, nullptr, buf.data(), &size, 0);
+    if (cr != CR_SUCCESS) return false;
+    outEnumNameUpper = QString::fromWCharArray(buf.data()).toUpper();
+    return !outEnumNameUpper.isEmpty();
+}
+
 static MainWindow::BusType DetectBusType(const QString& deviceInstanceId) {
     if (deviceInstanceId.isEmpty()) return MainWindow::BusType::Other;
 
@@ -228,20 +240,35 @@ static MainWindow::BusType DetectBusType(const QString& deviceInstanceId) {
     CONFIGRET cr = CM_Locate_DevNodeW(&devInst, idW.data(), CM_LOCATE_DEVNODE_NORMAL);
     if (cr != CR_SUCCESS) return MainWindow::BusType::Other;
 
+    // Enumerator名でBluetoothを優先的にチェック
+    QString enumName;
+    if (TryGetDevNodeEnumeratorName(devInst, enumName)) {
+        if (enumName.startsWith(QStringLiteral("BTHENUM")) || enumName.startsWith(QStringLiteral("BTHLEENUM"))) {
+            return MainWindow::BusType::Bluetooth;
+        }
+    }
+
+    bool seenUsb = false;
+    bool seenBuiltIn = false;
+
     // 親を辿ってバスを特定する
     DEVINST parent = 0;
     wchar_t buf[MAX_DEVICE_ID_LEN];
 
     DEVINST current = devInst;
-    // 最大10階層まで辿る（無限ループ防止）
-    for (int depth = 0; depth < 10 && CM_Get_Parent(&parent, current, 0) == CR_SUCCESS; ++depth) {
+    // 最大15階層まで辿る（無限ループ防止）
+    for (int depth = 0; depth < 15 && CM_Get_Parent(&parent, current, 0) == CR_SUCCESS; ++depth) {
         if (CM_Get_Device_IDW(parent, buf, MAX_DEVICE_ID_LEN, 0) == CR_SUCCESS) {
             QString parentId = QString::fromWCharArray(buf).toUpper();
             if (parentId.startsWith(QLatin1String("BTHENUM\\")) || parentId.startsWith(QLatin1String("BTHLEENUM\\")))
                 return MainWindow::BusType::Bluetooth;
-            if (parentId.startsWith(QLatin1String("USB\\"))) return MainWindow::BusType::USB;
-            if (parentId.startsWith(QLatin1String("ACPI\\")) || parentId.startsWith(QLatin1String("PCI\\")))
-                return MainWindow::BusType::BuiltIn;
+            if (parentId.startsWith(QLatin1String("USB\\"))) {
+                seenUsb = true;
+                // USB配下にBluetoothがある場合を考慮し、即決せず続行
+            }
+            if (parentId.startsWith(QLatin1String("ACPI\\")) || parentId.startsWith(QLatin1String("PCI\\"))) {
+                seenBuiltIn = true;
+            }
         }
         current = parent;
     }
@@ -254,6 +281,15 @@ static MainWindow::BusType DetectBusType(const QString& deviceInstanceId) {
         return MainWindow::BusType::Bluetooth;
     if (upperId.startsWith(QLatin1String("USB\\"))) return MainWindow::BusType::USB;
 
+    if (seenBuiltIn) return MainWindow::BusType::BuiltIn;
+    if (seenUsb) return MainWindow::BusType::USB;
+
+    if (!enumName.isEmpty()) {
+        if (enumName.startsWith(QStringLiteral("USB"))) return MainWindow::BusType::USB;
+        if (enumName.startsWith(QStringLiteral("ACPI")) || enumName.startsWith(QStringLiteral("PCI")))
+            return MainWindow::BusType::BuiltIn;
+    }
+
     return MainWindow::BusType::Other;
 }
 } // namespace
@@ -261,6 +297,7 @@ static MainWindow::BusType DetectBusType(const QString& deviceInstanceId) {
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     ui.setupUi(this);
     g_mainWindow = this;
+    m_mainHwnd = reinterpret_cast<HWND>(winId());
 
     // 初期値サイズ 1504*846 (16:9 領域 1280*720 を確保)
     // 横: 1280 + 224 = 1504, 縦: 720 + 126 = 846
@@ -362,11 +399,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     // WH_KEYBOARD_LL hook for Hankaku/Zenkaku suppression
     m_kbdHook = SetWindowsHookEx(WH_KEYBOARD_LL, [](int nCode, WPARAM wParam, LPARAM lParam) -> LRESULT {
-        if (nCode == HC_ACTION && g_mainWindow && g_mainWindow->isActiveWindow()) {
+        if (nCode == HC_ACTION && g_mainWindow && g_mainWindow->isClientFocusedWin32()) {
             KBDLLHOOKSTRUCT* hs = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
 
             // Windowsキー（LWIN/RWIN）は、フォーカス中はローカル無効化する。
-            // 要件: ローカルでも効かない / リモートにも送らない（今回は再現不要、単純に抑止）
+            // 要件: ローカルでも効かない / リモートにも送らない
             if (hs->vkCode == VK_LWIN || hs->vkCode == VK_RWIN) {
                 // ローカル抑止 (swallow)
                 return 1;
@@ -399,7 +436,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     }
 
     // initial focus state
-    EnqueueKeyboardFocusChanged(this->isActiveWindow());
+    EnqueueKeyboardFocusChanged(this->isClientFocusedWin32());
 }
 
 MainWindow::~MainWindow() {
@@ -509,8 +546,8 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             *result = 0;
             return false;
         } else if (msg->message == WM_INPUT) {
-            // フォーカス中のみ（Qt側でもactive制御しているが保険）
-            if (!this->isActiveWindow()) {
+            // フォーカス中のみ
+            if (!this->isClientFocusedWin32()) {
                 *result = 0;
                 return false;
             }
@@ -585,7 +622,7 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
 
             // Windowsキー（LWIN/RWIN）は、フォーカス中はリモート送信もしない。
             // ※LLHookでローカル抑止してもRawInputで拾えるケースに備え、ここでも遮断する。
-            if (this->isActiveWindow() && (k.VKey == VK_LWIN || k.VKey == VK_RWIN)) {
+            if (this->isClientFocusedWin32() && (k.VKey == VK_LWIN || k.VKey == VK_RWIN)) {
                 *result = 0;
                 return false;
             }
@@ -774,19 +811,19 @@ void MainWindow::refreshKeyboardList() {
         int no = 0;
         switch (k.busType) {
         case BusType::BuiltIn:
-            prefix = QStringLiteral(u"内蔵キーボード");
+            prefix = QStringLiteral("Internal Keyboard");
             no = ++builtInNo;
             break;
         case BusType::USB:
-            prefix = QStringLiteral(u"USBキーボード");
+            prefix = QStringLiteral("USB Keyboard");
             no = ++usbNo;
             break;
         case BusType::Bluetooth:
-            prefix = QStringLiteral(u"BTキーボード");
+            prefix = QStringLiteral("BT Keyboard");
             no = ++btNo;
             break;
         default:
-            prefix = QStringLiteral(u"その他キーボード");
+            prefix = QStringLiteral("Other Keyboard");
             no = ++otherNo;
             break;
         }
@@ -824,4 +861,15 @@ void MainWindow::refreshKeyboardList() {
         }
     }
     if (ui.comboBox->count() > 0) ui.comboBox->setCurrentIndex(0);
+}
+
+bool MainWindow::isClientFocusedWin32() const {
+    if (!m_mainHwnd) return false;
+    HWND fg = GetForegroundWindow();
+    if (!fg) return false;
+    if (fg == m_mainHwnd) return true;
+    HWND rootOwner = GetAncestor(fg, GA_ROOTOWNER);
+    if (rootOwner == m_mainHwnd) return true;
+    if (IsChild(m_mainHwnd, fg)) return true;
+    return false;
 }
