@@ -862,24 +862,25 @@ void MainWindow::refreshKeyboardList() {
         int typeNo = 0;
         switch (k.busType) {
         case BusType::BuiltIn:
-            prefix = QStringLiteral(u"内臓キーボード");
+            prefix = QStringLiteral("Internal Keyboard");
             typeNo = ++builtInIndex;
             break;
         case BusType::USB:
-            prefix = QStringLiteral(u"USBキーボード");
+            prefix = QStringLiteral("USB Keyboard");
             typeNo = ++usbIndex;
             break;
         case BusType::Bluetooth:
-            prefix = QStringLiteral(u"BTキーボード");
+            prefix = QStringLiteral("BT Keyboard");
             typeNo = ++btIndex;
             break;
         default:
-            prefix = QStringLiteral(u"キーボード");
+            prefix = QStringLiteral("Keyboard");
             typeNo = ++otherIndex;
             break;
         }
 
-        const QString label = QStringLiteral(u"%1%2 (VID:%3 PID:%4)")
+        // English labels: keep a space between prefix and index.
+        const QString label = QStringLiteral("%1 %2 (VID:%3 PID:%4)")
             .arg(prefix)
             .arg(typeNo)
             .arg(vidStr)
