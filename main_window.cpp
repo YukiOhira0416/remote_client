@@ -64,6 +64,19 @@ static bool TryExtractVidPid(const QString& path, quint16& outVid, quint16& outP
     return true;
 }
 
+static bool QueryIsJapaneseKeyboardRawDevice(HANDLE hDev)
+{
+    RID_DEVICE_INFO info{};
+    info.cbSize = sizeof(info);
+    UINT infoSize = sizeof(info);
+    if (GetRawInputDeviceInfo(hDev, RIDI_DEVICEINFO, &info, &infoSize) == (UINT)-1) {
+        return false;
+    }
+    if (info.dwType != RIM_TYPEKEYBOARD) return false;
+    // RID_DEVICE_INFO_KEYBOARD.dwType: 0x7 == Japanese keyboard (Microsoft Learn)
+    return (info.keyboard.dwType == 0x7);
+}
+
 static QString FixupForWin32DevicePath(QString path) {
     // RawInput の RIDI_DEVICENAME が "\\??\\" で始まる環境がある。
     // SetupAPI / CreateFile は通常 "\\\\?\\" 形式を期待するため補正する。
@@ -543,6 +556,16 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
                 return false;
             }
 
+            // Selected device is confirmed. Determine whether this raw keyboard device is JP(106/109).
+            bool isJapaneseKeyboard = false;
+            auto itJ = m_handleToIsJapanese.find(header.hDevice);
+            if (itJ != m_handleToIsJapanese.end()) {
+                isJapaneseKeyboard = itJ.value();
+            } else {
+                isJapaneseKeyboard = QueryIsJapaneseKeyboardRawDevice(header.hDevice);
+                m_handleToIsJapanese[header.hDevice] = isJapaneseKeyboard;
+            }
+
             // 2. 選択デバイスと一致した場合のみ、全データを取得
             UINT size = 0;
             GetRawInputData(hRaw, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER));
@@ -580,15 +603,17 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             if (k.MakeCode == 0x29) {
                 DebugLog(L"[WM_INPUT] MakeCode=0x29 detected. rawVKey=0x" + std::to_wstring(vkRaw) +
                          L" resolvedVKey=0x" + std::to_wstring(vk) +
+                         L" isJapaneseKeyboard=" + std::to_wstring(isJapaneseKeyboard ? 1 : 0) +
                          L" flags=0x" + std::to_wstring((uint16_t)k.Flags));
             }
 
             // 半角/全角: 選択デバイスからの入力だけを対象に、リモートへは Alt+` を送る
             // - JIS: 物理0x29が半角/全角 (典型VKey: VK_OEM_AUTO/VK_OEM_ENLW/VK_KANJI)
             // - US : 物理0x29が `(~) (VKey: VK_OEM_3) → 変換しない
+            // Fix: HKL依存で vk が VK_OEM_3 に揺れても、デバイスが日本語キーボードなら 0x29 を半角/全角として扱う。
             const bool isHankakuZenkaku =
                 (k.MakeCode == 0x29) &&
-                (vk == VK_OEM_AUTO || vk == VK_OEM_ENLW || vk == VK_KANJI);
+                (isJapaneseKeyboard || (vk == VK_OEM_AUTO || vk == VK_OEM_ENLW || vk == VK_KANJI));
 
             if (isHankakuZenkaku) {
                 const bool isUp = (k.Flags & RI_KEY_BREAK) != 0;
@@ -822,6 +847,7 @@ void MainWindow::refreshKeyboardList() {
 
     // 更新ごとにハンドルマップをリセット
     m_handleToUniqueKey.clear();
+    m_handleToIsJapanese.clear();
     for (const auto& k : keyboards) {
         m_handleToUniqueKey[k.hDevice] = k.uniqueKey;
     }
