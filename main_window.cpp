@@ -43,10 +43,24 @@ static HHOOK g_llKeyboardHook = nullptr;
 // bit0 = LWIN, bit1 = RWIN
 static std::atomic<uint8_t> g_winCapturedMask{ 0 };
 
+static bool IsForegroundOurProcess()
+{
+    HWND fg = GetForegroundWindow();
+    if (!fg) return false;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(fg, &pid);
+    return pid == GetCurrentProcessId();
+}
+
 static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
+    const bool activeByForeground = IsForegroundOurProcess();
+    const bool shouldHook = activeByForeground
+        || g_remoteInputActive.load(std::memory_order_relaxed)
+        || g_winCapturedMask.load(std::memory_order_relaxed);
+
     // アクティブ、もしくは「Winキー捕捉中(Up待ち)」であればフック処理を行う
-    if (nCode == HC_ACTION && (g_remoteInputActive.load(std::memory_order_relaxed) || g_winCapturedMask.load(std::memory_order_relaxed))) {
+    if (nCode == HC_ACTION && shouldHook) {
         const KBDLLHOOKSTRUCT* ks = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
         if (ks) {
             const bool isWin = (ks->vkCode == VK_LWIN || ks->vkCode == VK_RWIN);
@@ -57,7 +71,7 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                 if (!isUp) {
                     // Downを捕まえたら「捕捉中」にする
                     // アクティブ時のみ捕捉開始
-                    if (g_remoteInputActive.load(std::memory_order_relaxed)) {
+                    if (activeByForeground || g_remoteInputActive.load(std::memory_order_relaxed)) {
                         g_winCapturedMask.fetch_or(mask, std::memory_order_relaxed);
                         return 1; // ローカルへ伝播させない
                     }
@@ -69,7 +83,7 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                         return 1;
                     }
                     // 捕捉していないUpでも、まだアクティブなら握りつぶす
-                    if (g_remoteInputActive.load(std::memory_order_relaxed)) {
+                    if (activeByForeground || g_remoteInputActive.load(std::memory_order_relaxed)) {
                         return 1;
                     }
                 }
@@ -86,6 +100,8 @@ static void InstallLowLevelKeyboardHook()
     g_llKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, hMod, 0);
     if (!g_llKeyboardHook) {
         DebugLog(L"[WinKeyHook] SetWindowsHookExW failed. err=" + std::to_wstring(GetLastError()));
+    } else {
+        DebugLog(L"[WinKeyHook] Installed successfully.");
     }
 }
 
@@ -673,9 +689,13 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             //   ここで非アクティブ即returnすると、Winキー等でフォーカスが外れた後の「KEY UP」が捨てられ、
             //   リモート側が押しっぱなしになる。
             //   → 非アクティブ時は「UPだけ通す」(Downは無視)。
+            //   ただし、Winキー(0x5B/0x5C)に関しては、ローカルStartメニューでフォーカスが奪われた場合でも
+            //   リモートへ送信したいため、例外的にDownも通す(保険)。
             const bool activeNow = this->isActiveWindow();
             const bool isUpNow = (k.Flags & RI_KEY_BREAK) != 0;
-            if (!activeNow && !isUpNow) {
+            const bool isWinSc = (k.MakeCode == 0x5B || k.MakeCode == 0x5C);
+
+            if (!activeNow && !isUpNow && !isWinSc) {
                 *result = 0;
                 return false;
             }
@@ -692,6 +712,10 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
                           L" Active=" + std::to_wstring(activeNow ? 1 : 0));
             }
             uint16_t vk = vkRaw;
+
+            // Winキーはスキャンコードで確定できるので強制的に安定化
+            if (k.MakeCode == 0x5B) vk = VK_LWIN;
+            if (k.MakeCode == 0x5C) vk = VK_RWIN;
 
             if (vk == 0 || vk == 0x00FF) {
                 // RI_KEY_E0/E1 を MapVirtualKeyExW に反映

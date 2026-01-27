@@ -255,10 +255,15 @@ void KeyboardSendThread(std::atomic<bool>& running)
 
             if (!active) {
                 // Ignore new key-downs when not active, but allow key-ups for keys that are currently pressed.
-                const bool isUp = (msg.flags & KBD_KEYUP) != 0;
-                const uint64_t id = MakeKeyId(msg.makeCode, msg.flags, msg.vkey);
-                if (!isUp || pressed.find(id) == pressed.end()) {
-                    continue;
+                // Exception: Allow Windows keys (VK_LWIN/VK_RWIN) to pass through even if inactive (Insurance).
+                const bool isWin = (msg.vkey == VK_LWIN || msg.vkey == VK_RWIN);
+
+                if (!isWin) {
+                    const bool isUp = (msg.flags & KBD_KEYUP) != 0;
+                    const uint64_t id = MakeKeyId(msg.makeCode, msg.flags, msg.vkey);
+                    if (!isUp || pressed.find(id) == pressed.end()) {
+                        continue;
+                    }
                 }
             }
 
