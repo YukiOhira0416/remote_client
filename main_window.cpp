@@ -243,6 +243,28 @@ static bool IsVirtualKeyboardDevicePath(const QString& path) {
 static MainWindow::BusType DetectBusType(const QString& deviceInstanceId) {
     if (deviceInstanceId.isEmpty()) return MainWindow::BusType::Other;
 
+    // 先に自己IDで判定できるものは確定してしまう（親探索のUSB早期return問題を潰す）
+    const QString selfId = deviceInstanceId.toUpper();
+    auto isBluetoothId = [](const QString& id) -> bool {
+        return id.startsWith(QLatin1String("BTHENUM\\"))
+            || id.startsWith(QLatin1String("BTHLEENUM\\"))
+            || id.startsWith(QLatin1String("BTHLEDEVICE\\"))
+            || id.startsWith(QLatin1String("BTH\\"))
+            || id.startsWith(QLatin1String("BTHPORT\\"));
+    };
+    auto isUsbId = [](const QString& id) -> bool {
+        return id.startsWith(QLatin1String("USB\\"));
+    };
+    auto isBuiltInId = [](const QString& id) -> bool {
+        return id.startsWith(QLatin1String("ACPI\\"))
+            || id.startsWith(QLatin1String("PCI\\"))
+            || id.contains(QLatin1String("I8042PRT"));
+    };
+
+    if (isBluetoothId(selfId)) return MainWindow::BusType::Bluetooth;
+    if (isBuiltInId(selfId))   return MainWindow::BusType::BuiltIn;
+    if (isUsbId(selfId))       return MainWindow::BusType::USB;
+
     DEVINST devInst = 0;
     std::wstring idW = deviceInstanceId.toStdWString();
     CONFIGRET cr = CM_Locate_DevNodeW(&devInst, idW.data(), CM_LOCATE_DEVNODE_NORMAL);
@@ -253,25 +275,25 @@ static MainWindow::BusType DetectBusType(const QString& deviceInstanceId) {
     wchar_t buf[MAX_DEVICE_ID_LEN];
 
     DEVINST current = devInst;
+    bool foundBluetooth = false;
+    bool foundUsb = false;
+    bool foundBuiltIn = false;
+
     // 最大10階層まで辿る（無限ループ防止）
     for (int depth = 0; depth < 10 && CM_Get_Parent(&parent, current, 0) == CR_SUCCESS; ++depth) {
         if (CM_Get_Device_IDW(parent, buf, MAX_DEVICE_ID_LEN, 0) == CR_SUCCESS) {
             QString parentId = QString::fromWCharArray(buf).toUpper();
-            if (parentId.startsWith(QLatin1String("USB\\"))) return MainWindow::BusType::USB;
-            if (parentId.startsWith(QLatin1String("BTHENUM\\")) || parentId.startsWith(QLatin1String("BTHLEENUM\\")))
-                return MainWindow::BusType::Bluetooth;
-            if (parentId.startsWith(QLatin1String("ACPI\\")) || parentId.startsWith(QLatin1String("PCI\\")))
-                return MainWindow::BusType::BuiltIn;
+            if (isBluetoothId(parentId)) foundBluetooth = true;
+            if (isUsbId(parentId))       foundUsb = true;
+            if (isBuiltInId(parentId))   foundBuiltIn = true;
         }
         current = parent;
     }
 
-    // フォールバック: 自身のIDから判定
-    QString upperId = deviceInstanceId.toUpper();
-    if (upperId.startsWith(QLatin1String("ACPI\\")) || upperId.contains(QLatin1String("I8042PRT")))
-        return MainWindow::BusType::BuiltIn;
-    if (upperId.startsWith(QLatin1String("USB\\"))) return MainWindow::BusType::USB;
-    if (upperId.startsWith(QLatin1String("BTHENUM\\"))) return MainWindow::BusType::Bluetooth;
+    // 優先順位: Bluetooth > USB > BuiltIn > Other
+    if (foundBluetooth) return MainWindow::BusType::Bluetooth;
+    if (foundUsb)       return MainWindow::BusType::USB;
+    if (foundBuiltIn)   return MainWindow::BusType::BuiltIn;
 
     return MainWindow::BusType::Other;
 }
