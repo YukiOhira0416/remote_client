@@ -54,6 +54,7 @@ private:
     QString m_selectedKeyboardPath; // combo selection cache
     QString m_selectedKeyboardUniqueKey;
     QMap<HANDLE, QString> m_handleToUniqueKey;
+    QMap<HANDLE, bool> m_handleToIsJapanese;
 };
 
 #endif // MAIN_WINDOW_H
