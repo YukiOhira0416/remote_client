@@ -34,6 +34,43 @@ static MainWindow* g_mainWindow = nullptr;
 static std::atomic<bool> g_hankakuHeld{ false };
 static std::atomic<ULONGLONG> g_hankakuLastDownTick{ 0 };
 
+// --- Winキー抑止（クライアントがアクティブな間はローカルOSのスタートメニュー等を開かせない） ---
+// Raw Input (WM_INPUT) だけでは OS の Winキー処理を抑止できないため、WH_KEYBOARD_LL で握りつぶす。
+// ※低レベルフックはデバイス識別ができないため、複数キーボード環境では「選択デバイスのみ抑止」は難しい。
+static std::atomic<bool> g_remoteInputActive{ false };
+static HHOOK g_llKeyboardHook = nullptr;
+
+static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    if (nCode == HC_ACTION && g_remoteInputActive.load(std::memory_order_relaxed)) {
+        const KBDLLHOOKSTRUCT* ks = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+        if (ks) {
+            if (ks->vkCode == VK_LWIN || ks->vkCode == VK_RWIN) {
+                // ローカルOSへの伝播を止める（Startメニュー/Winショートカット等を無効化）
+                return 1;
+            }
+        }
+    }
+    return CallNextHookEx(g_llKeyboardHook, nCode, wParam, lParam);
+}
+
+static void InstallLowLevelKeyboardHook()
+{
+    if (g_llKeyboardHook) return;
+    HMODULE hMod = GetModuleHandleW(nullptr);
+    g_llKeyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, hMod, 0);
+    if (!g_llKeyboardHook) {
+        DebugLog(L"[WinKeyHook] SetWindowsHookExW failed. err=" + std::to_wstring(GetLastError()));
+    }
+}
+
+static void UninstallLowLevelKeyboardHook()
+{
+    if (!g_llKeyboardHook) return;
+    UnhookWindowsHookEx(g_llKeyboardHook);
+    g_llKeyboardHook = nullptr;
+}
+
 namespace {
 // --- Fix for LNK2001: DEVPKEY_Device_* unresolved ---
 // 一部のWindows SDKでは devpkey.h の DEVPKEY_Device_* が extern 宣言のみになり、
@@ -302,6 +339,9 @@ static MainWindow::BusType DetectBusType(const QString& deviceInstanceId) {
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     ui.setupUi(this);
     g_mainWindow = this;
+    // Winキー抑止フックをインストール（ウィンドウがアクティブな間だけ有効化する）
+    InstallLowLevelKeyboardHook();
+    g_remoteInputActive.store(this->isActiveWindow(), std::memory_order_relaxed);
 
     // 初期値サイズ 1504*846 (16:9 領域 1280*720 を確保)
     // 横: 1280 + 224 = 1504, 縦: 720 + 126 = 846
@@ -421,6 +461,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 }
 
 MainWindow::~MainWindow() {
+    UninstallLowLevelKeyboardHook();
     if (g_mainWindow == this) g_mainWindow = nullptr;
 }
 
@@ -436,8 +477,10 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 bool MainWindow::event(QEvent* e)
 {
     if (e->type() == QEvent::WindowActivate) {
+        g_remoteInputActive.store(true, std::memory_order_relaxed);
         EnqueueKeyboardFocusChanged(true);
     } else if (e->type() == QEvent::WindowDeactivate) {
+        g_remoteInputActive.store(false, std::memory_order_relaxed);
         // 半角/全角の押下状態が key-up 未検知で残ると、以後ずっと送信されない可能性があるため
         // 非アクティブ化時に念のため状態をクリアしておく。
         g_hankakuHeld.store(false, std::memory_order_relaxed);
