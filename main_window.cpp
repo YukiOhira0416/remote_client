@@ -789,6 +789,18 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
 
             // 通常キー: MakeCode + Flags + (補完済み)VKey を送る
             if (vk == 0 || vk == 0x00FF) vk = 0;
+
+            // デバッグ：Win+ショートカットのため、全キーの生入力を追跡
+            {
+                const bool isUp = (k.Flags & RI_KEY_BREAK) != 0;
+                DebugLog(
+                    L"[WM_INPUT][KEY] make=0x" + std::to_wstring(k.MakeCode) +
+                    L" flags=0x" + std::to_wstring((uint16_t)k.Flags) +
+                    L" vkey=0x" + std::to_wstring((uint16_t)vk) +
+                    L" up=" + std::to_wstring(isUp ? 1 : 0) +
+                    L" active=" + std::to_wstring(activeNow ? 1 : 0)
+                );
+            }
             EnqueueKeyboardRawEvent((uint16_t)k.MakeCode, (uint16_t)k.Flags, vk);
 
             *result = 0;
