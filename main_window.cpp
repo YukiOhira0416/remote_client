@@ -39,15 +39,40 @@ static std::atomic<ULONGLONG> g_hankakuLastDownTick{ 0 };
 // ※低レベルフックはデバイス識別ができないため、複数キーボード環境では「選択デバイスのみ抑止」は難しい。
 static std::atomic<bool> g_remoteInputActive{ false };
 static HHOOK g_llKeyboardHook = nullptr;
+// Winキーを「Downを捕まえたらUpまで」確実に握るための捕捉状態
+// bit0 = LWIN, bit1 = RWIN
+static std::atomic<uint8_t> g_winCapturedMask{ 0 };
 
 static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
-    if (nCode == HC_ACTION && g_remoteInputActive.load(std::memory_order_relaxed)) {
+    // アクティブ、もしくは「Winキー捕捉中(Up待ち)」であればフック処理を行う
+    if (nCode == HC_ACTION && (g_remoteInputActive.load(std::memory_order_relaxed) || g_winCapturedMask.load(std::memory_order_relaxed))) {
         const KBDLLHOOKSTRUCT* ks = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
         if (ks) {
-            if (ks->vkCode == VK_LWIN || ks->vkCode == VK_RWIN) {
-                // ローカルOSへの伝播を止める（Startメニュー/Winショートカット等を無効化）
-                return 1;
+            const bool isWin = (ks->vkCode == VK_LWIN || ks->vkCode == VK_RWIN);
+            if (isWin) {
+                const bool isUp = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) || ((ks->flags & LLKHF_UP) != 0);
+                const uint8_t mask = (ks->vkCode == VK_LWIN) ? 0x01 : 0x02;
+
+                if (!isUp) {
+                    // Downを捕まえたら「捕捉中」にする
+                    // アクティブ時のみ捕捉開始
+                    if (g_remoteInputActive.load(std::memory_order_relaxed)) {
+                        g_winCapturedMask.fetch_or(mask, std::memory_order_relaxed);
+                        return 1; // ローカルへ伝播させない
+                    }
+                } else {
+                    // Upは、捕捉中なら active 状態が変わっても確実に握って解除する
+                    const uint8_t cur = g_winCapturedMask.load(std::memory_order_relaxed);
+                    if (cur & mask) {
+                        g_winCapturedMask.fetch_and((uint8_t)~mask, std::memory_order_relaxed);
+                        return 1;
+                    }
+                    // 捕捉していないUpでも、まだアクティブなら握りつぶす
+                    if (g_remoteInputActive.load(std::memory_order_relaxed)) {
+                        return 1;
+                    }
+                }
             }
         }
     }
@@ -570,11 +595,6 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             *result = 0;
             return false;
         } else if (msg->message == WM_INPUT) {
-            // フォーカス中のみ（Qt側でもactive制御しているが保険）
-            if (!this->isActiveWindow()) {
-                *result = 0;
-                return false;
-            }
             if (m_selectedKeyboardUniqueKey.isEmpty()) {
                 *result = 0;
                 return false;
@@ -648,9 +668,29 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             const RAWINPUT* ri = (const RAWINPUT*)buf.data();
             const RAWKEYBOARD& k = ri->data.keyboard;
 
+            // 重要:
+            //   RIDEV_INPUTSINK を使っているため、非アクティブでもWM_INPUTが来る。
+            //   ここで非アクティブ即returnすると、Winキー等でフォーカスが外れた後の「KEY UP」が捨てられ、
+            //   リモート側が押しっぱなしになる。
+            //   → 非アクティブ時は「UPだけ通す」(Downは無視)。
+            const bool activeNow = this->isActiveWindow();
+            const bool isUpNow = (k.Flags & RI_KEY_BREAK) != 0;
+            if (!activeNow && !isUpNow) {
+                *result = 0;
+                return false;
+            }
+
             // MakeCode + Flags を送る（文字変換はしない）
             // ※RAWINPUTのVKeyは 0 / 0x00FF のことがあるため、必要ならレイアウトから補完する
             uint16_t vkRaw = (uint16_t)k.VKey;
+
+            // (診断用) Winキーのログ
+            if (vkRaw == VK_LWIN || vkRaw == VK_RWIN || k.MakeCode == 0x5B || k.MakeCode == 0x5C) {
+                 DebugLog(L"[WM_INPUT] WinKey detected. MakeCode=0x" + std::to_wstring(k.MakeCode) +
+                          L" Flags=0x" + std::to_wstring(k.Flags) +
+                          L" VKeyRaw=0x" + std::to_wstring(vkRaw) +
+                          L" Active=" + std::to_wstring(activeNow ? 1 : 0));
+            }
             uint16_t vk = vkRaw;
 
             if (vk == 0 || vk == 0x00FF) {
