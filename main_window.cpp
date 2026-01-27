@@ -1,5 +1,6 @@
 #include "main_window.h"
 #include "KeyboardSender.h"
+#include "DebugLog.h"
 #include <QEvent>
 #include <QCloseEvent>
 #include <QVBoxLayout>
@@ -414,6 +415,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
                         const uint16_t altVk     = VK_MENU;   // 0x12
                         const uint16_t graveScan = 0x29;      // OEM_3 (`~) on US layout
                         const uint16_t graveVk   = VK_OEM_3;  // 0xC0
+
+                        DebugLog(L"[LLHook] Hankaku/Zenkaku intercepted -> send Alt+` to remote. "
+                                 L"Alt(scan=0x38,vk=0x12), Grave(scan=0x29,vk=0xC0)");
 
                         EnqueueKeyboardRawEvent(altScan,   RI_KEY_MAKE,  altVk);
                         EnqueueKeyboardRawEvent(graveScan, RI_KEY_MAKE,  graveVk);
