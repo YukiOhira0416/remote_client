@@ -365,11 +365,25 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
             KBDLLHOOKSTRUCT* hs = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
             // Hankaku/Zenkaku (VK_OEM_AUTO 0xF3, VK_OEM_ENLW 0xF4)
             if (hs->vkCode == VK_OEM_AUTO || hs->vkCode == VK_OEM_ENLW) {
-                const bool isUp = (hs->flags & LLKHF_UP);
+                const bool isUp = (hs->flags & LLKHF_UP) != 0;
                 // リモートへ送信 (scancode 0x29)
                 EnqueueKeyboardRawEvent(0x29, isUp ? RI_KEY_BREAK : RI_KEY_MAKE);
                 // ローカル抑止 (swallow)
                 return 1;
+            }
+
+            // Winキー（ローカルのスタートメニューを開かせず、リモート側だけに届ける）
+            if (hs->vkCode == VK_LWIN || hs->vkCode == VK_RWIN) {
+                const bool isUp = (hs->flags & LLKHF_UP) != 0;
+                uint16_t rawFlags = static_cast<uint16_t>(isUp ? RI_KEY_BREAK : RI_KEY_MAKE);
+                if (hs->flags & LLKHF_EXTENDED) rawFlags |= RI_KEY_E0; // Winキーは基本E0
+
+                uint16_t makeCode = static_cast<uint16_t>(hs->scanCode);
+                // 念のためscanCodeが0のケースにフォールバック
+                if (makeCode == 0) makeCode = (hs->vkCode == VK_LWIN) ? 0x5B : 0x5C;
+
+                EnqueueKeyboardRawEvent(makeCode, rawFlags);
+                return 1; // ローカル抑止
             }
         }
         return CallNextHookEx(nullptr, nCode, wParam, lParam);
@@ -570,6 +584,13 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
 
             // Hankaku/Zenkaku (scancode 0x29) は LLHook 側で送るため、ここではスキップして二重送信を防ぐ
             if (k.MakeCode == 0x29) {
+                *result = 0;
+                return false;
+            }
+
+            // Winキーは LLHook 側で送って swallow するため、ここではスキップして二重送信を防ぐ
+            // LWIN=0x5B, RWIN=0x5C (E0付き)
+            if ((k.MakeCode == 0x5B || k.MakeCode == 0x5C) && (k.Flags & RI_KEY_E0)) {
                 *result = 0;
                 return false;
             }
