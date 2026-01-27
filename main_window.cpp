@@ -32,7 +32,6 @@ static MainWindow* g_mainWindow = nullptr;
 
 // 半角/全角キーのオートリピート等で Alt+` を連打しないための簡易状態
 static std::atomic<bool> g_hankakuHeld{ false };
-static std::atomic<bool> g_hankakuSwallowed{ false };
 static std::atomic<ULONGLONG> g_hankakuLastDownTick{ 0 };
 
 namespace {
@@ -402,11 +401,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
                 //  - そのため key-up はアクティブでなくても状態復帰だけは行う。
 
                 if (isUp) {
+                    // ローカルにも半角/全角を通す（IMEトグルを有効にする）
                     g_hankakuHeld.store(false, std::memory_order_relaxed);
-                    const bool swallowed = g_hankakuSwallowed.exchange(false, std::memory_order_relaxed);
-                    if (swallowed) {
-                        return 1; // 押下を抑止した場合は up も抑止して整合を取る
-                    }
                     return CallNextHookEx(nullptr, nCode, wParam, lParam);
                 }
 
@@ -426,7 +422,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
                 if (isActive) {
                     const ULONGLONG now = GetTickCount64();
                     const bool wasHeld = g_hankakuHeld.exchange(true, std::memory_order_relaxed);
-                    g_hankakuSwallowed.store(true, std::memory_order_relaxed);
 
                     // フェイルセーフ：held張り付き（key-up取り逃し）を検出して復帰
                     // 例：最後のdownから1500ms超なら held を一度解除して再送可にする
@@ -456,11 +451,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
                         DebugLog(L"[LLHook] Hankaku ignored due to held(debounce).");
                     }
 
-                    return 1; // ローカル抑止 (swallow)
+                    // ローカルには通す（IME表示を変える）
+                    return CallNextHookEx(nullptr, nCode, wParam, lParam);
                 } else {
                     // 非アクティブ時はローカルIME切替を許可。状態だけ残さない。
                     g_hankakuHeld.store(false, std::memory_order_relaxed);
-                    g_hankakuSwallowed.store(false, std::memory_order_relaxed);
                 }
             }
         }
@@ -514,7 +509,6 @@ bool MainWindow::event(QEvent* e)
         // 半角/全角の押下状態が key-up 未検知で残ると、以後ずっと送信されない可能性があるため
         // 非アクティブ化時に念のため状態をクリアしておく。
         g_hankakuHeld.store(false, std::memory_order_relaxed);
-        g_hankakuSwallowed.store(false, std::memory_order_relaxed);
 
         EnqueueKeyboardFocusChanged(false);
     }
@@ -669,7 +663,7 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             const RAWINPUT* ri = (const RAWINPUT*)buf.data();
             const RAWKEYBOARD& k = ri->data.keyboard;
 
-            // Hankaku/Zenkaku (scancode 0x29) は LLHook 側で送るため、ここではスキップして二重送信を防ぐ
+            // Hankaku/Zenkaku (scancode 0x29) は LLHook 側で Alt+` を送るため、ここではスキップして二重送信を防ぐ
             if (k.MakeCode == 0x29) {
                 *result = 0;
                 return false;
