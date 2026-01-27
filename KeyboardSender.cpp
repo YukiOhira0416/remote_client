@@ -25,6 +25,7 @@ struct Msg {
     uint8_t active;     // for focus
     uint16_t makeCode;  // for event
     uint16_t flags;     // WIRE flags (not RAW flags)
+    uint16_t vkey;      // Virtual Key (0=unknown)
 };
 
 moodycamel::ConcurrentQueue<Msg> g_q;
@@ -44,10 +45,10 @@ static uint16_t RawToWireFlags(uint16_t rawFlags)
     return f;
 }
 
-static inline uint32_t MakeKeyId(uint16_t makeCode, uint16_t flagsNoKeyUp)
+static inline uint64_t MakeKeyId(uint16_t makeCode, uint16_t flagsNoKeyUp, uint16_t vkey)
 {
     const uint16_t f = (uint16_t)(flagsNoKeyUp & (KBD_E0 | KBD_E1));
-    return (uint32_t)makeCode | ((uint32_t)f << 16);
+    return ((uint64_t)vkey << 32) | ((uint64_t)f << 16) | (uint64_t)makeCode;
 }
 
 #pragma pack(push, 1)
@@ -57,23 +58,25 @@ struct KeyboardWireHeaderV1 {
     uint16_t msgType;  // 1=EVENT, 2=STATE_SYNC
     uint32_t seq;
 };
-struct KeyboardWireEventV1 {
+struct KeyboardWireEventV2 {
     uint16_t makeCode;
     uint16_t flags;    // KEYUP/E0/E1
+    uint16_t vkey;     // Virtual Key
+    uint16_t reserved;
 };
-struct KeyboardWireStateV1 {
+struct KeyboardWireStateV2 {
     uint16_t count;
     uint16_t reserved;
-    // followed by count * KeyboardWireEventV1 (KEYUP bit must be 0)
+    // followed by count * KeyboardWireEventV2 (KEYUP bit must be 0)
 };
 #pragma pack(pop)
 
 constexpr uint32_t KEYBOARD_MAGIC   = 'K' | ('I' << 8) | ('N' << 16) | ('1' << 24);
-constexpr uint16_t KEYBOARD_VERSION = 1;
+constexpr uint16_t KEYBOARD_VERSION = 2;
 constexpr uint16_t MSG_EVENT        = 1;
 constexpr uint16_t MSG_STATE_SYNC   = 2;
 
-static std::vector<uint8_t> BuildEventPayload(uint32_t seq, uint16_t makeCode, uint16_t flags)
+static std::vector<uint8_t> BuildEventPayload(uint32_t seq, uint16_t makeCode, uint16_t flags, uint16_t vkey)
 {
     KeyboardWireHeaderV1 h{};
     h.magic   = KEYBOARD_MAGIC;
@@ -81,9 +84,11 @@ static std::vector<uint8_t> BuildEventPayload(uint32_t seq, uint16_t makeCode, u
     h.msgType = MSG_EVENT;
     h.seq     = seq;
 
-    KeyboardWireEventV1 e{};
+    KeyboardWireEventV2 e{};
     e.makeCode = makeCode;
     e.flags    = flags;
+    e.vkey     = vkey;
+    e.reserved = 0;
 
     std::vector<uint8_t> out(sizeof(h) + sizeof(e));
     memcpy(out.data(), &h, sizeof(h));
@@ -91,7 +96,7 @@ static std::vector<uint8_t> BuildEventPayload(uint32_t seq, uint16_t makeCode, u
     return out;
 }
 
-static std::vector<uint8_t> BuildStatePayload(uint32_t seq, const std::unordered_set<uint32_t>& pressed)
+static std::vector<uint8_t> BuildStatePayload(uint32_t seq, const std::unordered_set<uint64_t>& pressed)
 {
     KeyboardWireHeaderV1 h{};
     h.magic   = KEYBOARD_MAGIC;
@@ -99,21 +104,23 @@ static std::vector<uint8_t> BuildStatePayload(uint32_t seq, const std::unordered
     h.msgType = MSG_STATE_SYNC;
     h.seq     = seq;
 
-    KeyboardWireStateV1 st{};
+    KeyboardWireStateV2 st{};
     st.count = (uint16_t)pressed.size();
     st.reserved = 0;
 
     std::vector<uint8_t> out;
-    out.resize(sizeof(h) + sizeof(st) + pressed.size() * sizeof(KeyboardWireEventV1));
+    out.resize(sizeof(h) + sizeof(st) + pressed.size() * sizeof(KeyboardWireEventV2));
 
     memcpy(out.data(), &h, sizeof(h));
     memcpy(out.data() + sizeof(h), &st, sizeof(st));
 
     auto* p = out.data() + sizeof(h) + sizeof(st);
     for (const auto& id : pressed) {
-        KeyboardWireEventV1 e{};
+        KeyboardWireEventV2 e{};
         e.makeCode = (uint16_t)(id & 0xFFFF);
         e.flags    = (uint16_t)((id >> 16) & 0xFFFF); // No KEYUP bit
+        e.vkey     = (uint16_t)((id >> 32) & 0xFFFF);
+        e.reserved = 0;
         memcpy(p, &e, sizeof(e));
         p += sizeof(e);
     }
@@ -165,7 +172,7 @@ static bool SendWithFEC(SOCKET s, const sockaddr_in& dst, uint32_t frameNumber, 
 }
 } // namespace
 
-void EnqueueKeyboardRawEvent(uint16_t makeCode, uint16_t rawFlags)
+void EnqueueKeyboardRawEvent(uint16_t makeCode, uint16_t rawFlags, uint16_t vkey)
 {
     // Windowsキー(LWIN/RWIN)はローカルOS側で処理させ、リモートには送らない
     // ScanCode(Set1): LWIN=0x5B, RWIN=0x5C (通常は RI_KEY_E0 と組み合わさる)
@@ -178,6 +185,7 @@ void EnqueueKeyboardRawEvent(uint16_t makeCode, uint16_t rawFlags)
     m.active = 0;
     m.makeCode = makeCode;
     m.flags = RawToWireFlags(rawFlags);
+    m.vkey  = vkey;
     g_q.enqueue(m);
 }
 
@@ -223,7 +231,7 @@ void KeyboardSendThread(std::atomic<bool>& running)
     inet_pton(AF_INET, KEYBOARD_SEND_IP, &dst.sin_addr);
 
     bool active = false;
-    std::unordered_set<uint32_t> pressed;
+    std::unordered_set<uint64_t> pressed;
     uint32_t seq = 0;
 
     auto lastSync = std::chrono::steady_clock::now();
@@ -249,7 +257,7 @@ void KeyboardSendThread(std::atomic<bool>& running)
             if (!active) {
                 // Ignore new key-downs when not active, but allow key-ups for keys that are currently pressed.
                 const bool isUp = (msg.flags & KBD_KEYUP) != 0;
-                const uint32_t id = MakeKeyId(msg.makeCode, msg.flags);
+                const uint64_t id = MakeKeyId(msg.makeCode, msg.flags, msg.vkey);
                 if (!isUp || pressed.find(id) == pressed.end()) {
                     continue;
                 }
@@ -257,12 +265,12 @@ void KeyboardSendThread(std::atomic<bool>& running)
 
             // EVENT
             const uint32_t fnum = seq++;
-            auto payload = BuildEventPayload(fnum, msg.makeCode, msg.flags);
+            auto payload = BuildEventPayload(fnum, msg.makeCode, msg.flags, msg.vkey);
             SendWithFEC(sock, dst, fnum, payload);
 
             // Update pressed state
             const bool isUp = (msg.flags & KBD_KEYUP) != 0;
-            const uint32_t id = MakeKeyId(msg.makeCode, msg.flags);
+            const uint64_t id = MakeKeyId(msg.makeCode, msg.flags, msg.vkey);
             if (isUp) pressed.erase(id);
             else      pressed.insert(id);
 
