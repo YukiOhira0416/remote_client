@@ -67,25 +67,23 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
             if (isWin) {
                 const bool isUp = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) || ((ks->flags & LLKHF_UP) != 0);
                 const uint8_t mask = (ks->vkCode == VK_LWIN) ? 0x01 : 0x02;
+                const uint16_t makeCode = (ks->vkCode == VK_LWIN) ? 0x5B : 0x5C;
+                const uint16_t rawFlags = (uint16_t)(RI_KEY_E0 | (isUp ? RI_KEY_BREAK : 0));
+                const uint16_t vkey = (uint16_t)ks->vkCode;
 
                 if (!isUp) {
-                    // Downを捕まえたら「捕捉中」にする
+                    // Win Down: 捕捉開始 + リモート送信 + ローカル抑止
                     // アクティブ時のみ捕捉開始
                     if (activeByForeground || g_remoteInputActive.load(std::memory_order_relaxed)) {
                         g_winCapturedMask.fetch_or(mask, std::memory_order_relaxed);
+                        EnqueueKeyboardRawEvent(makeCode, rawFlags, vkey);
                         return 1; // ローカルへ伝播させない
                     }
                 } else {
-                    // Upは、捕捉中なら active 状態が変わっても確実に握って解除する
-                    const uint8_t cur = g_winCapturedMask.load(std::memory_order_relaxed);
-                    if (cur & mask) {
-                        g_winCapturedMask.fetch_and((uint8_t)~mask, std::memory_order_relaxed);
-                        return 1;
-                    }
-                    // 捕捉していないUpでも、まだアクティブなら握りつぶす
-                    if (activeByForeground || g_remoteInputActive.load(std::memory_order_relaxed)) {
-                        return 1;
-                    }
+                    // Win Up: リモート送信 + ローカル抑止（捕捉解除は必ず行う）
+                    g_winCapturedMask.fetch_and((uint8_t)~mask, std::memory_order_relaxed);
+                    EnqueueKeyboardRawEvent(makeCode, rawFlags, vkey);
+                    return 1;
                 }
             }
         }
@@ -695,7 +693,14 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             const bool isUpNow = (k.Flags & RI_KEY_BREAK) != 0;
             const bool isWinSc = (k.MakeCode == 0x5B || k.MakeCode == 0x5C);
 
-            if (!activeNow && !isUpNow && !isWinSc) {
+            // Winキーは LowLevelKeyboardProc 側で送信＆抑止しているため、ここでは送らない（二重送信防止）
+            // ※フック未導入/失敗時のフォールバックが必要なら g_llKeyboardHook==nullptr のときだけ送る、などにする。
+            if (isWinSc && g_llKeyboardHook != nullptr) {
+                *result = 0;
+                return false;
+            }
+
+            if (!activeNow && !isUpNow) {
                 *result = 0;
                 return false;
             }
