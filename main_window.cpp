@@ -825,14 +825,41 @@ void MainWindow::refreshKeyboardList() {
     QSignalBlocker blocker(ui.comboBox);
     ui.comboBox->clear();
 
+    int builtInIndex = 0;
+    int usbIndex = 0;
+    int btIndex = 0;
+    int otherIndex = 0;
+
     for (int i = 0; i < static_cast<int>(keyboards.size()); ++i) {
         const auto& k = keyboards[i];
 
         const QString vidStr = k.hasVidPid ? Hex4(k.vid) : QStringLiteral("N/A");
         const QString pidStr = k.hasVidPid ? Hex4(k.pid) : QStringLiteral("N/A");
 
-        const QString label = QStringLiteral(u"キーボード%1 (VID:%2 PID:%3)")
-            .arg(i + 1)
+        QString prefix;
+        int typeNo = 0;
+        switch (k.busType) {
+        case BusType::BuiltIn:
+            prefix = QStringLiteral(u"内臓キーボード");
+            typeNo = ++builtInIndex;
+            break;
+        case BusType::USB:
+            prefix = QStringLiteral(u"USBキーボード");
+            typeNo = ++usbIndex;
+            break;
+        case BusType::Bluetooth:
+            prefix = QStringLiteral(u"BTキーボード");
+            typeNo = ++btIndex;
+            break;
+        default:
+            prefix = QStringLiteral(u"キーボード");
+            typeNo = ++otherIndex;
+            break;
+        }
+
+        const QString label = QStringLiteral(u"%1%2 (VID:%3 PID:%4)")
+            .arg(prefix)
+            .arg(typeNo)
             .arg(vidStr)
             .arg(pidStr);
 
