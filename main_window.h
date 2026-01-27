@@ -54,7 +54,6 @@ private:
     QString m_selectedKeyboardPath; // combo selection cache
     QString m_selectedKeyboardUniqueKey;
     QMap<HANDLE, QString> m_handleToUniqueKey;
-    HHOOK m_kbdHook = nullptr;
 };
 
 #endif // MAIN_WINDOW_H
