@@ -1,6 +1,7 @@
 #include "main_window.h"
 #include "KeyboardSender.h"
 #include "DebugLog.h"
+#include <cstdint>
 #include <QEvent>
 #include <QCloseEvent>
 #include <QVBoxLayout>
@@ -32,6 +33,7 @@ static MainWindow* g_mainWindow = nullptr;
 // 半角/全角キーのオートリピート等で Alt+` を連打しないための簡易状態
 static std::atomic<bool> g_hankakuHeld{ false };
 static std::atomic<bool> g_hankakuSwallowed{ false };
+static std::atomic<ULONGLONG> g_hankakuLastDownTick{ 0 };
 
 namespace {
 // --- Fix for LNK2001: DEVPKEY_Device_* unresolved ---
@@ -369,6 +371,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     m_kbdHook = SetWindowsHookEx(WH_KEYBOARD_LL, [](int nCode, WPARAM wParam, LPARAM lParam) -> LRESULT {
         if (nCode == HC_ACTION && g_mainWindow) {
             KBDLLHOOKSTRUCT* hs = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+            const bool isInjected = (hs->flags & LLKHF_INJECTED) != 0;
+            if (isInjected) {
+                // 自プロセス/OS注入イベントは無視（ループ/誤判定防止）
+                return CallNextHookEx(nullptr, nCode, wParam, lParam);
+            }
+
             // Hankaku/Zenkaku:
             // - typical vk: VK_OEM_AUTO(0xF3), VK_OEM_ENLW(0xF4)
             // - physical scancode (JP): 0x29
@@ -377,6 +385,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
             if (isHankakuByVk || isHankakuByScan) {
                 const bool isUp     = (hs->flags & LLKHF_UP) != 0;
                 const bool isActive = g_mainWindow->isActiveWindow();
+
+                // まず「検知した」こと自体をログに残す（送信有無に依存させない）
+                // ※ログ量が気になるなら key-down のみに限定
+                if (!isUp) {
+                    DebugLog(L"[LLHook] Hankaku/Zenkaku KEYDOWN detected. "
+                             L"vk=0x" + std::to_wstring(hs->vkCode) +
+                             L" scan=0x" + std::to_wstring(hs->scanCode) +
+                             L" active=" + std::to_wstring(isActive ? 1 : 0));
+                }
 
                 // 注意:
                 //  - 半角/全角キーは「押下→非アクティブ化」のようなケースがあり得るため、
@@ -407,10 +424,21 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
                 // key-down
                 if (isActive) {
+                    const ULONGLONG now = GetTickCount64();
                     const bool wasHeld = g_hankakuHeld.exchange(true, std::memory_order_relaxed);
                     g_hankakuSwallowed.store(true, std::memory_order_relaxed);
 
-                    if (!wasHeld) {
+                    // フェイルセーフ：held張り付き（key-up取り逃し）を検出して復帰
+                    // 例：最後のdownから1500ms超なら held を一度解除して再送可にする
+                    ULONGLONG last = g_hankakuLastDownTick.load(std::memory_order_relaxed);
+                    const bool stuck = (wasHeld && last != 0 && (now - last) > 1500);
+
+                    if (!wasHeld || stuck) {
+                        if (stuck) {
+                            DebugLog(L"[LLHook][WARN] Hankaku held seems stuck. Resetting and sending Alt+`.");
+                        }
+                        g_hankakuLastDownTick.store(now, std::memory_order_relaxed);
+
                         const uint16_t altScan   = 0x38;      // Left Alt (Set1)
                         const uint16_t altVk     = VK_MENU;   // 0x12
                         const uint16_t graveScan = 0x29;      // OEM_3 (`~) on US layout
@@ -423,6 +451,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
                         EnqueueKeyboardRawEvent(graveScan, RI_KEY_MAKE,  graveVk);
                         EnqueueKeyboardRawEvent(graveScan, RI_KEY_BREAK, graveVk);
                         EnqueueKeyboardRawEvent(altScan,   RI_KEY_BREAK, altVk);
+                    } else {
+                        // 送信しない理由（debounce）をログに残す
+                        DebugLog(L"[LLHook] Hankaku ignored due to held(debounce).");
                     }
 
                     return 1; // ローカル抑止 (swallow)
@@ -435,6 +466,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         }
         return CallNextHookEx(nullptr, nCode, wParam, lParam);
     }, GetModuleHandle(nullptr), 0);
+
+    if (!m_kbdHook) {
+        DebugLog(L"[LLHook][ERROR] SetWindowsHookEx(WH_KEYBOARD_LL) failed. GetLastError=" + std::to_wstring(GetLastError()));
+    }
 
     refreshKeyboardList();
 
