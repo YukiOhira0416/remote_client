@@ -27,6 +27,9 @@
 // Global/Static pointer for hook callback
 static MainWindow* g_mainWindow = nullptr;
 
+// 半角/全角キーのオートリピート等で Alt+` を連打しないための簡易状態
+static bool g_hankakuHeld = false;
+
 namespace {
 // --- Fix for LNK2001: DEVPKEY_Device_* unresolved ---
 // 一部のWindows SDKでは devpkey.h の DEVPKEY_Device_* が extern 宣言のみになり、
@@ -369,20 +372,40 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
             const bool isHankakuByVk   = (hs->vkCode == VK_OEM_AUTO || hs->vkCode == VK_OEM_ENLW);
             const bool isHankakuByScan = (hs->scanCode == 0x29);
             if (isHankakuByVk || isHankakuByScan) {
-                const bool isUp = (hs->flags & LLKHF_UP);
-                // リモートへ送信：scanCode と vkCode を両方渡す（v2でvkが効く）
-                uint16_t scan = (uint16_t)hs->scanCode;
-                if (scan == 0) scan = 0x29; // 念のためフォールバック
+                const bool isUp = (hs->flags & LLKHF_UP) != 0;
 
-                uint16_t rawFlags = isUp ? RI_KEY_BREAK : RI_KEY_MAKE;
-                if (hs->flags & LLKHF_EXTENDED) rawFlags |= RI_KEY_E0;
+                // 目的:
+                //  - ローカルでは半角/全角を無効化したまま、
+                //  - リモートへは「半角/全角キー」ではなく「Alt + `」を送ってIMEトグルさせる。
+                //
+                // 送信シーケンス（1回の押下として完結）:
+                //   Alt↓, `↓, `↑, Alt↑
+                //
+                // NOTE:
+                //  - ` の scanCode は US 配列では 0x29（いわゆる OEM_3 の物理キー）
+                //  - Alt は左Altの scanCode 0x38 を使用
+                //  - オートリピートで連打されないよう、押下開始1回だけ送る
 
-                // 半角/全角は vkey 注入だと効かない環境があるため、vkey=0 を送って
-                // サーバー側で scanCode 注入へ寄せる案（サーバー側が対応している場合）
-                const uint16_t vkToSend = 0;
-                EnqueueKeyboardRawEvent(scan, rawFlags, vkToSend);
-                // ローカル抑止 (swallow)
-                return 1;
+                if (!isUp) {
+                    if (!g_hankakuHeld) {
+                        g_hankakuHeld = true;
+
+                        const uint16_t altScan   = 0x38;      // Left Alt (Set1)
+                        const uint16_t altVk     = VK_MENU;   // 0x12
+                        const uint16_t graveScan = 0x29;      // OEM_3 (`~) on US layout
+                        const uint16_t graveVk   = VK_OEM_3;  // 0xC0
+
+                        EnqueueKeyboardRawEvent(altScan,   RI_KEY_MAKE,  altVk);
+                        EnqueueKeyboardRawEvent(graveScan, RI_KEY_MAKE,  graveVk);
+                        EnqueueKeyboardRawEvent(graveScan, RI_KEY_BREAK, graveVk);
+                        EnqueueKeyboardRawEvent(altScan,   RI_KEY_BREAK, altVk);
+                    }
+                } else {
+                    // key-up では状態だけ戻す（送信はしない：押下開始でトグル完結）
+                    g_hankakuHeld = false;
+                }
+
+                return 1; // ローカル抑止 (swallow)
             }
         }
         return CallNextHookEx(nullptr, nCode, wParam, lParam);
