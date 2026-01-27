@@ -363,8 +363,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     m_kbdHook = SetWindowsHookEx(WH_KEYBOARD_LL, [](int nCode, WPARAM wParam, LPARAM lParam) -> LRESULT {
         if (nCode == HC_ACTION && g_mainWindow && g_mainWindow->isActiveWindow()) {
             KBDLLHOOKSTRUCT* hs = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
-            // Hankaku/Zenkaku (VK_OEM_AUTO 0xF3, VK_OEM_ENLW 0xF4)
-            if (hs->vkCode == VK_OEM_AUTO || hs->vkCode == VK_OEM_ENLW) {
+            // Hankaku/Zenkaku:
+            // - typical vk: VK_OEM_AUTO(0xF3), VK_OEM_ENLW(0xF4)
+            // - physical scancode (JP): 0x29
+            const bool isHankakuByVk   = (hs->vkCode == VK_OEM_AUTO || hs->vkCode == VK_OEM_ENLW);
+            const bool isHankakuByScan = (hs->scanCode == 0x29);
+            if (isHankakuByVk || isHankakuByScan) {
                 const bool isUp = (hs->flags & LLKHF_UP);
                 // リモートへ送信：scanCode と vkCode を両方渡す（v2でvkが効く）
                 uint16_t scan = (uint16_t)hs->scanCode;
@@ -373,7 +377,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
                 uint16_t rawFlags = isUp ? RI_KEY_BREAK : RI_KEY_MAKE;
                 if (hs->flags & LLKHF_EXTENDED) rawFlags |= RI_KEY_E0;
 
-                EnqueueKeyboardRawEvent(scan, rawFlags, (uint16_t)hs->vkCode);
+                // 半角/全角は vkey 注入だと効かない環境があるため、vkey=0 を送って
+                // サーバー側で scanCode 注入へ寄せる案（サーバー側が対応している場合）
+                const uint16_t vkToSend = 0;
+                EnqueueKeyboardRawEvent(scan, rawFlags, vkToSend);
                 // ローカル抑止 (swallow)
                 return 1;
             }
