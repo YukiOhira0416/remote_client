@@ -269,6 +269,12 @@ void KeyboardSendThread(std::atomic<bool>& running)
 
             // EVENT
             const uint32_t fnum = seq++;
+            DebugLog(
+                L"[TX][EVENT] make=0x" + std::to_wstring(msg.makeCode) +
+                L" flags=0x" + std::to_wstring(msg.flags) +
+                L" vkey=0x" + std::to_wstring(msg.vkey) +
+                L" active=" + std::to_wstring(active ? 1 : 0)
+            );
             auto payload = BuildEventPayload(fnum, msg.makeCode, msg.flags, msg.vkey);
             SendWithFEC(sock, dst, fnum, payload);
 
