@@ -366,105 +366,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // --- Keyboard ComboBox init / hotplug ---
     registerKeyboardDeviceNotifications();
 
-    // WH_KEYBOARD_LL hook for Hankaku/Zenkaku suppression
-    m_kbdHook = SetWindowsHookEx(WH_KEYBOARD_LL, [](int nCode, WPARAM wParam, LPARAM lParam) -> LRESULT {
-        if (nCode == HC_ACTION && g_mainWindow) {
-            KBDLLHOOKSTRUCT* hs = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
-            const bool isInjected = (hs->flags & LLKHF_INJECTED) != 0;
-            if (isInjected) {
-                // 自プロセス/OS注入イベントは無視（ループ/誤判定防止）
-                return CallNextHookEx(nullptr, nCode, wParam, lParam);
-            }
-
-            // Hankaku/Zenkaku:
-            // - typical vk: VK_OEM_AUTO(0xF3), VK_OEM_ENLW(0xF4)
-            // - physical scancode (JP): 0x29
-            const bool isHankakuByVk   = (hs->vkCode == VK_OEM_AUTO || hs->vkCode == VK_OEM_ENLW);
-            const bool isHankakuByScan = (hs->scanCode == 0x29);
-            if (isHankakuByVk || isHankakuByScan) {
-                const bool isUp     = (hs->flags & LLKHF_UP) != 0;
-                const bool isActive = g_mainWindow->isActiveWindow();
-
-                // まず「検知した」こと自体をログに残す（送信有無に依存させない）
-                // ※ログ量が気になるなら key-down のみに限定
-                if (!isUp) {
-                    DebugLog(L"[LLHook] Hankaku/Zenkaku KEYDOWN detected. "
-                             L"vk=0x" + std::to_wstring(hs->vkCode) +
-                             L" scan=0x" + std::to_wstring(hs->scanCode) +
-                             L" active=" + std::to_wstring(isActive ? 1 : 0));
-                }
-
-                // 注意:
-                //  - 半角/全角キーは「押下→非アクティブ化」のようなケースがあり得るため、
-                //    key-up をアクティブ判定で落としてしまうと g_hankakuHeld が stuck して
-                //    以後ずっと送信されない/ローカルだけ無効化される状態になり得る。
-                //  - そのため key-up はアクティブでなくても状態復帰だけは行う。
-
-                if (isUp) {
-                    // ローカルにも半角/全角を通す（IMEトグルを有効にする）
-                    g_hankakuHeld.store(false, std::memory_order_relaxed);
-                    return CallNextHookEx(nullptr, nCode, wParam, lParam);
-                }
-
-                // 目的:
-                //  - ローカルでは半角/全角を無効化したまま、
-                //  - リモートへは「半角/全角キー」ではなく「Alt + `」を送ってIMEトグルさせる。
-                //
-                // 送信シーケンス（1回の押下として完結）:
-                //   Alt↓, `↓, `↑, Alt↑
-                //
-                // NOTE:
-                //  - ` の scanCode は US 配列では 0x29（いわゆる OEM_3 の物理キー）
-                //  - Alt は左Altの scanCode 0x38 を使用
-                //  - オートリピートで連打されないよう、押下開始1回だけ送る
-
-                // key-down
-                if (isActive) {
-                    const ULONGLONG now = GetTickCount64();
-                    const bool wasHeld = g_hankakuHeld.exchange(true, std::memory_order_relaxed);
-
-                    // フェイルセーフ：held張り付き（key-up取り逃し）を検出して復帰
-                    // 例：最後のdownから1500ms超なら held を一度解除して再送可にする
-                    ULONGLONG last = g_hankakuLastDownTick.load(std::memory_order_relaxed);
-                    const bool stuck = (wasHeld && last != 0 && (now - last) > 1500);
-
-                    if (!wasHeld || stuck) {
-                        if (stuck) {
-                            DebugLog(L"[LLHook][WARN] Hankaku held seems stuck. Resetting and sending Alt+`.");
-                        }
-                        g_hankakuLastDownTick.store(now, std::memory_order_relaxed);
-
-                        const uint16_t altScan   = 0x38;      // Left Alt (Set1)
-                        const uint16_t altVk     = VK_MENU;   // 0x12
-                        const uint16_t graveScan = 0x29;      // OEM_3 (`~) on US layout
-                        const uint16_t graveVk   = VK_OEM_3;  // 0xC0
-
-                        DebugLog(L"[LLHook] Hankaku/Zenkaku intercepted -> send Alt+` to remote. "
-                                 L"Alt(scan=0x38,vk=0x12), Grave(scan=0x29,vk=0xC0)");
-
-                        EnqueueKeyboardRawEvent(altScan,   RI_KEY_MAKE,  altVk);
-                        EnqueueKeyboardRawEvent(graveScan, RI_KEY_MAKE,  graveVk);
-                        EnqueueKeyboardRawEvent(graveScan, RI_KEY_BREAK, graveVk);
-                        EnqueueKeyboardRawEvent(altScan,   RI_KEY_BREAK, altVk);
-                    } else {
-                        // 送信しない理由（debounce）をログに残す
-                        DebugLog(L"[LLHook] Hankaku ignored due to held(debounce).");
-                    }
-
-                    // ローカルには通す（IME表示を変える）
-                    return CallNextHookEx(nullptr, nCode, wParam, lParam);
-                } else {
-                    // 非アクティブ時はローカルIME切替を許可。状態だけ残さない。
-                    g_hankakuHeld.store(false, std::memory_order_relaxed);
-                }
-            }
-        }
-        return CallNextHookEx(nullptr, nCode, wParam, lParam);
-    }, GetModuleHandle(nullptr), 0);
-
-    if (!m_kbdHook) {
-        DebugLog(L"[LLHook][ERROR] SetWindowsHookEx(WH_KEYBOARD_LL) failed. GetLastError=" + std::to_wstring(GetLastError()));
-    }
 
     refreshKeyboardList();
 
@@ -485,10 +386,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 }
 
 MainWindow::~MainWindow() {
-    if (m_kbdHook) {
-        UnhookWindowsHookEx(m_kbdHook);
-        m_kbdHook = nullptr;
-    }
     if (g_mainWindow == this) g_mainWindow = nullptr;
 }
 
@@ -663,18 +560,78 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             const RAWINPUT* ri = (const RAWINPUT*)buf.data();
             const RAWKEYBOARD& k = ri->data.keyboard;
 
-            // Hankaku/Zenkaku (scancode 0x29) は LLHook 側で Alt+` を送るため、ここではスキップして二重送信を防ぐ
+            // MakeCode + Flags を送る（文字変換はしない）
+            // ※RAWINPUTのVKeyは 0 / 0x00FF のことがあるため、必要ならレイアウトから補完する
+            uint16_t vkRaw = (uint16_t)k.VKey;
+            uint16_t vk = vkRaw;
+
+            if (vk == 0 || vk == 0x00FF) {
+                // RI_KEY_E0/E1 を MapVirtualKeyExW に反映
+                UINT sc = (UINT)k.MakeCode;
+                if (k.Flags & RI_KEY_E0) sc |= 0xE000;
+                if (k.Flags & RI_KEY_E1) sc |= 0xE100;
+                const HKL hkl = GetKeyboardLayout(0);
+                const UINT mapped = MapVirtualKeyExW(sc, MAPVK_VSC_TO_VK_EX, hkl);
+                vk = (uint16_t)(mapped & 0xFFFF);
+            }
+            if (vk == 0x00FF) vk = 0;
+
+            // (診断用) 0x29 は JIS では半角/全角、US では `(~) の位置。どのVKeyで来ているか確認する。
             if (k.MakeCode == 0x29) {
+                DebugLog(L"[WM_INPUT] MakeCode=0x29 detected. rawVKey=0x" + std::to_wstring(vkRaw) +
+                         L" resolvedVKey=0x" + std::to_wstring(vk) +
+                         L" flags=0x" + std::to_wstring((uint16_t)k.Flags));
+            }
+
+            // 半角/全角: 選択デバイスからの入力だけを対象に、リモートへは Alt+` を送る
+            // - JIS: 物理0x29が半角/全角 (典型VKey: VK_OEM_AUTO/VK_OEM_ENLW/VK_KANJI)
+            // - US : 物理0x29が `(~) (VKey: VK_OEM_3) → 変換しない
+            const bool isHankakuZenkaku =
+                (k.MakeCode == 0x29) &&
+                (vk == VK_OEM_AUTO || vk == VK_OEM_ENLW || vk == VK_KANJI);
+
+            if (isHankakuZenkaku) {
+                const bool isUp = (k.Flags & RI_KEY_BREAK) != 0;
+                if (isUp) {
+                    g_hankakuHeld.store(false, std::memory_order_relaxed);
+                    *result = 0;
+                    return false;
+                }
+
+                const ULONGLONG now = GetTickCount64();
+                const bool wasHeld = g_hankakuHeld.exchange(true, std::memory_order_relaxed);
+                const ULONGLONG last = g_hankakuLastDownTick.load(std::memory_order_relaxed);
+                const bool stuck = (wasHeld && last != 0 && (now - last) > 1500);
+
+                if (!wasHeld || stuck) {
+                    if (stuck) {
+                        DebugLog(L"[WM_INPUT][WARN] Hankaku held seems stuck. Resetting and sending Alt+`.");
+                    }
+                    g_hankakuLastDownTick.store(now, std::memory_order_relaxed);
+
+                    // リモート側IMEトグル: Alt + ` を送る
+                    const uint16_t altScan   = 0x38;      // Left Alt
+                    const uint16_t altVk     = VK_MENU;   // 0x12
+                    const uint16_t graveScan = 0x29;      // OEM_3 (`~) physical
+                    const uint16_t graveVk   = VK_OEM_3;  // 0xC0
+
+                    DebugLog(L"[WM_INPUT] Hankaku/Zenkaku -> send Alt+` to remote. "
+                             L"Alt(scan=0x38,vk=0x12), Grave(scan=0x29,vk=0xC0)");
+
+                    EnqueueKeyboardRawEvent(altScan,   RI_KEY_MAKE,  altVk);
+                    EnqueueKeyboardRawEvent(graveScan, RI_KEY_MAKE,  graveVk);
+                    EnqueueKeyboardRawEvent(graveScan, RI_KEY_BREAK, graveVk);
+                    EnqueueKeyboardRawEvent(altScan,   RI_KEY_BREAK, altVk);
+                } else {
+                    DebugLog(L"[WM_INPUT] Hankaku ignored due to held(debounce).");
+                }
+
                 *result = 0;
                 return false;
             }
 
-            // MakeCode + Flags を送る（文字変換はしない）
-            uint16_t vk = (uint16_t)k.VKey;
-            // RAWINPUTのVKeyは 0 や 255 のことがある（不明扱いでOK）
-            if (vk == 0 || vk == 0x00FF) {
-                vk = 0;
-            }
+            // 通常キー: MakeCode + Flags + (補完済み)VKey を送る
+            if (vk == 0 || vk == 0x00FF) vk = 0;
             EnqueueKeyboardRawEvent((uint16_t)k.MakeCode, (uint16_t)k.Flags, vk);
 
             *result = 0;
