@@ -11,6 +11,7 @@
 #include <QSignalBlocker>
 #include <QRegularExpression>
 #include <algorithm>
+#include <atomic>
 #include <windows.h>
 #include <hidusage.h>
 #include <dbt.h>
@@ -28,7 +29,8 @@
 static MainWindow* g_mainWindow = nullptr;
 
 // 半角/全角キーのオートリピート等で Alt+` を連打しないための簡易状態
-static bool g_hankakuHeld = false;
+static std::atomic<bool> g_hankakuHeld{ false };
+static std::atomic<bool> g_hankakuSwallowed{ false };
 
 namespace {
 // --- Fix for LNK2001: DEVPKEY_Device_* unresolved ---
@@ -364,7 +366,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     // WH_KEYBOARD_LL hook for Hankaku/Zenkaku suppression
     m_kbdHook = SetWindowsHookEx(WH_KEYBOARD_LL, [](int nCode, WPARAM wParam, LPARAM lParam) -> LRESULT {
-        if (nCode == HC_ACTION && g_mainWindow && g_mainWindow->isActiveWindow()) {
+        if (nCode == HC_ACTION && g_mainWindow) {
             KBDLLHOOKSTRUCT* hs = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
             // Hankaku/Zenkaku:
             // - typical vk: VK_OEM_AUTO(0xF3), VK_OEM_ENLW(0xF4)
@@ -372,7 +374,23 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
             const bool isHankakuByVk   = (hs->vkCode == VK_OEM_AUTO || hs->vkCode == VK_OEM_ENLW);
             const bool isHankakuByScan = (hs->scanCode == 0x29);
             if (isHankakuByVk || isHankakuByScan) {
-                const bool isUp = (hs->flags & LLKHF_UP) != 0;
+                const bool isUp     = (hs->flags & LLKHF_UP) != 0;
+                const bool isActive = g_mainWindow->isActiveWindow();
+
+                // 注意:
+                //  - 半角/全角キーは「押下→非アクティブ化」のようなケースがあり得るため、
+                //    key-up をアクティブ判定で落としてしまうと g_hankakuHeld が stuck して
+                //    以後ずっと送信されない/ローカルだけ無効化される状態になり得る。
+                //  - そのため key-up はアクティブでなくても状態復帰だけは行う。
+
+                if (isUp) {
+                    g_hankakuHeld.store(false, std::memory_order_relaxed);
+                    const bool swallowed = g_hankakuSwallowed.exchange(false, std::memory_order_relaxed);
+                    if (swallowed) {
+                        return 1; // 押下を抑止した場合は up も抑止して整合を取る
+                    }
+                    return CallNextHookEx(nullptr, nCode, wParam, lParam);
+                }
 
                 // 目的:
                 //  - ローカルでは半角/全角を無効化したまま、
@@ -386,10 +404,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
                 //  - Alt は左Altの scanCode 0x38 を使用
                 //  - オートリピートで連打されないよう、押下開始1回だけ送る
 
-                if (!isUp) {
-                    if (!g_hankakuHeld) {
-                        g_hankakuHeld = true;
+                // key-down
+                if (isActive) {
+                    const bool wasHeld = g_hankakuHeld.exchange(true, std::memory_order_relaxed);
+                    g_hankakuSwallowed.store(true, std::memory_order_relaxed);
 
+                    if (!wasHeld) {
                         const uint16_t altScan   = 0x38;      // Left Alt (Set1)
                         const uint16_t altVk     = VK_MENU;   // 0x12
                         const uint16_t graveScan = 0x29;      // OEM_3 (`~) on US layout
@@ -400,12 +420,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
                         EnqueueKeyboardRawEvent(graveScan, RI_KEY_BREAK, graveVk);
                         EnqueueKeyboardRawEvent(altScan,   RI_KEY_BREAK, altVk);
                     }
-                } else {
-                    // key-up では状態だけ戻す（送信はしない：押下開始でトグル完結）
-                    g_hankakuHeld = false;
-                }
 
-                return 1; // ローカル抑止 (swallow)
+                    return 1; // ローカル抑止 (swallow)
+                } else {
+                    // 非アクティブ時はローカルIME切替を許可。状態だけ残さない。
+                    g_hankakuHeld.store(false, std::memory_order_relaxed);
+                    g_hankakuSwallowed.store(false, std::memory_order_relaxed);
+                }
             }
         }
         return CallNextHookEx(nullptr, nCode, wParam, lParam);
@@ -451,6 +472,11 @@ bool MainWindow::event(QEvent* e)
     if (e->type() == QEvent::WindowActivate) {
         EnqueueKeyboardFocusChanged(true);
     } else if (e->type() == QEvent::WindowDeactivate) {
+        // 半角/全角の押下状態が key-up 未検知で残ると、以後ずっと送信されない可能性があるため
+        // 非アクティブ化時に念のため状態をクリアしておく。
+        g_hankakuHeld.store(false, std::memory_order_relaxed);
+        g_hankakuSwallowed.store(false, std::memory_order_relaxed);
+
         EnqueueKeyboardFocusChanged(false);
     }
     return QMainWindow::event(e);
