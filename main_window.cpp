@@ -366,8 +366,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
             // Hankaku/Zenkaku (VK_OEM_AUTO 0xF3, VK_OEM_ENLW 0xF4)
             if (hs->vkCode == VK_OEM_AUTO || hs->vkCode == VK_OEM_ENLW) {
                 const bool isUp = (hs->flags & LLKHF_UP);
-                // リモートへ送信 (scancode 0x29)
-                EnqueueKeyboardRawEvent(0x29, isUp ? RI_KEY_BREAK : RI_KEY_MAKE);
+                // リモートへ送信：scanCode と vkCode を両方渡す（v2でvkが効く）
+                uint16_t scan = (uint16_t)hs->scanCode;
+                if (scan == 0) scan = 0x29; // 念のためフォールバック
+
+                uint16_t rawFlags = isUp ? RI_KEY_BREAK : RI_KEY_MAKE;
+                if (hs->flags & LLKHF_EXTENDED) rawFlags |= RI_KEY_E0;
+
+                EnqueueKeyboardRawEvent(scan, rawFlags, (uint16_t)hs->vkCode);
                 // ローカル抑止 (swallow)
                 return 1;
             }
@@ -575,7 +581,12 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             }
 
             // MakeCode + Flags を送る（文字変換はしない）
-            EnqueueKeyboardRawEvent((uint16_t)k.MakeCode, (uint16_t)k.Flags);
+            uint16_t vk = (uint16_t)k.VKey;
+            // RAWINPUTのVKeyは 0 や 255 のことがある（不明扱いでOK）
+            if (vk == 0 || vk == 0x00FF) {
+                vk = 0;
+            }
+            EnqueueKeyboardRawEvent((uint16_t)k.MakeCode, (uint16_t)k.Flags, vk);
 
             *result = 0;
             return false;
