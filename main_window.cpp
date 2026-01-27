@@ -27,6 +27,11 @@
 #include "AppShutdown.h"
 #include "window.h"
 
+// SDK互換：RIDEV_NOHOTKEYS が未定義なら定義（値は WinUser.h 互換）
+#ifndef RIDEV_NOHOTKEYS
+#define RIDEV_NOHOTKEYS 0x0200
+#endif
+
 // Global/Static pointer for hook callback
 static MainWindow* g_mainWindow = nullptr;
 
@@ -72,17 +77,15 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                 const uint16_t vkey = (uint16_t)ks->vkCode;
 
                 if (!isUp) {
-                    // Win Down: 捕捉開始 + リモート送信 + ローカル抑止
+                    // Win Down: 捕捉開始 + ローカル抑止
                     // アクティブ時のみ捕捉開始
                     if (activeByForeground || g_remoteInputActive.load(std::memory_order_relaxed)) {
                         g_winCapturedMask.fetch_or(mask, std::memory_order_relaxed);
-                        EnqueueKeyboardRawEvent(makeCode, rawFlags, vkey);
                         return 1; // ローカルへ伝播させない
                     }
                 } else {
-                    // Win Up: リモート送信 + ローカル抑止（捕捉解除は必ず行う）
+                    // Win Up: ローカル抑止（捕捉解除は必ず行う）
                     g_winCapturedMask.fetch_and((uint8_t)~mask, std::memory_order_relaxed);
-                    EnqueueKeyboardRawEvent(makeCode, rawFlags, vkey);
                     return 1;
                 }
             }
@@ -518,6 +521,7 @@ bool MainWindow::event(QEvent* e)
     if (e->type() == QEvent::WindowActivate) {
         g_remoteInputActive.store(true, std::memory_order_relaxed);
         EnqueueKeyboardFocusChanged(true);
+        registerKeyboardDeviceNotifications();
     } else if (e->type() == QEvent::WindowDeactivate) {
         g_remoteInputActive.store(false, std::memory_order_relaxed);
         // 半角/全角の押下状態が key-up 未検知で残ると、以後ずっと送信されない可能性があるため
@@ -525,6 +529,7 @@ bool MainWindow::event(QEvent* e)
         g_hankakuHeld.store(false, std::memory_order_relaxed);
 
         EnqueueKeyboardFocusChanged(false);
+        registerKeyboardDeviceNotifications();
     }
     return QMainWindow::event(e);
 }
@@ -693,13 +698,6 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             const bool isUpNow = (k.Flags & RI_KEY_BREAK) != 0;
             const bool isWinSc = (k.MakeCode == 0x5B || k.MakeCode == 0x5C);
 
-            // Winキーは LowLevelKeyboardProc 側で送信＆抑止しているため、ここでは送らない（二重送信防止）
-            // ※フック未導入/失敗時のフォールバックが必要なら g_llKeyboardHook==nullptr のときだけ送る、などにする。
-            if (isWinSc && g_llKeyboardHook != nullptr) {
-                *result = 0;
-                return false;
-            }
-
             if (!activeNow && !isUpNow) {
                 *result = 0;
                 return false;
@@ -808,12 +806,21 @@ void MainWindow::registerKeyboardDeviceNotifications() {
     RAWINPUTDEVICE rid{};
     rid.usUsagePage = HID_USAGE_PAGE_GENERIC;          // 0x01
     rid.usUsage = HID_USAGE_GENERIC_KEYBOARD;         // 0x06
-    // RIDEV_INPUTSINK: フォーカスがなくても入力を受ける（Winキー対策）
+    // RIDEV_INPUTSINK: フォーカスがなくても入力を受ける（生入力は受け続ける）
     // RIDEV_DEVNOTIFY: デバイス変更通知を受ける
-    rid.dwFlags = RIDEV_DEVNOTIFY | RIDEV_INPUTSINK;
+    // RIDEV_NOHOTKEYS: フォーカス中はWinホットキー(スタートメニュー等)をOS側で抑止する
+    DWORD flags = RIDEV_DEVNOTIFY | RIDEV_INPUTSINK;
+    if (this->isActiveWindow()) {
+        flags |= RIDEV_NOHOTKEYS;
+    }
+    rid.dwFlags = flags;
     rid.hwndTarget = hwnd;
 
-    RegisterRawInputDevices(&rid, 1, sizeof(rid));
+    if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) {
+        DebugLog(L"[RawInput] RegisterRawInputDevices failed. err=" + std::to_wstring(GetLastError()));
+    } else {
+        DebugLog(L"[RawInput] RegisterRawInputDevices ok. flags=" + std::to_wstring((unsigned long)flags));
+    }
 }
 
 void MainWindow::scheduleKeyboardListRefresh() {
