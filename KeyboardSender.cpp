@@ -167,6 +167,12 @@ static bool SendWithFEC(SOCKET s, const sockaddr_in& dst, uint32_t frameNumber, 
 
 void EnqueueKeyboardRawEvent(uint16_t makeCode, uint16_t rawFlags)
 {
+    // Windowsキー(LWIN/RWIN)はローカルOS側で処理させ、リモートには送らない
+    // ScanCode(Set1): LWIN=0x5B, RWIN=0x5C (通常は RI_KEY_E0 と組み合わさる)
+    if (makeCode == 0x5B || makeCode == 0x5C) {
+        return;
+    }
+
     Msg m{};
     m.type = MsgType::Event;
     m.active = 0;
