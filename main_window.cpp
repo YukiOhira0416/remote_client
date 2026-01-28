@@ -68,6 +68,20 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
     if (nCode == HC_ACTION && shouldHook) {
         const KBDLLHOOKSTRUCT* ks = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
         if (ks) {
+            // Winを捕捉中は、Win+Alt+B の Alt/B もローカルに流さない（Game Bar HDR トースト抑止）
+            // ※RawInput(WM_INPUT) 側で拾ってリモートへ送る前提
+            const bool winCaptured = (g_winCapturedMask.load(std::memory_order_relaxed) != 0);
+            if (winCaptured) {
+                const bool isUp = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) || ((ks->flags & LLKHF_UP) != 0);
+                const bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+                if (altDown && (ks->vkCode == VK_MENU || ks->vkCode == 'B')) {
+                    DebugLog(L"[WinKeyHook] Swallow chord key. vk=0x" +
+                             std::to_wstring((uint16_t)ks->vkCode) +
+                             L" up=" + std::to_wstring(isUp ? 1 : 0));
+                    return 1;
+                }
+            }
+
             const bool isWin = (ks->vkCode == VK_LWIN || ks->vkCode == VK_RWIN);
             if (isWin) {
                 const bool isUp = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) || ((ks->flags & LLKHF_UP) != 0);
@@ -697,8 +711,15 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             const bool activeNow = this->isActiveWindow();
             const bool isUpNow = (k.Flags & RI_KEY_BREAK) != 0;
             const bool isWinSc = (k.MakeCode == 0x5B || k.MakeCode == 0x5C);
+            const bool winCaptured = (g_winCapturedMask.load(std::memory_order_relaxed) != 0);
 
-            if (!activeNow && !isUpNow) {
+            // 非アクティブ時のDown破棄は基本維持。ただし：
+            //  1) Winキー(sc=0x5B/0x5C) は例外でDownも通す（コメント通りの保険）
+            //  2) すでにWin捕捉中は、Chord成立に必要なDown(Alt/B等)を落とさない
+            if (!activeNow && !isUpNow && !isWinSc && !winCaptured) {
+                DebugLog(L"[WM_INPUT][DROP] inactive down ignored. make=0x" +
+                         std::to_wstring(k.MakeCode) +
+                         L" flags=0x" + std::to_wstring((uint16_t)k.Flags));
                 *result = 0;
                 return false;
             }
@@ -719,6 +740,13 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             // Winキーはスキャンコードで確定できるので強制的に安定化
             if (k.MakeCode == 0x5B) vk = VK_LWIN;
             if (k.MakeCode == 0x5C) vk = VK_RWIN;
+
+            // WM_INPUT側でもWin捕捉状態を更新して、Hook側の「Upまで握る」挙動を補強
+            if (isWinSc) {
+                const uint8_t mask = (k.MakeCode == 0x5B) ? 0x01 : 0x02;
+                if (!isUpNow) g_winCapturedMask.fetch_or(mask, std::memory_order_relaxed);
+                else          g_winCapturedMask.fetch_and((uint8_t)~mask, std::memory_order_relaxed);
+            }
 
             if (vk == 0 || vk == 0x00FF) {
                 // RI_KEY_E0/E1 を MapVirtualKeyExW に反映
