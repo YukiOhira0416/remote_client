@@ -14,6 +14,8 @@
 #include <QRegularExpression>
 #include <algorithm>
 #include <atomic>
+#include <mutex>
+#include <vector>
 #include <windows.h>
 #include <hidusage.h>
 #include <dbt.h>
@@ -48,6 +50,20 @@ static HHOOK g_llKeyboardHook = nullptr;
 // bit0 = LWIN, bit1 = RWIN
 static std::atomic<uint8_t> g_winCapturedMask{ 0 };
 
+// Alt の押下状態（GetAsyncKeyState 依存をやめる）
+static std::atomic<bool> g_altDown{ false };
+// Win+Alt+B を検出して処理中（ローカルへ絶対に流さない）
+static std::atomic<bool> g_winAltBActive{ false };
+
+struct IgnoreEv {
+    uint16_t make;
+    uint16_t rawFlags; // RI_KEY_*（WM_INPUTのk.Flagsと同系）
+    uint16_t vkey;
+};
+static std::mutex g_ignoreMtx;
+static std::vector<IgnoreEv> g_ignoreOnce;
+static std::atomic<ULONGLONG> g_ignoreExpire{ 0 };
+
 static bool IsForegroundOurProcess()
 {
     HWND fg = GetForegroundWindow();
@@ -55,6 +71,62 @@ static bool IsForegroundOurProcess()
     DWORD pid = 0;
     GetWindowThreadProcessId(fg, &pid);
     return pid == GetCurrentProcessId();
+}
+
+static void SetIgnoreOnce(std::initializer_list<IgnoreEv> evs, ULONGLONG ttlMs = 200)
+{
+    std::lock_guard<std::mutex> lock(g_ignoreMtx);
+    g_ignoreOnce.assign(evs.begin(), evs.end());
+    g_ignoreExpire.store(GetTickCount64() + ttlMs, std::memory_order_relaxed);
+}
+
+static bool ConsumeIgnoreOnce(uint16_t make, uint16_t rawFlags, uint16_t vkey)
+{
+    const ULONGLONG now = GetTickCount64();
+    if (now > g_ignoreExpire.load(std::memory_order_relaxed)) {
+        std::lock_guard<std::mutex> lock(g_ignoreMtx);
+        g_ignoreOnce.clear();
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_ignoreMtx);
+    for (auto it = g_ignoreOnce.begin(); it != g_ignoreOnce.end(); ++it) {
+        if (it->make == make && it->rawFlags == rawFlags && it->vkey == vkey) {
+            g_ignoreOnce.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void ForwardWinAltBToRemote(uint8_t winMask)
+{
+    // 押していたWinを反映（RWin優先、なければLWin）
+    const bool useR = (winMask & 0x02) != 0;
+    const uint16_t winMake = useR ? 0x5C : 0x5B;
+    const uint16_t winVk   = useR ? VK_RWIN : VK_LWIN;
+
+    const uint16_t altMake = 0x38;     // Left Alt
+    const uint16_t altVk   = VK_MENU;
+    const uint16_t bMake   = 0x30;     // 'B'
+    const uint16_t bVk     = 'B';
+
+    // WM_INPUT側が同じイベントを拾った場合に二重送信しないためのガード
+    SetIgnoreOnce({
+        { winMake, (uint16_t)(RI_KEY_E0),                winVk },
+        { altMake, (uint16_t)0,                          altVk },
+        { bMake,   (uint16_t)0,                          bVk   },
+        { bMake,   (uint16_t)RI_KEY_BREAK,               bVk   },
+        { altMake, (uint16_t)RI_KEY_BREAK,               altVk },
+        { winMake, (uint16_t)(RI_KEY_E0 | RI_KEY_BREAK), winVk },
+    });
+
+    DebugLog(L"[WinAltB] Intercept locally -> forward synthetic Win+Alt+B to remote.");
+    EnqueueKeyboardRawEvent(winMake, (uint16_t)RI_KEY_E0, winVk);
+    EnqueueKeyboardRawEvent(altMake, (uint16_t)0, altVk);
+    EnqueueKeyboardRawEvent(bMake,   (uint16_t)0, bVk);
+    EnqueueKeyboardRawEvent(bMake,   (uint16_t)RI_KEY_BREAK, bVk);
+    EnqueueKeyboardRawEvent(altMake, (uint16_t)RI_KEY_BREAK, altVk);
+    EnqueueKeyboardRawEvent(winMake, (uint16_t)(RI_KEY_E0 | RI_KEY_BREAK), winVk);
 }
 
 static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
@@ -68,16 +140,31 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
     if (nCode == HC_ACTION && shouldHook) {
         const KBDLLHOOKSTRUCT* ks = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
         if (ks) {
+            const bool isUp = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) || ((ks->flags & LLKHF_UP) != 0);
+
+            // Alt状態をフックイベントで追跡
+            if (ks->vkCode == VK_LMENU || ks->vkCode == VK_RMENU) {
+                g_altDown.store(!isUp, std::memory_order_relaxed);
+            }
+
             // Winを捕捉中は、Win+Alt+B の Alt/B もローカルに流さない（Game Bar HDR トースト抑止）
-            // ※RawInput(WM_INPUT) 側で拾ってリモートへ送る前提
-            const bool winCaptured = (g_winCapturedMask.load(std::memory_order_relaxed) != 0);
-            if (winCaptured) {
-                const bool isUp = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) || ((ks->flags & LLKHF_UP) != 0);
-                const bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-                if (altDown && (ks->vkCode == VK_MENU || ks->vkCode == 'B')) {
-                    DebugLog(L"[WinKeyHook] Swallow chord key. vk=0x" +
-                             std::to_wstring((uint16_t)ks->vkCode) +
-                             L" up=" + std::to_wstring(isUp ? 1 : 0));
+            // ※WM_INPUT に BのKeyDownが来ないケースがあるため、ここで合成して送る
+            const uint8_t winMask = g_winCapturedMask.load(std::memory_order_relaxed);
+            const bool winCaptured = (winMask != 0);
+
+            // Win+Alt+B の検出点：B KeyDown
+            if (!isUp && winCaptured && g_altDown.load(std::memory_order_relaxed) && ks->vkCode == 'B') {
+                g_winAltBActive.store(true, std::memory_order_relaxed);
+                ForwardWinAltBToRemote(winMask);
+                return 1; // ローカルへ流さない
+            }
+
+            // 合成送信中は Alt/B を確実にローカルへ流さない（B upで解除）
+            if (g_winAltBActive.load(std::memory_order_relaxed)) {
+                if (ks->vkCode == 'B' || ks->vkCode == VK_LMENU || ks->vkCode == VK_RMENU) {
+                    if (ks->vkCode == 'B' && isUp) {
+                        g_winAltBActive.store(false, std::memory_order_relaxed);
+                    }
                     return 1;
                 }
             }
@@ -817,6 +904,13 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
 
             // 通常キー: MakeCode + Flags + (補完済み)VKey を送る
             if (vk == 0 || vk == 0x00FF) vk = 0;
+
+            // フック側で Win+Alt+B を合成送信した直後、WM_INPUT に同じイベントが来たら二重送信なので捨てる
+            if (ConsumeIgnoreOnce((uint16_t)k.MakeCode, (uint16_t)k.Flags, (uint16_t)vk)) {
+                DebugLog(L"[WM_INPUT][SKIP] ignored (Win+Alt+B synthetic already sent).");
+                *result = 0;
+                return false;
+            }
 
             // デバッグ：Win+ショートカットのため、全キーの生入力を追跡
             {
