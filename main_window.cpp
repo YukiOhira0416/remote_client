@@ -1,6 +1,7 @@
 #include "main_window.h"
 #include "KeyboardSender.h"
 #include "DebugLog.h"
+#include "GameBarSuppressor.h"
 #include <cstdint>
 #include <QEvent>
 #include <QCloseEvent>
@@ -599,9 +600,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     // initial focus state
     EnqueueKeyboardFocusChanged(this->isActiveWindow());
+
+    // フォーカス中だけGame Barを止める（要件B）
+    m_gameBarSuppressor = new GameBarSuppressor(this);
 }
 
 MainWindow::~MainWindow() {
+    if (m_gameBarSuppressor) {
+        m_gameBarSuppressor->setSuppressed(false); // 念のため復帰
+    }
     UninstallLowLevelKeyboardHook();
     if (g_mainWindow == this) g_mainWindow = nullptr;
 }
@@ -621,6 +628,8 @@ bool MainWindow::event(QEvent* e)
         g_remoteInputActive.store(true, std::memory_order_relaxed);
         EnqueueKeyboardFocusChanged(true);
         registerKeyboardDeviceNotifications();
+
+        if (m_gameBarSuppressor) m_gameBarSuppressor->setSuppressed(true);
     } else if (e->type() == QEvent::WindowDeactivate) {
         g_remoteInputActive.store(false, std::memory_order_relaxed);
         // 半角/全角の押下状態が key-up 未検知で残ると、以後ずっと送信されない可能性があるため
@@ -629,6 +638,8 @@ bool MainWindow::event(QEvent* e)
 
         EnqueueKeyboardFocusChanged(false);
         registerKeyboardDeviceNotifications();
+
+        if (m_gameBarSuppressor) m_gameBarSuppressor->setSuppressed(false);
     }
     return QMainWindow::event(e);
 }

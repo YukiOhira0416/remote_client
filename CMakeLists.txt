@@ -66,6 +66,7 @@ set(SOURCES
     main.cpp
     window.cpp
     main_window.cpp
+    GameBarSuppressor.cpp
     DebugLog.cpp
     Globals.cpp
     ReedSolomon.cpp
@@ -84,6 +85,7 @@ set(HEADERS
     main_window.h
     mainwindow.h
     renderhostwidgets.h
+    GameBarSuppressor.h
     DebugLog.h
     Globals.h
     ReedSolomon.h
@@ -110,6 +112,7 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
 target_link_libraries(${PROJECT_NAME}
     # Windows基本ライブラリ
     user32.lib
+    advapi32.lib
     ws2_32.lib
     Mswsock.lib
     ole32.lib
