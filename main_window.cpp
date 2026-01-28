@@ -75,7 +75,14 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                 const bool isUp = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) || ((ks->flags & LLKHF_UP) != 0);
                 const bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
                 if (altDown && (ks->vkCode == VK_MENU || ks->vkCode == 'B')) {
-                    DebugLog(L"[WinKeyHook] Swallow chord key. vk=0x" +
+                    // Inject to remote (Fix for missing B KeyDown in WM_INPUT)
+                    uint16_t rawFlags = 0;
+                    if (ks->flags & LLKHF_EXTENDED) rawFlags |= RI_KEY_E0;
+                    if (isUp)                       rawFlags |= RI_KEY_BREAK;
+
+                    EnqueueKeyboardRawEvent((uint16_t)ks->scanCode, rawFlags, (uint16_t)ks->vkCode);
+
+                    DebugLog(L"[WinKeyHook] Swallow and Inject chord key. vk=0x" +
                              std::to_wstring((uint16_t)ks->vkCode) +
                              L" up=" + std::to_wstring(isUp ? 1 : 0));
                     return 1;
