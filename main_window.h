@@ -11,6 +11,8 @@
 #include "mainwindow.h"
 #include "renderhostwidgets.h"
 
+class GameBarSuppressor;
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
@@ -55,6 +57,9 @@ private:
     QString m_selectedKeyboardUniqueKey;
     QMap<HANDLE, QString> m_handleToUniqueKey;
     QMap<HANDLE, bool> m_handleToIsJapanese;
+
+    // フォーカス中だけローカルGame Barを完全停止
+    GameBarSuppressor* m_gameBarSuppressor = nullptr;
 };
 
 #endif // MAIN_WINDOW_H
