@@ -305,19 +305,26 @@ void KeyboardSendThread(std::atomic<bool>& running)
 
         const auto now = std::chrono::steady_clock::now();
         // Periodic STATE_SYNC to handle packet loss.
-        // We continue syncing even when inactive if there are keys currently held down.
-        if ((now - lastSync) >= syncInterval) {
+        // Active中は従来どおり高頻度(30ms)で同期。
+        // Inactive中は「リモートは常に全解放(空)」を低頻度で送り続け、解放を確定させる。
+        const auto inactiveSyncInterval = std::chrono::milliseconds(200); // 5Hz程度
+        const auto interval = active ? syncInterval : inactiveSyncInterval;
+
+        if ((now - lastSync) >= interval) {
             bool shouldSync = false;
             const bool recent = (now - lastActivity) < std::chrono::seconds(1);
             if (active) {
                 if (!pressed.empty() || recent) shouldSync = true;
             } else {
-                if (!pressed.empty()) shouldSync = true;
+                // Inactive中は常に「空STATE」を送って、キー押しっぱなし事故を潰す
+                shouldSync = true;
             }
 
             if (shouldSync) {
                 const uint32_t fnum = seq++;
-                auto payload = BuildStatePayload(fnum, pressed);
+                static const std::unordered_set<uint64_t> kEmpty;
+                const auto& state = active ? pressed : kEmpty;
+                auto payload = BuildStatePayload(fnum, state);
                 SendWithFEC(sock, dst, fnum, payload);
                 lastSync = now;
             }

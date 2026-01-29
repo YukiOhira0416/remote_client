@@ -836,7 +836,10 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             //   → 非アクティブ時は「UPだけ通す」(Downは無視)。
             //   ただし、Winキー(0x5B/0x5C)に関しては、ローカルStartメニューでフォーカスが奪われた場合でも
             //   リモートへ送信したいため、例外的にDownも通す(保険)。
-            const bool activeNow = this->isActiveWindow() || IsForegroundOurProcess();
+            //
+            // Fix: Win捕捉中(押しっぱなしでUp待ち)は、Peek等で前面判定が揺れてもWM_INPUTを捨てない
+            const bool winCaptured = (g_winCapturedMask.load(std::memory_order_relaxed) != 0);
+            const bool activeNow = this->isActiveWindow() || IsForegroundOurProcess() || winCaptured;
 
             // 仕様: 非フォーカス(非最前面)時はローカルのみ。サーバーへは送らない。
             if (!activeNow)
@@ -847,7 +850,6 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
 
             const bool isUpNow = (k.Flags & RI_KEY_BREAK) != 0;
             const bool isWinSc = (k.MakeCode == 0x5B || k.MakeCode == 0x5C);
-            const bool winCaptured = (g_winCapturedMask.load(std::memory_order_relaxed) != 0);
 
             // MakeCode + Flags を送る（文字変換はしない）
             // ※RAWINPUTのVKeyは 0 / 0x00FF のことがあるため、必要ならレイアウトから補完する
