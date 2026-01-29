@@ -245,11 +245,27 @@ void KeyboardSendThread(std::atomic<bool>& running)
             didWork = true;
 
             if (msg.type == MsgType::Focus) {
-                active = (msg.active != 0);
-                // We no longer clear 'pressed' on focus loss to maintain sync with physical keys.
-                // We also no longer send an empty SYNC immediately.
-                lastSync = std::chrono::steady_clock::now();
-                lastActivity = lastSync;
+                const bool newActive = (msg.active != 0);
+
+                // Focus ON->OFF の瞬間に、リモート側の押下状態を確実に解放する
+                if (active && !newActive)
+                {
+                    active = false;
+                    pressed.clear();
+
+                    const uint32_t fnum = seq++;
+                    const auto payload = BuildStatePayload(fnum, pressed); // 空 = 全解放
+                    SendWithFEC(sock, dst, fnum, payload);
+                    DebugLog(L"[TX][STATE_SYNC] count=0 (focus lost)");
+
+                    lastSync = std::chrono::steady_clock::now();
+                    lastActivity = lastSync;
+                    continue;
+                }
+
+                active = newActive;
+                lastActivity = std::chrono::steady_clock::now();
+                DebugLog(L"[KeyboardSender] Focus=%s", active ? L"ON" : L"OFF");
                 continue;
             }
 

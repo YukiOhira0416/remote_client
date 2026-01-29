@@ -283,6 +283,14 @@ static bool TryDeriveDeviceInstanceId(const QString& rawDeviceName, QString& out
     return !outInstanceId.isEmpty();
 }
 
+static bool IsInvalidContainerIdKey(const QString& keyUpper)
+{
+    // keyUpper は "{XXXXXXXX-....}" の大文字想定
+    if (keyUpper == "{00000000-0000-0000-0000-000000000000}") return true; // GUID_NULL
+    if (keyUpper == "{00000000-0000-0000-FFFF-FFFFFFFFFFFF}") return true; // 実ログで sel 側に出ている怪しい値
+    return false;
+}
+
 static bool TryGetContainerIdFromDevNode(const QString& instanceId, QString& outKey) {
     DEVINST devInst = 0;
     std::wstring idW = instanceId.toStdWString();
@@ -294,10 +302,14 @@ static bool TryGetContainerIdFromDevNode(const QString& instanceId, QString& out
     ULONG size = sizeof(container);
     cr = CM_Get_DevNode_PropertyW(devInst, &kDevpkey_Device_ContainerId, &propType, reinterpret_cast<PBYTE>(&container), &size, 0);
     if (cr != CR_SUCCESS) return false;
+    if (propType != DEVPROP_TYPE_GUID) return false;
+    if (size < sizeof(GUID)) return false;
 
     wchar_t guidBuf[64]{};
     if (StringFromGUID2(container, guidBuf, 64) <= 0) return false;
-    outKey = QString::fromWCharArray(guidBuf).toUpper();
+    const QString key = QString::fromWCharArray(guidBuf).toUpper();
+    if (IsInvalidContainerIdKey(key)) return false;
+    outKey = key;
     return true;
 }
 
@@ -363,7 +375,12 @@ static bool TryGetContainerIdKey(const QString& deviceInterfacePath, QString& ou
 
     DEVPROPTYPE propType = 0;
     GUID containerId{};
-    if (!SetupDiGetDevicePropertyW(devInfo, &devData, &kDevpkey_Device_ContainerId, &propType, (PBYTE)&containerId, sizeof(containerId), nullptr, 0)) {
+    DWORD requiredSize = 0;
+    if (!SetupDiGetDevicePropertyW(devInfo, &devData, &kDevpkey_Device_ContainerId, &propType, (PBYTE)&containerId, sizeof(containerId), &requiredSize, 0)) {
+        SetupDiDestroyDeviceInfoList(devInfo);
+        return false;
+    }
+    if (propType != DEVPROP_TYPE_GUID || requiredSize < sizeof(GUID)) {
         SetupDiDestroyDeviceInfoList(devInfo);
         return false;
     }
@@ -371,7 +388,9 @@ static bool TryGetContainerIdKey(const QString& deviceInterfacePath, QString& ou
     SetupDiDestroyDeviceInfoList(devInfo);
     wchar_t guidBuf[64]{};
     if (StringFromGUID2(containerId, guidBuf, 64) <= 0) return false;
-    outKey = QString::fromWCharArray(guidBuf).toUpper();
+    const QString key = QString::fromWCharArray(guidBuf).toUpper();
+    if (IsInvalidContainerIdKey(key)) return false;
+    outKey = key;
     return true;
 }
 
@@ -818,20 +837,17 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             //   ただし、Winキー(0x5B/0x5C)に関しては、ローカルStartメニューでフォーカスが奪われた場合でも
             //   リモートへ送信したいため、例外的にDownも通す(保険)。
             const bool activeNow = this->isActiveWindow() || IsForegroundOurProcess();
-            const bool isUpNow = (k.Flags & RI_KEY_BREAK) != 0;
-            const bool isWinSc = (k.MakeCode == 0x5B || k.MakeCode == 0x5C);
-            const bool winCaptured = (g_winCapturedMask.load(std::memory_order_relaxed) != 0);
 
-            // 非アクティブ時のDown破棄は基本維持。ただし：
-            //  1) Winキー(sc=0x5B/0x5C) は例外でDownも通す（コメント通りの保険）
-            //  2) すでにWin捕捉中は、Chord成立に必要なDown(Alt/B等)を落とさない
-            if (!activeNow && !isUpNow && !isWinSc && !winCaptured) {
-                DebugLog(L"[WM_INPUT][DROP] inactive down ignored. make=0x" +
-                         std::to_wstring(k.MakeCode) +
-                         L" flags=0x" + std::to_wstring((uint16_t)k.Flags));
+            // 仕様: 非フォーカス(非最前面)時はローカルのみ。サーバーへは送らない。
+            if (!activeNow)
+            {
                 *result = 0;
                 return false;
             }
+
+            const bool isUpNow = (k.Flags & RI_KEY_BREAK) != 0;
+            const bool isWinSc = (k.MakeCode == 0x5B || k.MakeCode == 0x5C);
+            const bool winCaptured = (g_winCapturedMask.load(std::memory_order_relaxed) != 0);
 
             // MakeCode + Flags を送る（文字変換はしない）
             // ※RAWINPUTのVKeyは 0 / 0x00FF のことがあるため、必要ならレイアウトから補完する
