@@ -591,6 +591,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     // selection cache
     if (ui.comboBox) {
+        // マウス操作のみ要件：キーボードフォーカスを取らせない（Alt+↓/矢印で反応させない）
+        ui.comboBox->setFocusPolicy(Qt::NoFocus);
+
         m_selectedKeyboardPath = ui.comboBox->currentData().toString();
         m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString();
         QObject::connect(ui.comboBox, QOverload<int>::of(&QComboBox::activated),
@@ -598,6 +601,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
                 if (!ui.comboBox || index < 0) return;
                 m_selectedKeyboardPath = ui.comboBox->currentData().toString();
                 m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString();
+
+                // コンボ操作後は常にレンダリング領域へフォーカス復帰（矢印等がUIに入らないように）
+                if (ui.frame) ui.frame->setFocus(Qt::OtherFocusReason);
             });
     }
 
@@ -811,7 +817,7 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             //   → 非アクティブ時は「UPだけ通す」(Downは無視)。
             //   ただし、Winキー(0x5B/0x5C)に関しては、ローカルStartメニューでフォーカスが奪われた場合でも
             //   リモートへ送信したいため、例外的にDownも通す(保険)。
-            const bool activeNow = this->isActiveWindow();
+            const bool activeNow = this->isActiveWindow() || IsForegroundOurProcess();
             const bool isUpNow = (k.Flags & RI_KEY_BREAK) != 0;
             const bool isWinSc = (k.MakeCode == 0x5B || k.MakeCode == 0x5C);
             const bool winCaptured = (g_winCapturedMask.load(std::memory_order_relaxed) != 0);
@@ -1111,6 +1117,7 @@ void MainWindow::refreshKeyboardList() {
     if (!ui.comboBox) return;
 
     const QString prevPath = ui.comboBox->currentData().toString();
+    const QString prevUniqueKey = m_selectedKeyboardUniqueKey;
     const auto keyboards = enumerateKeyboards();
 
     QSignalBlocker blocker(ui.comboBox);
@@ -1172,6 +1179,16 @@ void MainWindow::refreshKeyboardList() {
     }
 
     // 選択維持
+    if (!prevUniqueKey.isEmpty()) {
+        for (int i = 0; i < ui.comboBox->count(); ++i) {
+            if (ui.comboBox->itemData(i, Qt::UserRole + 2).toString() == prevUniqueKey) {
+                ui.comboBox->setCurrentIndex(i);
+                m_selectedKeyboardPath = ui.comboBox->currentData().toString();
+                m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString();
+                return;
+            }
+        }
+    }
     if (!prevPath.isEmpty()) {
         for (int i = 0; i < ui.comboBox->count(); ++i) {
             if (ui.comboBox->itemData(i).toString() == prevPath) {
@@ -1195,20 +1212,27 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* e)
 {
     Q_UNUSED(watched);
 
-    // ピンポイント：Win+Alt+Down だけローカルUIへ流さない
-    if (e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease || e->type() == QEvent::ShortcutOverride) {
-        // Winはフックで握り潰されることがあるので、物理状態を GetAsyncKeyState で判定する。
-        const SHORT winL = GetAsyncKeyState(VK_LWIN);
-        const SHORT winR = GetAsyncKeyState(VK_RWIN);
-        const SHORT alt  = GetAsyncKeyState(VK_MENU);
-        const bool winHeld = (winL & 0x8000) || (winR & 0x8000);
-        const bool altHeld = (alt  & 0x8000);
+    // 要件:
+    // - Win+Alt+↑/↓ はリモートにだけ送り、ローカル(UI/クライアント)は無反応
+    // - Alt+↑/↓、↑/↓ でもコンボ(UI)が反応しないようにする
+    //
+    // 方針:
+    // - RawInput(WM_INPUT)送信は継続（eventFilterはQtキーイベントのみ抑止するので影響しない）
+    // - アプリが前面/アクティブのときだけ、↑/↓キーのQt処理を握りつぶす
+    const bool activeByForeground = IsForegroundOurProcess();
+    const bool activeByQt = g_remoteInputActive.load(std::memory_order_relaxed);
+    if (!(activeByForeground || activeByQt)) {
+        return QMainWindow::eventFilter(watched, e);
+    }
 
-        if (winHeld && altHeld) {
-            auto* ke = static_cast<QKeyEvent*>(e);
-            if (ke && ke->key() == Qt::Key_Down) {
-                // 保険：すでに開いていたら閉じる（開きかけも潰す）
+    if (e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease || e->type() == QEvent::ShortcutOverride) {
+        auto* ke = static_cast<QKeyEvent*>(e);
+        if (ke) {
+            const int k = ke->key();
+            if (k == Qt::Key_Up || k == Qt::Key_Down) {
+                // コンボが開いていたら閉じる（Alt+↓で開く/矢印で動くのを根絶）
                 if (ui.comboBox) ui.comboBox->hidePopup();
+                // UIに一切反応させない
                 e->accept();
                 return true;
             }
