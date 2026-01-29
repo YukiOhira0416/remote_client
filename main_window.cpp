@@ -169,6 +169,15 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                 }
             }
 
+            // --- FIX: Win+Alt+Down がローカルで Alt+Down に化けて QComboBox が開くのを防ぐ ---
+            // Winはフックで握りつぶしているため、Qt側には Alt+Down として届きやすい。
+            // Win捕捉中かつAlt押下中の「↓」だけローカルへ流さない（リモート転送はWM_INPUT側で継続）。
+            const bool altHeld =
+                g_altDown.load(std::memory_order_relaxed) || ((ks->flags & LLKHF_ALTDOWN) != 0);
+            if (winCaptured && altHeld && ks->vkCode == VK_DOWN) {
+                return 1; // ローカルへ流さない（KeyDown/KeyUpどちらも遮断）
+            }
+
             const bool isWin = (ks->vkCode == VK_LWIN || ks->vkCode == VK_RWIN);
             if (isWin) {
                 const uint8_t mask = (ks->vkCode == VK_LWIN) ? 0x01 : 0x02;
