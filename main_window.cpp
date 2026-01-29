@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <QEvent>
 #include <QCloseEvent>
+#include <QApplication>
+#include <QKeyEvent>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -167,15 +169,6 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                     }
                     return 1;
                 }
-            }
-
-            // --- FIX: Win+Alt+Down がローカルで Alt+Down に化けて QComboBox が開くのを防ぐ ---
-            // Winはフックで握りつぶしているため、Qt側には Alt+Down として届きやすい。
-            // Win捕捉中かつAlt押下中の「↓」だけローカルへ流さない（リモート転送はWM_INPUT側で継続）。
-            const bool altHeld =
-                g_altDown.load(std::memory_order_relaxed) || ((ks->flags & LLKHF_ALTDOWN) != 0);
-            if (winCaptured && altHeld && ks->vkCode == VK_DOWN) {
-                return 1; // ローカルへ流さない（KeyDown/KeyUpどちらも遮断）
             }
 
             const bool isWin = (ks->vkCode == VK_LWIN || ks->vkCode == VK_RWIN);
@@ -490,6 +483,7 @@ static MainWindow::BusType DetectBusType(const QString& deviceInstanceId) {
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     ui.setupUi(this);
     g_mainWindow = this;
+    if (qApp) qApp->installEventFilter(this);
     // Winキー抑止フックをインストール（ウィンドウがアクティブな間だけ有効化する）
     InstallLowLevelKeyboardHook();
     g_remoteInputActive.store(this->isActiveWindow(), std::memory_order_relaxed);
@@ -599,7 +593,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     if (ui.comboBox) {
         m_selectedKeyboardPath = ui.comboBox->currentData().toString();
         m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString();
-        QObject::connect(ui.comboBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
+        QObject::connect(ui.comboBox, QOverload<int>::of(&QComboBox::activated),
             this, [this](int index) {
                 if (!ui.comboBox || index < 0) return;
                 m_selectedKeyboardPath = ui.comboBox->currentData().toString();
@@ -615,6 +609,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 }
 
 MainWindow::~MainWindow() {
+    if (qApp) qApp->removeEventFilter(this);
     if (m_gameBarSuppressor) {
         m_gameBarSuppressor->setSuppressed(false); // 念のため復帰
     }
@@ -775,6 +770,9 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
 
             if (uniqueKey != m_selectedKeyboardUniqueKey) {
                 // 選択外のデバイスは無視
+                // 任意：調査用。頻繁に出るとログが膨らむので必要なら条件付きにする
+                DebugLog(L"[WM_INPUT][DROP] device mismatch. got=" +
+                         uniqueKey.toStdWString() + L" sel=" + m_selectedKeyboardUniqueKey.toStdWString());
                 *result = 0;
                 return false;
             }
@@ -1178,9 +1176,43 @@ void MainWindow::refreshKeyboardList() {
         for (int i = 0; i < ui.comboBox->count(); ++i) {
             if (ui.comboBox->itemData(i).toString() == prevPath) {
                 ui.comboBox->setCurrentIndex(i);
+                // Update internal state explicitly as activated() signal is not emitted programmatically
+                m_selectedKeyboardPath = ui.comboBox->currentData().toString();
+                m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString();
                 return;
             }
         }
     }
-    if (ui.comboBox->count() > 0) ui.comboBox->setCurrentIndex(0);
+    if (ui.comboBox->count() > 0) {
+        ui.comboBox->setCurrentIndex(0);
+        // Update internal state explicitly
+        m_selectedKeyboardPath = ui.comboBox->currentData().toString();
+        m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString();
+    }
+}
+
+bool MainWindow::eventFilter(QObject* watched, QEvent* e)
+{
+    Q_UNUSED(watched);
+
+    // ピンポイント：Win+Alt+Down だけローカルUIへ流さない
+    if (e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease || e->type() == QEvent::ShortcutOverride) {
+        // Winはフックで握り潰されることがあるので、物理状態を GetAsyncKeyState で判定する。
+        const SHORT winL = GetAsyncKeyState(VK_LWIN);
+        const SHORT winR = GetAsyncKeyState(VK_RWIN);
+        const SHORT alt  = GetAsyncKeyState(VK_MENU);
+        const bool winHeld = (winL & 0x8000) || (winR & 0x8000);
+        const bool altHeld = (alt  & 0x8000);
+
+        if (winHeld && altHeld) {
+            auto* ke = static_cast<QKeyEvent*>(e);
+            if (ke && ke->key() == Qt::Key_Down) {
+                // 保険：すでに開いていたら閉じる（開きかけも潰す）
+                if (ui.comboBox) ui.comboBox->hidePopup();
+                e->accept();
+                return true;
+            }
+        }
+    }
+    return QMainWindow::eventFilter(watched, e);
 }
