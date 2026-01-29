@@ -829,6 +829,9 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             const RAWINPUT* ri = (const RAWINPUT*)buf.data();
             const RAWKEYBOARD& k = ri->data.keyboard;
 
+            const bool isUpNow = (k.Flags & RI_KEY_BREAK) != 0;
+            const bool isWinSc = (k.MakeCode == 0x5B || k.MakeCode == 0x5C);
+
             // 重要:
             //   RIDEV_INPUTSINK を使っているため、非アクティブでもWM_INPUTが来る。
             //   ここで非アクティブ即returnすると、Winキー等でフォーカスが外れた後の「KEY UP」が捨てられ、
@@ -839,14 +842,13 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             const bool activeNow = this->isActiveWindow() || IsForegroundOurProcess();
 
             // 仕様: 非フォーカス(非最前面)時はローカルのみ。サーバーへは送らない。
-            if (!activeNow)
-            {
-                *result = 0;
-                return false;
+            if (!activeNow) {
+                // UPは通す（押しっぱなし防止）。WinだけはDownも通す（保険）。
+                if (!(isUpNow || isWinSc)) {
+                    *result = 0;
+                    return false;
+                }
             }
-
-            const bool isUpNow = (k.Flags & RI_KEY_BREAK) != 0;
-            const bool isWinSc = (k.MakeCode == 0x5B || k.MakeCode == 0x5C);
             const bool winCaptured = (g_winCapturedMask.load(std::memory_order_relaxed) != 0);
 
             // MakeCode + Flags を送る（文字変換はしない）
