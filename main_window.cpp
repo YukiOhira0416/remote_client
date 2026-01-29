@@ -591,6 +591,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     // selection cache
     if (ui.comboBox) {
+        // マウス操作のみでOK（キーボードの↑/↓/Alt+↓等でコンボが反応してしまうのを防ぐ）
+        ui.comboBox->setFocusPolicy(Qt::NoFocus);
+
         m_selectedKeyboardPath = ui.comboBox->currentData().toString();
         m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString();
         QObject::connect(ui.comboBox, QOverload<int>::of(&QComboBox::activated),
@@ -598,6 +601,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
                 if (!ui.comboBox || index < 0) return;
                 m_selectedKeyboardPath = ui.comboBox->currentData().toString();
                 m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString();
+
+                // 重要: コンボ操作後はレンダリング領域へフォーカスを戻す（矢印キー等がUIに吸われないようにする）
+                if (ui.frame) ui.frame->setFocus(Qt::OtherFocusReason);
             });
     }
 
@@ -768,7 +774,8 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
                 }
             }
 
-            if (uniqueKey != m_selectedKeyboardUniqueKey) {
+            const bool acceptAllKeyboards = (m_selectedKeyboardUniqueKey == QStringLiteral("*"));
+            if (!acceptAllKeyboards && uniqueKey != m_selectedKeyboardUniqueKey) {
                 // 選択外のデバイスは無視
                 // 任意：調査用。頻繁に出るとログが膨らむので必要なら条件付きにする
                 DebugLog(L"[WM_INPUT][DROP] device mismatch. got=" +
@@ -1110,11 +1117,18 @@ std::vector<MainWindow::KeyboardEntry> MainWindow::enumerateKeyboards() const {
 void MainWindow::refreshKeyboardList() {
     if (!ui.comboBox) return;
 
-    const QString prevPath = ui.comboBox->currentData().toString();
+    const QString prevPath = m_selectedKeyboardPath.isEmpty() ? ui.comboBox->currentData().toString() : m_selectedKeyboardPath;
+    const QString prevUniqueKey = m_selectedKeyboardUniqueKey;
     const auto keyboards = enumerateKeyboards();
 
     QSignalBlocker blocker(ui.comboBox);
     ui.comboBox->clear();
+
+    // 0: All Keyboards (recommended)
+    ui.comboBox->addItem(QStringLiteral("All Keyboards"), QString());
+    ui.comboBox->setItemData(0, QStringLiteral("All connected keyboards"), Qt::ToolTipRole);
+    ui.comboBox->setItemData(0, QVariant::fromValue((void*)nullptr), Qt::UserRole + 1);
+    ui.comboBox->setItemData(0, QStringLiteral("*"), Qt::UserRole + 2);
 
     int builtInIndex = 0;
     int usbIndex = 0;
@@ -1157,11 +1171,12 @@ void MainWindow::refreshKeyboardList() {
 
         // userData に devicePath を入れて選択維持に使う
         ui.comboBox->addItem(label, k.devicePath);
-        ui.comboBox->setItemData(i, k.devicePath, Qt::ToolTipRole);
+        const int idx = ui.comboBox->count() - 1;
+        ui.comboBox->setItemData(idx, k.devicePath, Qt::ToolTipRole);
         // UserRole + 1 に HANDLE を隠し持つ (レガシー/互換用)
-        ui.comboBox->setItemData(i, QVariant::fromValue((void*)k.hDevice), Qt::UserRole + 1);
+        ui.comboBox->setItemData(idx, QVariant::fromValue((void*)k.hDevice), Qt::UserRole + 1);
         // UserRole + 2 に uniqueKey を持つ (堅牢なマッチング用)
-        ui.comboBox->setItemData(i, k.uniqueKey, Qt::UserRole + 2);
+        ui.comboBox->setItemData(idx, k.uniqueKey, Qt::UserRole + 2);
     }
 
     // 更新ごとにハンドルマップをリセット
@@ -1171,21 +1186,29 @@ void MainWindow::refreshKeyboardList() {
         m_handleToUniqueKey[k.hDevice] = k.uniqueKey;
     }
 
-    // 選択維持
-    if (!prevPath.isEmpty()) {
+    // 選択維持（uniqueKey優先。devicePathは変化しやすい）
+    auto findIndexByUnique = [&](const QString& key) -> int {
+        if (key.isEmpty()) return -1;
         for (int i = 0; i < ui.comboBox->count(); ++i) {
-            if (ui.comboBox->itemData(i).toString() == prevPath) {
-                ui.comboBox->setCurrentIndex(i);
-                // Update internal state explicitly as activated() signal is not emitted programmatically
-                m_selectedKeyboardPath = ui.comboBox->currentData().toString();
-                m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString();
-                return;
-            }
+            if (ui.comboBox->itemData(i, Qt::UserRole + 2).toString() == key) return i;
         }
-    }
+        return -1;
+    };
+    auto findIndexByPath = [&](const QString& path) -> int {
+        if (path.isEmpty()) return -1;
+        for (int i = 0; i < ui.comboBox->count(); ++i) {
+            if (ui.comboBox->itemData(i).toString() == path) return i;
+        }
+        return -1;
+    };
+
+    int idx = findIndexByUnique(prevUniqueKey);
+    if (idx < 0) idx = findIndexByPath(prevPath);
+    if (idx < 0) idx = 0; // fallback: All Keyboards
+
     if (ui.comboBox->count() > 0) {
-        ui.comboBox->setCurrentIndex(0);
-        // Update internal state explicitly
+        ui.comboBox->setCurrentIndex(std::clamp(idx, 0, ui.comboBox->count() - 1));
+        // Update internal state explicitly as activated() signal is not emitted programmatically
         m_selectedKeyboardPath = ui.comboBox->currentData().toString();
         m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString();
     }
@@ -1193,21 +1216,39 @@ void MainWindow::refreshKeyboardList() {
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* e)
 {
-    Q_UNUSED(watched);
-
-    // ピンポイント：Win+Alt+Down だけローカルUIへ流さない
+    // コンボボックスが「矢印キー / Alt+矢印 / Win+Alt+矢印」で反応してしまい、
+    // ・ローカルUIが動く（ドロップダウンが開く／選択が変わる）
+    // ・結果として m_selectedKeyboardUniqueKey が意図せず変わり、WM_INPUT が device mismatch でDROPされる
+    // という不具合に直結するため、コンボが関与するキー入力はピンポイントで握り潰す。
     if (e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease || e->type() == QEvent::ShortcutOverride) {
-        // Winはフックで握り潰されることがあるので、物理状態を GetAsyncKeyState で判定する。
-        const SHORT winL = GetAsyncKeyState(VK_LWIN);
-        const SHORT winR = GetAsyncKeyState(VK_RWIN);
-        const SHORT alt  = GetAsyncKeyState(VK_MENU);
-        const bool winHeld = (winL & 0x8000) || (winR & 0x8000);
-        const bool altHeld = (alt  & 0x8000);
+        auto* ke = static_cast<QKeyEvent*>(e);
+        if (ke) {
+            const int key = ke->key();
+            const bool isArrowUpDown = (key == Qt::Key_Up || key == Qt::Key_Down);
 
-        if (winHeld && altHeld) {
-            auto* ke = static_cast<QKeyEvent*>(e);
-            if (ke && ke->key() == Qt::Key_Down) {
-                // 保険：すでに開いていたら閉じる（開きかけも潰す）
+            if (ui.comboBox && isArrowUpDown) {
+                QWidget* fw = QApplication::focusWidget();
+                const bool comboFocused =
+                    fw && (fw == ui.comboBox || ui.comboBox->isAncestorOf(fw));
+
+                // 要件: コンボボックスが Win+Alt+↑/↓, Alt+↑/↓, ↑/↓ に反応しないようにする
+                if (comboFocused) {
+                    ui.comboBox->hidePopup();
+                    if (ui.frame) ui.frame->setFocus(Qt::OtherFocusReason);
+                    e->accept();
+                    return true;
+                }
+            }
+
+            // さらに保険：Win+Alt+↑/↓ はフォーカス状況次第で Qt のショートカット処理に吸われることがあるため、
+            // これだけは全体イベントとして抑止しておく（ローカルUIに絶対流さない）。
+            const SHORT winL = GetAsyncKeyState(VK_LWIN);
+            const SHORT winR = GetAsyncKeyState(VK_RWIN);
+            const SHORT alt  = GetAsyncKeyState(VK_MENU);
+            const bool winHeld = (winL & 0x8000) || (winR & 0x8000);
+            const bool altHeld = (alt  & 0x8000);
+
+            if (winHeld && altHeld && isArrowUpDown) {
                 if (ui.comboBox) ui.comboBox->hidePopup();
                 e->accept();
                 return true;
