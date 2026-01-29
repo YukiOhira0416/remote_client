@@ -51,11 +51,14 @@ private:
     void registerKeyboardDeviceNotifications();
     void scheduleKeyboardListRefresh();
     void refreshKeyboardList();
+    void updateSelectedKeyboard();
     std::vector<KeyboardEntry> enumerateKeyboards() const;
 
     bool m_keyboardRefreshPending = false;
     QString m_selectedKeyboardPath; // combo selection cache
     QString m_selectedKeyboardUniqueKey;
+    bool m_rawNoLegacyEnabled = false; // フォーカス中にNOLEGACYで登録できているか
+
     QMap<HANDLE, QString> m_handleToUniqueKey;
     QMap<HANDLE, bool> m_handleToIsJapanese;
 

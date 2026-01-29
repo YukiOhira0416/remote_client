@@ -394,6 +394,37 @@ static bool TryGetContainerIdKey(const QString& deviceInterfacePath, QString& ou
     return true;
 }
 
+static QString ResolveUniqueKeyBestEffort(const QString& devicePath)
+{
+    QString key;
+    if (TryGetContainerIdKey(devicePath, key)) {
+        return key.toUpper();
+    }
+    // コンテナIDが取れない/無効ならパス正規化にフォールバック
+    return NormalizeDevicePathForKey(devicePath).toUpper();
+}
+
+static bool IsInvalidSelectedKey(const QString& key)
+{
+    return key.isEmpty() || IsInvalidContainerIdKey(key.toUpper());
+}
+
+static void InjectLocalFromRawKeyboard(const RAWKEYBOARD& k)
+{
+    INPUT in{};
+    in.type = INPUT_KEYBOARD;
+    in.ki.wVk = 0;
+    in.ki.wScan = (WORD)k.MakeCode;
+    in.ki.dwFlags = KEYEVENTF_SCANCODE;
+    if (k.Flags & RI_KEY_E0) in.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+    if (k.Flags & RI_KEY_BREAK) in.ki.dwFlags |= KEYEVENTF_KEYUP;
+
+    // NOTE: RI_KEY_E1(Pause等)は完全再現が難しいが、まずは一般キー優先
+    if (SendInput(1, &in, sizeof(INPUT)) == 0) {
+        DebugLog(L"[LocalInject] SendInput failed. err=" + std::to_wstring(GetLastError()));
+    }
+}
+
 static bool IsHidKeyboardByPreparsedData(const QString& deviceInterfacePath) {
     const QString fixedPath = FixupForWin32DevicePath(deviceInterfacePath);
     const std::wstring pathW = fixedPath.toStdWString();
@@ -613,13 +644,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         // マウス操作のみ要件：キーボードフォーカスを取らせない（Alt+↓/矢印で反応させない）
         ui.comboBox->setFocusPolicy(Qt::NoFocus);
 
-        m_selectedKeyboardPath = ui.comboBox->currentData().toString();
-        m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString();
+        updateSelectedKeyboard();
         QObject::connect(ui.comboBox, QOverload<int>::of(&QComboBox::activated),
             this, [this](int index) {
                 if (!ui.comboBox || index < 0) return;
-                m_selectedKeyboardPath = ui.comboBox->currentData().toString();
-                m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString();
+                updateSelectedKeyboard();
 
                 // コンボ操作後は常にレンダリング領域へフォーカス復帰（矢印等がUIに入らないように）
                 if (ui.frame) ui.frame->setFocus(Qt::OtherFocusReason);
@@ -758,6 +787,13 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
                 return false;
             }
 
+            const bool activeNow = this->isActiveWindow() || IsForegroundOurProcess();
+            // 仕様: 非フォーカス時はローカルのみ。リモートへは送らない。
+            if (!activeNow) {
+                *result = 0;
+                return false;
+            }
+
             HRAWINPUT hRaw = (HRAWINPUT)msg->lParam;
 
             // 1. まずヘッダーだけ取得してデバイス判定を先に行う (効率化)
@@ -793,26 +829,10 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
                 }
             }
 
-            if (uniqueKey != m_selectedKeyboardUniqueKey) {
-                // 選択外のデバイスは無視
-                // 任意：調査用。頻繁に出るとログが膨らむので必要なら条件付きにする
-                DebugLog(L"[WM_INPUT][DROP] device mismatch. got=" +
-                         uniqueKey.toStdWString() + L" sel=" + m_selectedKeyboardUniqueKey.toStdWString());
-                *result = 0;
-                return false;
-            }
+            const bool selected =
+                (uniqueKey.compare(m_selectedKeyboardUniqueKey, Qt::CaseInsensitive) == 0);
 
-            // Selected device is confirmed. Determine whether this raw keyboard device is JP(106/109).
-            bool isJapaneseKeyboard = false;
-            auto itJ = m_handleToIsJapanese.find(header.hDevice);
-            if (itJ != m_handleToIsJapanese.end()) {
-                isJapaneseKeyboard = itJ.value();
-            } else {
-                isJapaneseKeyboard = QueryIsJapaneseKeyboardRawDevice(header.hDevice);
-                m_handleToIsJapanese[header.hDevice] = isJapaneseKeyboard;
-            }
-
-            // 2. 選択デバイスと一致した場合のみ、全データを取得
+            // 2. データを取得（選択有無にかかわらず、再注入のために必要）
             UINT size = 0;
             GetRawInputData(hRaw, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER));
             if (size == 0) {
@@ -829,20 +849,29 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
             const RAWINPUT* ri = (const RAWINPUT*)buf.data();
             const RAWKEYBOARD& k = ri->data.keyboard;
 
-            // 重要:
-            //   RIDEV_INPUTSINK を使っているため、非アクティブでもWM_INPUTが来る。
-            //   ここで非アクティブ即returnすると、Winキー等でフォーカスが外れた後の「KEY UP」が捨てられ、
-            //   リモート側が押しっぱなしになる。
-            //   → 非アクティブ時は「UPだけ通す」(Downは無視)。
-            //   ただし、Winキー(0x5B/0x5C)に関しては、ローカルStartメニューでフォーカスが奪われた場合でも
-            //   リモートへ送信したいため、例外的にDownも通す(保険)。
-            const bool activeNow = this->isActiveWindow() || IsForegroundOurProcess();
-
-            // 仕様: 非フォーカス(非最前面)時はローカルのみ。サーバーへは送らない。
-            if (!activeNow)
-            {
+            // 選択外キーボード：
+            // フォーカス中はNOLEGACYで物理入力がローカルに届かないため、ここでローカルに戻す
+            // リモートへは送らない
+            if (!selected) {
+                if (m_rawNoLegacyEnabled) {
+                    InjectLocalFromRawKeyboard(k);
+                } else {
+                    // 診断用：本来フォーカス中はNOLEGACYになっている想定
+                    DebugLog(L"[WM_INPUT][WARN] mismatch while NOLEGACY disabled. got=" +
+                             uniqueKey.toStdWString() + L" sel=" + m_selectedKeyboardUniqueKey.toStdWString());
+                }
                 *result = 0;
                 return false;
+            }
+
+            // Selected device is confirmed. Determine whether this raw keyboard device is JP(106/109).
+            bool isJapaneseKeyboard = false;
+            auto itJ = m_handleToIsJapanese.find(header.hDevice);
+            if (itJ != m_handleToIsJapanese.end()) {
+                isJapaneseKeyboard = itJ.value();
+            } else {
+                isJapaneseKeyboard = QueryIsJapaneseKeyboardRawDevice(header.hDevice);
+                m_handleToIsJapanese[header.hDevice] = isJapaneseKeyboard;
             }
 
             const bool isUpNow = (k.Flags & RI_KEY_BREAK) != 0;
@@ -978,20 +1007,27 @@ void MainWindow::registerKeyboardDeviceNotifications() {
     RAWINPUTDEVICE rid{};
     rid.usUsagePage = HID_USAGE_PAGE_GENERIC;          // 0x01
     rid.usUsage = HID_USAGE_GENERIC_KEYBOARD;         // 0x06
-    // RIDEV_INPUTSINK: フォーカスがなくても入力を受ける（生入力は受け続ける）
-    // RIDEV_DEVNOTIFY: デバイス変更通知を受ける
-    // RIDEV_NOHOTKEYS: フォーカス中はWinホットキー(スタートメニュー等)をOS側で抑止する
+
+    const bool activeNow = this->isActiveWindow() || IsForegroundOurProcess();
+
+    // DEVNOTIFY: ホットプラグ通知
+    // INPUTSINK: WM_INPUTは届く（ただし処理はactiveNowで制御）
     DWORD flags = RIDEV_DEVNOTIFY | RIDEV_INPUTSINK;
-    if (this->isActiveWindow()) {
-        flags |= RIDEV_NOHOTKEYS;
+
+    // フォーカス中はNOLEGACYで「物理キーがローカルOS/Qtへ直接届く」のを止める
+    // ※非選択キーボードは WM_INPUT 側で SendInput でローカルに戻す
+    if (activeNow) {
+        flags |= RIDEV_NOLEGACY;
     }
     rid.dwFlags = flags;
     rid.hwndTarget = hwnd;
 
     if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) {
         DebugLog(L"[RawInput] RegisterRawInputDevices failed. err=" + std::to_wstring(GetLastError()));
+        m_rawNoLegacyEnabled = false;
     } else {
         DebugLog(L"[RawInput] RegisterRawInputDevices ok. flags=" + std::to_wstring((unsigned long)flags));
+        m_rawNoLegacyEnabled = activeNow && ((flags & RIDEV_NOLEGACY) != 0);
     }
 }
 
@@ -1129,6 +1165,15 @@ std::vector<MainWindow::KeyboardEntry> MainWindow::enumerateKeyboards() const {
     return out;
 }
 
+void MainWindow::updateSelectedKeyboard() {
+    if (!ui.comboBox) return;
+    m_selectedKeyboardPath = ui.comboBox->currentData().toString();
+    m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString().toUpper();
+    if (IsInvalidSelectedKey(m_selectedKeyboardUniqueKey)) {
+        m_selectedKeyboardUniqueKey = ResolveUniqueKeyBestEffort(m_selectedKeyboardPath);
+    }
+}
+
 void MainWindow::refreshKeyboardList() {
     if (!ui.comboBox) return;
 
@@ -1199,8 +1244,7 @@ void MainWindow::refreshKeyboardList() {
         for (int i = 0; i < ui.comboBox->count(); ++i) {
             if (ui.comboBox->itemData(i, Qt::UserRole + 2).toString() == prevUniqueKey) {
                 ui.comboBox->setCurrentIndex(i);
-                m_selectedKeyboardPath = ui.comboBox->currentData().toString();
-                m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString();
+                updateSelectedKeyboard();
                 return;
             }
         }
@@ -1210,8 +1254,7 @@ void MainWindow::refreshKeyboardList() {
             if (ui.comboBox->itemData(i).toString() == prevPath) {
                 ui.comboBox->setCurrentIndex(i);
                 // Update internal state explicitly as activated() signal is not emitted programmatically
-                m_selectedKeyboardPath = ui.comboBox->currentData().toString();
-                m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString();
+                updateSelectedKeyboard();
                 return;
             }
         }
@@ -1219,8 +1262,7 @@ void MainWindow::refreshKeyboardList() {
     if (ui.comboBox->count() > 0) {
         ui.comboBox->setCurrentIndex(0);
         // Update internal state explicitly
-        m_selectedKeyboardPath = ui.comboBox->currentData().toString();
-        m_selectedKeyboardUniqueKey = ui.comboBox->currentData(Qt::UserRole + 2).toString();
+        updateSelectedKeyboard();
     }
 }
 
