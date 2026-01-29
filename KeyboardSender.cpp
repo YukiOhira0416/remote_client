@@ -265,7 +265,7 @@ void KeyboardSendThread(std::atomic<bool>& running)
 
                 active = newActive;
                 lastActivity = std::chrono::steady_clock::now();
-                DebugLog(L"[KeyboardSender] Focus=%s", active ? L"ON" : L"OFF");
+                DebugLog(std::wstring(L"[KeyboardSender] Focus=") + (active ? L"ON" : L"OFF"));
                 continue;
             }
 
