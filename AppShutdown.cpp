@@ -109,6 +109,7 @@ void ReleaseAllResources(const AppThreads& threads) {
             SafeJoinVector(threads.fecWorkerThreads, L"fecWorkerThreads");
             SafeJoinVector(threads.nvdecThreads, L"nvdecThreads");
             SafeJoin(threads.rebootListenerThread, L"rebootListenerThread");
+            SafeJoin(threads.frameMonitorThread, L"frameMonitorThread");
         } catch (...) {
             DebugLog(L"ReleaseAllResources: exception during thread join (ignored to continue cleanup).");
         }

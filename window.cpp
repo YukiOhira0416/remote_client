@@ -1756,6 +1756,7 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
             g_lastDrawnFrame = newFrameFromReorder;
             newFrameFromReorder.copyDone = nullptr; // Ownership transferred to cache
             UpdateVideoTimestamp(g_lastDrawnFrame.timestamp);
+            g_lastFrameTickMs.store(SteadyNowMs(), std::memory_order_relaxed);
         }
 
         if (g_lastDrawnFrame.hw_decoded_texture_Y) {
