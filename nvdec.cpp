@@ -699,8 +699,16 @@ int FrameDecoder::HandlePictureDisplay(void* pUserData, CUVIDPARSERDISPINFO* pDi
     cpy.srcMemoryType = CU_MEMORYTYPE_DEVICE;
     cpy.dstMemoryType = CU_MEMORYTYPE_ARRAY;
     cpy.srcPitch      = nDecodedPitch;
+    // Read only the display area from the decoded coded frame
     cpy.srcXInBytes   = static_cast<size_t>(self->m_cropLeft) * bytesPerSample;
     cpy.srcY          = static_cast<size_t>(self->m_cropTop);
+
+    // IMPORTANT:
+    // Place the display area back into the correct coded-space position.
+    // Without this, when display_area.left/top != 0, the rendered image shifts by a constant offset.
+    cpy.dstXInBytes   = static_cast<size_t>(self->m_cropLeft) * bytesPerSample;
+    cpy.dstY          = static_cast<size_t>(self->m_cropTop);
+
     cpy.WidthInBytes  = copyWidthBytes;
     cpy.Height        = copyHeightRows;
 

@@ -671,8 +671,14 @@ bool TransformCursorPos(HWND hWnd, int& outX, int& outY) {
 
     // Since we now stretch/fit the video to the entire backbuffer,
     // we map the client coordinates directly to the video resolution.
-    float u = static_cast<float>(p.x) / bbWidth;
-    float v = static_cast<float>(p.y) / bbHeight;
+
+    // Map [0 .. bb-1] -> [0 .. video-1] to avoid systematic bias at edges.
+    const float denomX = (bbWidth  > 1.0f) ? (bbWidth  - 1.0f) : 1.0f;
+    const float denomY = (bbHeight > 1.0f) ? (bbHeight - 1.0f) : 1.0f;
+    float u = static_cast<float>(p.x) / denomX;
+    float v = static_cast<float>(p.y) / denomY;
+    u = std::max(0.0f, std::min(1.0f, u));
+    v = std::max(0.0f, std::min(1.0f, v));
 
     outX = static_cast<int>(round(u * (videoW - 1)));
     outY = static_cast<int>(round(v * (videoH - 1)));
