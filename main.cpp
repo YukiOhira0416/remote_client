@@ -1123,6 +1123,36 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     // The app_running_atomic is now a global atomic defined in Globals.cpp
     // The windowSenderThread is removed as it's part of the old logic.
 
+    std::thread frameMonitorThread([]{
+        DebugLog(L"FrameMonitorThread started.");
+        while (app_running_atomic.load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+
+            // Only monitor if network is ready
+            if (!g_networkReady.load(std::memory_order_acquire)) continue;
+
+            uint64_t last = g_lastFrameTickMs.load(std::memory_order_relaxed);
+            if (last == 0) continue; // No frame rendered yet
+
+            uint64_t now = SteadyNowMs();
+            // 1.5s timeout
+            if (now > last && (now - last) > 1500) {
+                 static uint64_t lastRequestTime = 0;
+                 // Don't spam requests. Let's say once every 1.5 seconds if still stuck.
+                 if (now > lastRequestTime && (now - lastRequestTime) > 1500) {
+                     DebugLog(L"FrameMonitorThread: No new frame for " + std::to_wstring(now - last) + L" ms. Requesting resync.");
+                     int w = currentResolutionWidth.load();
+                     int h = currentResolutionHeight.load();
+                     if (w > 0 && h > 0) {
+                        SendFinalResolution(w, h);
+                     }
+                     lastRequestTime = now;
+                 }
+            }
+        }
+        DebugLog(L"FrameMonitorThread stopped.");
+    });
+
     // Main render loop integrated into Qt
     QTimer renderTimer;
     QObject::connect(&renderTimer, &QTimer::timeout, []() {
@@ -1131,6 +1161,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     renderTimer.start(0); // Pacing is handled inside RenderFrame by DXGI waitable object
 
     a.exec();
+
+    // Signal app is stopping for threads checking this flag
+    app_running_atomic.store(false, std::memory_order_relaxed);
 
     // Centralized Cleanup
     StopAudioThreads();
@@ -1143,6 +1176,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     appThreads.nvdecThreads = &nvdecThreads;
     appThreads.inputSenderThread = &inputSenderThread;
     appThreads.input_sender_running = &input_sender_running;
+    appThreads.frameMonitorThread = &frameMonitorThread;
 
     // This single call handles joining all threads and releasing all resources idempotently.
     ReleaseAllResources(appThreads);

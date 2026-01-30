@@ -12,6 +12,7 @@ struct AppThreads {
     std::thread* rebootListenerThread = nullptr;
     std::thread* inputSenderThread = nullptr;
     std::atomic<bool>* input_sender_running = nullptr;
+    std::thread* frameMonitorThread = nullptr;
 };
 
 // Asynchronous signal: sets flags and, if necessary, exits the message loop.

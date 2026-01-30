@@ -48,6 +48,7 @@ static inline uint64_t SteadyNowMs() noexcept {
 extern std::atomic<uint64_t> g_streamGeneration;
 extern std::atomic<uint64_t> g_latencyEpochMs;
 extern std::atomic<uint64_t> g_lastIdrMs;
+extern std::atomic<uint64_t> g_lastFrameTickMs;
 
 // String conversion utility
 std::wstring ConvertToWString(const std::string& str);

@@ -18,6 +18,7 @@ std::atomic<bool> dumpEncodedStreamToFiles(false);
 std::atomic<uint64_t> g_streamGeneration(0);
 std::atomic<uint64_t> g_latencyEpochMs(0);
 std::atomic<uint64_t> g_lastIdrMs(0);
+std::atomic<uint64_t> g_lastFrameTickMs(0);
 
 PendingResize g_pendingResize;
 
