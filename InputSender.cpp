@@ -158,7 +158,10 @@ void InputSendThread(std::atomic<bool>& running) {
                     memcpy(packetData.data(), &header, sizeof(header));
                     memcpy(packetData.data() + sizeof(header), dataShards[i].data(), shard_len);
 
-                    sendto(udpSocket, (const char*)packetData.data(), packetData.size(), 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
+                    int sent = sendto(udpSocket, (const char*)packetData.data(), (int)packetData.size(), 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
+                    if (sent == SOCKET_ERROR) {
+                        DebugLog(L"InputSender: sendto(data) failed: " + std::to_wstring(WSAGetLastError()));
+                    }
                 }
 
                 for (int i = 0; i < RS_M; ++i) {
@@ -173,7 +176,10 @@ void InputSendThread(std::atomic<bool>& running) {
                     memcpy(packetData.data(), &header, sizeof(header));
                     memcpy(packetData.data() + sizeof(header), parityShards[i].data(), shard_len);
 
-                    sendto(udpSocket, (const char*)packetData.data(), packetData.size(), 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
+                    int sent2 = sendto(udpSocket, (const char*)packetData.data(), (int)packetData.size(), 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
+                    if (sent2 == SOCKET_ERROR) {
+                        DebugLog(L"InputSender: sendto(parity) failed: " + std::to_wstring(WSAGetLastError()));
+                    }
                 }
                 lastSendTime = now;
             }
