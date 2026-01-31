@@ -245,7 +245,8 @@ Microsoft::WRL::ComPtr<ID3D12PipelineState> g_overlayTextPso;
 Microsoft::WRL::ComPtr<ID3D12RootSignature> g_overlayRootSignature;
 Microsoft::WRL::ComPtr<ID3D12Resource> g_overlayVertexBuffer;
 D3D12_VERTEX_BUFFER_VIEW g_overlayVertexBufferView;
-Microsoft::WRL::ComPtr<ID3D12Resource> g_textTextureNormal;
+static constexpr int kRebootSpinnerFrameCount = 4;
+Microsoft::WRL::ComPtr<ID3D12Resource> g_textTextureNormalAnim[kRebootSpinnerFrameCount];
 Microsoft::WRL::ComPtr<ID3D12Resource> g_textTextureTimeout;
 Microsoft::WRL::ComPtr<ID3D12Resource> g_textTextureBurst;
 Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_textSrvHeap;
@@ -1324,7 +1325,9 @@ void CleanupOverlayResources() {
     g_overlayTextPso.Reset();
     g_overlayRootSignature.Reset();
     g_overlayVertexBuffer.Reset();
-    g_textTextureNormal.Reset();
+    for (int i = 0; i < kRebootSpinnerFrameCount; ++i) {
+        g_textTextureNormalAnim[i].Reset();
+    }
     g_textTextureTimeout.Reset();
     g_textTextureBurst.Reset();
     g_textSrvHeap.Reset();
@@ -1619,13 +1622,18 @@ bool CreateOverlayResources() {
     g_overlayVertexBufferView.SizeInBytes = vertexBufferSize;
 
     // --- Create Text Textures ---
-    if (!CreateTextTexture(L"System Rebooting...", &g_textTextureNormal)) return false;
-    if (!CreateTextTexture(L"Connection Lost... Waiting", &g_textTextureTimeout)) return false;
-    if (!CreateTextTexture(L"Server Restart Loop Detected", &g_textTextureBurst)) return false;
+    const wchar_t* kSpinnerFrames[kRebootSpinnerFrameCount] = { L"◴", L"◷", L"◶", L"◵" };
+    for (int i = 0; i < kRebootSpinnerFrameCount; ++i) {
+        std::wstring msg = L"The server is now rebooting. ";
+        msg += kSpinnerFrames[i];
+        if (!CreateTextTexture(msg.c_str(), &g_textTextureNormalAnim[i])) return false;
+    }
+    if (!CreateTextTexture(L"Reconnecting to server...", &g_textTextureTimeout)) return false;
+    if (!CreateTextTexture(L"Syncing stream...", &g_textTextureBurst)) return false;
 
     // Create SRV for the text textures (Heap of size 3)
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-    srvHeapDesc.NumDescriptors = 3;
+    srvHeapDesc.NumDescriptors = kRebootSpinnerFrameCount + 2;
     srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     hr = g_d3d12Device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&g_textSrvHeap));
@@ -1643,8 +1651,10 @@ bool CreateOverlayResources() {
     CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(g_textSrvHeap->GetCPUDescriptorHandleForHeapStart());
     UINT descriptorSize = g_d3d12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    g_d3d12Device->CreateShaderResourceView(g_textTextureNormal.Get(), &srvDesc, hDescriptor);
-    hDescriptor.Offset(1, descriptorSize);
+    for (int i = 0; i < kRebootSpinnerFrameCount; ++i) {
+        g_d3d12Device->CreateShaderResourceView(g_textTextureNormalAnim[i].Get(), &srvDesc, hDescriptor);
+        hDescriptor.Offset(1, descriptorSize);
+    }
     g_d3d12Device->CreateShaderResourceView(g_textTextureTimeout.Get(), &srvDesc, hDescriptor);
     hDescriptor.Offset(1, descriptorSize);
     g_d3d12Device->CreateShaderResourceView(g_textTextureBurst.Get(), &srvDesc, hDescriptor);
@@ -1905,11 +1915,13 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         uint64_t now = GetTickCount64();
 
         if (burst > 2) {
-            hDescriptor.Offset(2, descriptorSize); // Burst
+            hDescriptor.Offset(kRebootSpinnerFrameCount + 1, descriptorSize); // Burst
         } else if (start != 0 && (now - start > 8000)) {
-            hDescriptor.Offset(1, descriptorSize); // Timeout
+            hDescriptor.Offset(kRebootSpinnerFrameCount, descriptorSize); // Timeout
         } else {
-            // Normal (offset 0)
+            const uint64_t elapsedMs = (start != 0 && now > start) ? (now - start) : 0;
+            const UINT animIdx = static_cast<UINT>((elapsedMs / 100) % kRebootSpinnerFrameCount);
+            hDescriptor.Offset(animIdx, descriptorSize);
         }
 
         g_commandList->SetGraphicsRootDescriptorTable(0, hDescriptor);

@@ -918,6 +918,8 @@ void ListenForRebootCommands() {
                     if (strcmp(recvbuf, "REBOOTSTART") == 0) {
                         DebugLog(L"ListenForRebootCommands: Received REBOOTSTART.");
                         g_showRebootOverlay = true;
+                        // New server instance may reset stream frame numbers. Clear reorder state so new frames can be presented.
+                        ClearReorderState();
 
                         const uint64_t now = GetTickCount64();
                         g_rebootOverlayStartMs.store(now);
@@ -948,6 +950,8 @@ void ListenForRebootCommands() {
                         g_showRebootOverlay = false;
                         g_rebootOverlayStartMs.store(0);
                         g_rebootStartBurst.store(0);
+                        // New server instance may reset stream frame numbers. Clear reorder state so new frames can be presented.
+                        ClearReorderState();
                         // Call the existing function to send window size
                         SendFinalResolution(currentResolutionWidth.load(std::memory_order_relaxed), currentResolutionHeight.load(std::memory_order_relaxed));
                     }
