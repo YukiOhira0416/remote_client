@@ -1125,6 +1125,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
     std::thread frameMonitorThread([]{
         DebugLog(L"FrameMonitorThread started.");
+        uint64_t prevLastTick = 0;
+        int noFrameStreak = 0;
+        uint64_t lastRequestTime = 0;
         while (app_running_atomic.load(std::memory_order_relaxed)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
 
@@ -1133,21 +1136,29 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
             uint64_t last = g_lastFrameTickMs.load(std::memory_order_relaxed);
             if (last == 0) continue; // No frame rendered yet
+            if (last != prevLastTick) {
+                // new frame came
+                prevLastTick = last;
+                noFrameStreak = 0;
+            }
 
             uint64_t now = SteadyNowMs();
             // 1.5s timeout
             if (now > last && (now - last) > 1500) {
-                 static uint64_t lastRequestTime = 0;
-                 // Don't spam requests. Let's say once every 1.5 seconds if still stuck.
-                 if (now > lastRequestTime && (now - lastRequestTime) > 1500) {
-                     DebugLog(L"FrameMonitorThread: No new frame for " + std::to_wstring(now - last) + L" ms. Requesting resync.");
-                     int w = currentResolutionWidth.load();
-                     int h = currentResolutionHeight.load();
-                     if (w > 0 && h > 0) {
+                noFrameStreak++;
+                // after several consecutive timeouts, backoff resync requests (e.g., secure desktop / capture paused)
+                uint64_t backoffMs = (noFrameStreak <= 3) ? 1500 : (noFrameStreak <= 10 ? 5000 : 15000);
+                if (now > lastRequestTime && (now - lastRequestTime) > backoffMs) {
+                    DebugLog(L"FrameMonitorThread: No new frame for " + std::to_wstring(now - last) +
+                             L" ms. streak=" + std::to_wstring(noFrameStreak) +
+                             L" backoff=" + std::to_wstring(backoffMs) + L"ms. Requesting resync.");
+                    int w = currentResolutionWidth.load();
+                    int h = currentResolutionHeight.load();
+                    if (w > 0 && h > 0) {
                         SendFinalResolution(w, h);
-                     }
-                     lastRequestTime = now;
-                 }
+                    }
+                    lastRequestTime = now;
+                }
             }
         }
         DebugLog(L"FrameMonitorThread stopped.");
