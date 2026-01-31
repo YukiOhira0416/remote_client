@@ -171,6 +171,8 @@ struct EncodedFrame {
 extern std::atomic<bool> app_running_atomic;
 extern std::atomic<bool> g_isSizing;
 extern std::atomic<bool> g_showRebootOverlay;
+extern std::atomic<uint64_t> g_rebootOverlayStartMs;
+extern std::atomic<int> g_rebootStartBurst;
 extern std::atomic<bool> g_forcePresentOnce; // Present at least once even if no new decoded frame
 extern std::atomic<bool> dumpEncodedStreamToFiles;
 

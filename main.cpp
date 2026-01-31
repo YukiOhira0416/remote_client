@@ -918,6 +918,17 @@ void ListenForRebootCommands() {
                     if (strcmp(recvbuf, "REBOOTSTART") == 0) {
                         DebugLog(L"ListenForRebootCommands: Received REBOOTSTART.");
                         g_showRebootOverlay = true;
+
+                        const uint64_t now = GetTickCount64();
+                        g_rebootOverlayStartMs.store(now);
+                        // Burst detection (simple)
+                        static uint64_t last = 0;
+                        if (last != 0 && (now - last) < 2000) {
+                            g_rebootStartBurst.fetch_add(1);
+                        } else {
+                            g_rebootStartBurst.store(0);
+                        }
+                        last = now;
                     }
                 }
                 closesocket(clientSocket);
@@ -935,6 +946,8 @@ void ListenForRebootCommands() {
                     if (strcmp(recvbuf, "REBOOTEND") == 0) {
                         DebugLog(L"ListenForRebootCommands: Received REBOOTEND.");
                         g_showRebootOverlay = false;
+                        g_rebootOverlayStartMs.store(0);
+                        g_rebootStartBurst.store(0);
                         // Call the existing function to send window size
                         SendFinalResolution(currentResolutionWidth.load(std::memory_order_relaxed), currentResolutionHeight.load(std::memory_order_relaxed));
                     }

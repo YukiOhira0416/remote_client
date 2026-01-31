@@ -245,7 +245,9 @@ Microsoft::WRL::ComPtr<ID3D12PipelineState> g_overlayTextPso;
 Microsoft::WRL::ComPtr<ID3D12RootSignature> g_overlayRootSignature;
 Microsoft::WRL::ComPtr<ID3D12Resource> g_overlayVertexBuffer;
 D3D12_VERTEX_BUFFER_VIEW g_overlayVertexBufferView;
-Microsoft::WRL::ComPtr<ID3D12Resource> g_textTexture;
+Microsoft::WRL::ComPtr<ID3D12Resource> g_textTextureNormal;
+Microsoft::WRL::ComPtr<ID3D12Resource> g_textTextureTimeout;
+Microsoft::WRL::ComPtr<ID3D12Resource> g_textTextureBurst;
 Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_textSrvHeap;
 
 static constexpr UINT kSwapChainBufferCount = 3; // was 2
@@ -1322,9 +1324,99 @@ void CleanupOverlayResources() {
     g_overlayTextPso.Reset();
     g_overlayRootSignature.Reset();
     g_overlayVertexBuffer.Reset();
-    g_textTexture.Reset();
+    g_textTextureNormal.Reset();
+    g_textTextureTimeout.Reset();
+    g_textTextureBurst.Reset();
     g_textSrvHeap.Reset();
     DebugLog(L"CleanupOverlayResources: Overlay resources cleaned up.");
+}
+
+static bool CreateTextTexture(const wchar_t* text, ID3D12Resource** ppTexture) {
+    const int textureWidth = 512;
+    const int textureHeight = 128;
+
+    HDC hdc = CreateCompatibleDC(nullptr);
+    if (!hdc) return false;
+
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = textureWidth;
+    bmi.bmiHeader.biHeight = -textureHeight; // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* pPixels = nullptr;
+    HBITMAP hBitmap = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &pPixels, NULL, 0);
+    if (!hBitmap) {
+        DeleteDC(hdc);
+        return false;
+    }
+
+    HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdc, hBitmap);
+
+    SetBkColor(hdc, RGB(0, 0, 0));
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, RGB(255, 255, 255));
+    HFONT hFont = CreateFont(32, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
+    HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
+
+    RECT rect = { 0, 0, textureWidth, textureHeight };
+    FillRect(hdc, &rect, (HBRUSH)GetStockObject(BLACK_BRUSH)); // Fill with black for debugging
+    DrawTextW(hdc, text, -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    // Cleanup GDI objects
+    SelectObject(hdc, hOldFont);
+    DeleteObject(hFont);
+    SelectObject(hdc, hOldBitmap);
+
+    // Create D3D12 Texture
+    auto texHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+    auto texDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_B8G8R8A8_UNORM, textureWidth, textureHeight, 1, 1);
+    HRESULT hr = g_d3d12Device->CreateCommittedResource(&texHeapProps, D3D12_HEAP_FLAG_NONE, &texDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(ppTexture));
+    if (FAILED(hr)) {
+        DebugLog(L"CreateTextTexture: CreateCommittedResource failed.");
+        DeleteObject(hBitmap);
+        DeleteDC(hdc);
+        return false;
+    }
+
+    // Upload pixel data
+    Microsoft::WRL::ComPtr<ID3D12Resource> uploadHeap;
+    UINT64 uploadBufferSize = GetRequiredIntermediateSize(*ppTexture, 0, 1);
+    auto uploadHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+    auto uploadBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize);
+    hr = g_d3d12Device->CreateCommittedResource(&uploadHeapProps, D3D12_HEAP_FLAG_NONE, &uploadBufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadHeap));
+    if (FAILED(hr)) {
+        DebugLog(L"CreateTextTexture: CreateCommittedResource for upload heap failed.");
+        DeleteObject(hBitmap);
+        DeleteDC(hdc);
+        return false;
+    }
+
+    D3D12_SUBRESOURCE_DATA textureData = {};
+    textureData.pData = pPixels;
+    textureData.RowPitch = textureWidth * 4;
+    textureData.SlicePitch = textureData.RowPitch * textureHeight;
+
+    // The command list needs to be open to do this
+    ID3D12CommandAllocator* allocator = g_commandAllocator[g_currentFrameBufferIndex].Get();
+    allocator->Reset();
+    g_commandList->Reset(allocator, nullptr);
+
+    UpdateSubresources(g_commandList.Get(), *ppTexture, uploadHeap.Get(), 0, 0, 1, &textureData);
+    auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(*ppTexture, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    g_commandList->ResourceBarrier(1, &barrier);
+
+    g_commandList->Close();
+    ID3D12CommandList* ppCommandLists[] = { g_commandList.Get() };
+    g_d3d12CommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+    WaitForGpu(); // Wait for the upload to complete
+
+    // Cleanup GDI resources now that data is on GPU
+    DeleteObject(hBitmap);
+    DeleteDC(hdc);
+    return true;
 }
 
 bool CreateOverlayResources() {
@@ -1526,96 +1618,14 @@ bool CreateOverlayResources() {
     g_overlayVertexBufferView.StrideInBytes = sizeof(VertexPosTex);
     g_overlayVertexBufferView.SizeInBytes = vertexBufferSize;
 
-    // --- Create Text Texture using GDI ---
-    const int textureWidth = 512;
-    const int textureHeight = 128;
-    const wchar_t* text = L"System Rebooting...";
+    // --- Create Text Textures ---
+    if (!CreateTextTexture(L"System Rebooting...", &g_textTextureNormal)) return false;
+    if (!CreateTextTexture(L"Connection Lost... Waiting", &g_textTextureTimeout)) return false;
+    if (!CreateTextTexture(L"Server Restart Loop Detected", &g_textTextureBurst)) return false;
 
-    HDC hdc = CreateCompatibleDC(nullptr);
-    if (!hdc) return false;
-
-    BITMAPINFO bmi = {};
-    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = textureWidth;
-    bmi.bmiHeader.biHeight = -textureHeight; // top-down
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biCompression = BI_RGB;
-
-    void* pPixels = nullptr;
-    HBITMAP hBitmap = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &pPixels, NULL, 0);
-    if (!hBitmap) {
-        DeleteDC(hdc);
-        return false;
-    }
-
-    HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdc, hBitmap);
-
-    SetBkColor(hdc, RGB(0, 0, 0));
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, RGB(255, 255, 255));
-    HFONT hFont = CreateFont(48, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
-    HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
-
-    RECT rect = { 0, 0, textureWidth, textureHeight };
-    FillRect(hdc, &rect, (HBRUSH)GetStockObject(BLACK_BRUSH)); // Fill with black for debugging
-    TextOutW(hdc, 10, 30, text, (int)wcslen(text));
-
-    // Cleanup GDI objects
-    SelectObject(hdc, hOldFont);
-    DeleteObject(hFont);
-    SelectObject(hdc, hOldBitmap);
-
-    // Create D3D12 Texture
-    auto texHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-    auto texDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_B8G8R8A8_UNORM, textureWidth, textureHeight, 1, 1);
-    hr = g_d3d12Device->CreateCommittedResource(&texHeapProps, D3D12_HEAP_FLAG_NONE, &texDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&g_textTexture));
-    if (FAILED(hr)) {
-        DebugLog(L"CreateOverlayResources: CreateCommittedResource for text texture failed.");
-        DeleteObject(hBitmap);
-        DeleteDC(hdc);
-        return false;
-    }
-
-    // Upload pixel data
-    Microsoft::WRL::ComPtr<ID3D12Resource> uploadHeap;
-    UINT64 uploadBufferSize = GetRequiredIntermediateSize(g_textTexture.Get(), 0, 1);
-    auto uploadHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-    auto uploadBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize);
-    hr = g_d3d12Device->CreateCommittedResource(&uploadHeapProps, D3D12_HEAP_FLAG_NONE, &uploadBufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadHeap));
-    if (FAILED(hr)) {
-        DebugLog(L"CreateOverlayResources: CreateCommittedResource for upload heap failed.");
-        DeleteObject(hBitmap);
-        DeleteDC(hdc);
-        return false;
-    }
-
-    D3D12_SUBRESOURCE_DATA textureData = {};
-    textureData.pData = pPixels;
-    textureData.RowPitch = textureWidth * 4;
-    textureData.SlicePitch = textureData.RowPitch * textureHeight;
-
-    // The command list needs to be open to do this
-    ID3D12CommandAllocator* allocator = g_commandAllocator[g_currentFrameBufferIndex].Get();
-    allocator->Reset();
-    g_commandList->Reset(allocator, nullptr);
-
-    UpdateSubresources(g_commandList.Get(), g_textTexture.Get(), uploadHeap.Get(), 0, 0, 1, &textureData);
-    auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(g_textTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    g_commandList->ResourceBarrier(1, &barrier);
-
-    g_commandList->Close();
-    ID3D12CommandList* ppCommandLists[] = { g_commandList.Get() };
-    g_d3d12CommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
-    WaitForGpu(); // Wait for the upload to complete
-
-    // Cleanup GDI resources now that data is on GPU
-    DeleteObject(hBitmap);
-    DeleteDC(hdc);
-
-    // Create SRV for the text texture
+    // Create SRV for the text textures (Heap of size 3)
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-    srvHeapDesc.NumDescriptors = 1;
+    srvHeapDesc.NumDescriptors = 3;
     srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     hr = g_d3d12Device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&g_textSrvHeap));
@@ -1626,10 +1636,18 @@ bool CreateOverlayResources() {
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.Format = texDesc.Format;
+    srvDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Texture2D.MipLevels = 1;
-    g_d3d12Device->CreateShaderResourceView(g_textTexture.Get(), &srvDesc, g_textSrvHeap->GetCPUDescriptorHandleForHeapStart());
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(g_textSrvHeap->GetCPUDescriptorHandleForHeapStart());
+    UINT descriptorSize = g_d3d12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    g_d3d12Device->CreateShaderResourceView(g_textTextureNormal.Get(), &srvDesc, hDescriptor);
+    hDescriptor.Offset(1, descriptorSize);
+    g_d3d12Device->CreateShaderResourceView(g_textTextureTimeout.Get(), &srvDesc, hDescriptor);
+    hDescriptor.Offset(1, descriptorSize);
+    g_d3d12Device->CreateShaderResourceView(g_textTextureBurst.Get(), &srvDesc, hDescriptor);
 
     DebugLog(L"CreateOverlayResources: Successfully created all overlay resources.");
     return true;
@@ -1872,12 +1890,29 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         g_commandList->DrawInstanced(4, 1, 0, 0);
 
-        // Draw "System Rebooting..." text
+        // Draw text
         g_commandList->SetPipelineState(g_overlayTextPso.Get());
         g_commandList->SetGraphicsRootSignature(g_overlayRootSignature.Get());
+
         ID3D12DescriptorHeap* ppHeaps[] = { g_textSrvHeap.Get() };
         g_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
-        g_commandList->SetGraphicsRootDescriptorTable(0, g_textSrvHeap->GetGPUDescriptorHandleForHeapStart());
+
+        CD3DX12_GPU_DESCRIPTOR_HANDLE hDescriptor(g_textSrvHeap->GetGPUDescriptorHandleForHeapStart());
+        UINT descriptorSize = g_d3d12Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+        int burst = g_rebootStartBurst.load();
+        uint64_t start = g_rebootOverlayStartMs.load();
+        uint64_t now = GetTickCount64();
+
+        if (burst > 2) {
+            hDescriptor.Offset(2, descriptorSize); // Burst
+        } else if (start != 0 && (now - start > 8000)) {
+            hDescriptor.Offset(1, descriptorSize); // Timeout
+        } else {
+            // Normal (offset 0)
+        }
+
+        g_commandList->SetGraphicsRootDescriptorTable(0, hDescriptor);
         g_commandList->IASetVertexBuffers(0, 1, &g_overlayVertexBufferView);
         g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         g_commandList->DrawInstanced(4, 1, 0, 0);
