@@ -249,6 +249,13 @@ Microsoft::WRL::ComPtr<ID3D12Resource> g_textTexture;
 Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_textSrvHeap;
 
 static constexpr UINT kSwapChainBufferCount = 3; // was 2
+// Spinner (donut) resources for reboot overlay.
+// NOTE: We keep one UPLOAD vertex buffer per swap-chain buffer to avoid CPU/GPU races (multi-buffering).
+Microsoft::WRL::ComPtr<ID3D12Resource> g_spinnerTexture;
+Microsoft::WRL::ComPtr<ID3D12Resource> g_spinnerVertexBuffer[kSwapChainBufferCount];
+D3D12_VERTEX_BUFFER_VIEW g_spinnerVertexBufferView[kSwapChainBufferCount]{};
+static UINT8* g_spinnerVertexCpuPtr[kSwapChainBufferCount] = {}; // mapped pointers
+
 Microsoft::WRL::ComPtr<ID3D12CommandQueue> g_d3d12CommandQueue;
 Microsoft::WRL::ComPtr<IDXGISwapChain3> g_swapChain; // Use IDXGISwapChain3 or 4
 Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> g_rtvHeap;
@@ -1324,6 +1331,17 @@ void CleanupOverlayResources() {
     g_overlayVertexBuffer.Reset();
     g_textTexture.Reset();
     g_textSrvHeap.Reset();
+
+    g_spinnerTexture.Reset();
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+        if (g_spinnerVertexBuffer[i] && g_spinnerVertexCpuPtr[i]) {
+            g_spinnerVertexBuffer[i]->Unmap(0, nullptr);
+            g_spinnerVertexCpuPtr[i] = nullptr;
+        }
+        g_spinnerVertexBuffer[i].Reset();
+        g_spinnerVertexBufferView[i] = {};
+    }
+
     DebugLog(L"CleanupOverlayResources: Overlay resources cleaned up.");
 }
 
@@ -1490,11 +1508,12 @@ bool CreateOverlayResources() {
     }
 
     // --- Vertex Buffer for Text Quad ---
+    // Place the message slightly above center so we can draw a spinner below it.
     VertexPosTex vertices[] = {
-        { -0.5f,  0.25f, 0.0f, 0.0f, 0.0f },
-        { -0.5f, -0.25f, 0.0f, 0.0f, 1.0f },
-        {  0.5f,  0.25f, 0.0f, 1.0f, 0.0f },
-        {  0.5f, -0.25f, 0.0f, 1.0f, 1.0f }
+        { -0.85f,  0.30f, 0.0f, 0.0f, 0.0f }, // top-left
+        { -0.85f,  0.15f, 0.0f, 0.0f, 1.0f }, // bottom-left
+        {  0.85f,  0.30f, 0.0f, 1.0f, 0.0f }, // top-right
+        {  0.85f,  0.15f, 0.0f, 1.0f, 1.0f }  // bottom-right
     };
     const UINT vertexBufferSize = sizeof(vertices);
 
@@ -1526,10 +1545,54 @@ bool CreateOverlayResources() {
     g_overlayVertexBufferView.StrideInBytes = sizeof(VertexPosTex);
     g_overlayVertexBufferView.SizeInBytes = vertexBufferSize;
 
+    // --- Vertex Buffer for Spinner Quad (dynamic, updated every frame while overlay is visible) ---
+    // Spinner is centered slightly below the text.
+    const float spinnerCenterX = 0.0f;
+    const float spinnerCenterY = -0.10f;
+    const float spinnerHalfSize = 0.12f; // NDC half size (adjust for bigger/smaller spinner)
+
+    VertexPosTex spinnerVertices[] = {
+        { spinnerCenterX - spinnerHalfSize, spinnerCenterY + spinnerHalfSize, 0.0f, 0.0f, 0.0f }, // top-left
+        { spinnerCenterX - spinnerHalfSize, spinnerCenterY - spinnerHalfSize, 0.0f, 0.0f, 1.0f }, // bottom-left
+        { spinnerCenterX + spinnerHalfSize, spinnerCenterY + spinnerHalfSize, 0.0f, 1.0f, 0.0f }, // top-right
+        { spinnerCenterX + spinnerHalfSize, spinnerCenterY - spinnerHalfSize, 0.0f, 1.0f, 1.0f }  // bottom-right
+    };
+    const UINT spinnerVbSize = sizeof(spinnerVertices);
+
+    auto spinnerBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(spinnerVbSize);
+
+    // Create one UPLOAD vertex buffer per swap-chain buffer to avoid CPU/GPU races
+    for (UINT i = 0; i < kSwapChainBufferCount; ++i) {
+        hr = g_d3d12Device->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &spinnerBufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&g_spinnerVertexBuffer[i]));
+        if (FAILED(hr)) {
+            DebugLog(L"CreateOverlayResources: CreateCommittedResource for spinner vertex buffer failed.");
+            return false;
+        }
+
+        // Map once and keep mapped (UPLOAD heap) so we can update positions every frame for rotation.
+        hr = g_spinnerVertexBuffer[i]->Map(0, &readRange, reinterpret_cast<void**>(&g_spinnerVertexCpuPtr[i]));
+        if (FAILED(hr) || !g_spinnerVertexCpuPtr[i]) {
+            DebugLog(L"CreateOverlayResources: Map spinner vertex buffer failed.");
+            return false;
+        }
+        memcpy(g_spinnerVertexCpuPtr[i], spinnerVertices, sizeof(spinnerVertices));
+
+        g_spinnerVertexBufferView[i].BufferLocation = g_spinnerVertexBuffer[i]->GetGPUVirtualAddress();
+        g_spinnerVertexBufferView[i].StrideInBytes = sizeof(VertexPosTex);
+        g_spinnerVertexBufferView[i].SizeInBytes = spinnerVbSize;
+    }
+
     // --- Create Text Texture using GDI ---
-    const int textureWidth = 512;
+    // We render the message into a BGRA DIB, then post-process it to produce proper alpha (transparent background).
+    const int textureWidth = 1024;
     const int textureHeight = 128;
-    const wchar_t* text = L"System Rebooting...";
+    const wchar_t* text = L"Please wait for the server to reboot.";
 
     HDC hdc = CreateCompatibleDC(nullptr);
     if (!hdc) return false;
@@ -1544,27 +1607,116 @@ bool CreateOverlayResources() {
 
     void* pPixels = nullptr;
     HBITMAP hBitmap = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &pPixels, NULL, 0);
-    if (!hBitmap) {
+    if (!hBitmap || !pPixels) {
         DeleteDC(hdc);
         return false;
     }
 
     HBITMAP hOldBitmap = (HBITMAP)SelectObject(hdc, hBitmap);
 
-    SetBkColor(hdc, RGB(0, 0, 0));
+    // Clear to transparent (BGRA = 0)
+    memset(pPixels, 0, static_cast<size_t>(textureWidth) * static_cast<size_t>(textureHeight) * 4);
+
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, RGB(255, 255, 255));
-    HFONT hFont = CreateFont(48, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
+    HFONT hFont = CreateFontW(
+        42, 0, 0, 0, FW_BOLD,
+        FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        ANTIALIASED_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE,
+        L"Arial");
     HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
 
     RECT rect = { 0, 0, textureWidth, textureHeight };
-    FillRect(hdc, &rect, (HBRUSH)GetStockObject(BLACK_BRUSH)); // Fill with black for debugging
-    TextOutW(hdc, 10, 30, text, (int)wcslen(text));
+    DrawTextW(hdc, text, -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-    // Cleanup GDI objects
+    // Convert GDI's RGB output into proper alpha:
+    // - alpha = max(R,G,B) (keeps antialiased edges)
+    // - RGB is set to white (so we get clean white text on the overlay)
+    {
+        uint8_t* px = static_cast<uint8_t*>(pPixels); // BGRA
+        const size_t count = static_cast<size_t>(textureWidth) * static_cast<size_t>(textureHeight);
+        for (size_t i = 0; i < count; ++i) {
+            const uint8_t b = px[i * 4 + 0];
+            const uint8_t g = px[i * 4 + 1];
+            const uint8_t r = px[i * 4 + 2];
+            const uint8_t a = (uint8_t)std::max<uint8_t>(r, std::max<uint8_t>(g, b));
+
+            px[i * 4 + 0] = 255; // B
+            px[i * 4 + 1] = 255; // G
+            px[i * 4 + 2] = 255; // R
+            px[i * 4 + 3] = a;   // A
+        }
+    }
+
+    // Cleanup GDI objects (keep hBitmap/pPixels alive until uploaded to GPU)
     SelectObject(hdc, hOldFont);
     DeleteObject(hFont);
     SelectObject(hdc, hOldBitmap);
+
+    // --- Create Spinner Texture (procedural donut with a gap) ---
+    const int spinnerWidth = 256;
+    const int spinnerHeight = 256;
+    std::vector<uint32_t> spinnerPixels;
+    spinnerPixels.assign(static_cast<size_t>(spinnerWidth) * static_cast<size_t>(spinnerHeight), 0u);
+
+    auto clamp01 = [](float v) -> float { return (v < 0.0f) ? 0.0f : (v > 1.0f ? 1.0f : v); };
+    auto smoothstep = [&](float e0, float e1, float x) -> float {
+        // Handle degenerate
+        if (fabsf(e1 - e0) < 1e-6f) return (x >= e1) ? 1.0f : 0.0f;
+        float t = clamp01((x - e0) / (e1 - e0));
+        return t * t * (3.0f - 2.0f * t);
+    };
+
+    const float cx = (spinnerWidth - 1) * 0.5f;
+    const float cy = (spinnerHeight - 1) * 0.5f;
+    const float outerR = spinnerWidth * 0.45f;
+    const float innerR = spinnerWidth * 0.30f;
+    const float aa = 1.25f;            // anti-alias region in pixels
+    const float gapHalfRad = 0.55f;    // half-width of removed arc (radians), centered at "top"
+    const float gapFeather = 0.20f;    // feather size (radians)
+
+    // Note: output is BGRA8 (DXGI_FORMAT_B8G8R8A8_UNORM)
+    for (int y = 0; y < spinnerHeight; ++y) {
+        for (int x = 0; x < spinnerWidth; ++x) {
+            const float dx = (float)x - cx;
+            const float dy = (float)y - cy;
+            const float dist = sqrtf(dx * dx + dy * dy);
+
+            // Ring coverage with AA
+            float outer = 1.0f - smoothstep(outerR - aa, outerR + aa, dist);
+            float inner = smoothstep(innerR - aa, innerR + aa, dist);
+            float ring = outer * inner; // 1 inside ring, 0 outside
+
+            if (ring <= 0.0001f) {
+                continue;
+            }
+
+            // Angle: 0 at +X, CCW. We want the gap near the top (-Y), so shift by +pi/2.
+            float ang = atan2f(dy, dx);         // -pi..pi
+            ang = ang + 3.14159265f * 0.5f;     // shift so gap can be centered
+            // Wrap to -pi..pi
+            while (ang > 3.14159265f) ang -= 2.0f * 3.14159265f;
+            while (ang < -3.14159265f) ang += 2.0f * 3.14159265f;
+
+            // Remove a wedge (gap) around ang=0
+            float a = fabsf(ang);
+            float gap = 1.0f - smoothstep(gapHalfRad - gapFeather, gapHalfRad + gapFeather, a);
+            // gap ~= 1 inside removed wedge; we want to remove that => (1-gap)
+            float keep = 1.0f - gap;
+
+            float alpha = ring * keep;
+            if (alpha <= 0.0001f) continue;
+
+            // White ring
+            const uint8_t A = (uint8_t)(clamp01(alpha) * 255.0f);
+            const uint8_t R = 255, G = 255, B = 255;
+            uint32_t bgra = (uint32_t)B | ((uint32_t)G << 8) | ((uint32_t)R << 16) | ((uint32_t)A << 24);
+            spinnerPixels[(size_t)y * (size_t)spinnerWidth + (size_t)x] = bgra;
+        }
+    }
 
     // Create D3D12 Texture
     auto texHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
@@ -1572,6 +1724,18 @@ bool CreateOverlayResources() {
     hr = g_d3d12Device->CreateCommittedResource(&texHeapProps, D3D12_HEAP_FLAG_NONE, &texDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&g_textTexture));
     if (FAILED(hr)) {
         DebugLog(L"CreateOverlayResources: CreateCommittedResource for text texture failed.");
+        DeleteObject(hBitmap);
+        DeleteDC(hdc);
+        return false;
+    }
+
+    // Create spinner texture resource
+    auto spinnerDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_B8G8R8A8_UNORM, spinnerWidth, spinnerHeight, 1, 1);
+    hr = g_d3d12Device->CreateCommittedResource(
+        &texHeapProps, D3D12_HEAP_FLAG_NONE, &spinnerDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&g_spinnerTexture));
+    if (FAILED(hr)) {
+        DebugLog(L"CreateOverlayResources: CreateCommittedResource for spinner texture failed.");
         DeleteObject(hBitmap);
         DeleteDC(hdc);
         return false;
@@ -1595,6 +1759,25 @@ bool CreateOverlayResources() {
     textureData.RowPitch = textureWidth * 4;
     textureData.SlicePitch = textureData.RowPitch * textureHeight;
 
+    // Spinner upload heap
+    Microsoft::WRL::ComPtr<ID3D12Resource> uploadHeapSpinner;
+    const UINT64 uploadBufferSizeSpinner = GetRequiredIntermediateSize(g_spinnerTexture.Get(), 0, 1);
+    auto uploadBufferDescSpinner = CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSizeSpinner);
+    hr = g_d3d12Device->CreateCommittedResource(
+        &uploadHeapProps, D3D12_HEAP_FLAG_NONE, &uploadBufferDescSpinner,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadHeapSpinner));
+    if (FAILED(hr)) {
+        DebugLog(L"CreateOverlayResources: CreateCommittedResource for spinner upload heap failed.");
+        DeleteObject(hBitmap);
+        DeleteDC(hdc);
+        return false;
+    }
+
+    D3D12_SUBRESOURCE_DATA spinnerData = {};
+    spinnerData.pData = spinnerPixels.data();
+    spinnerData.RowPitch = spinnerWidth * 4;
+    spinnerData.SlicePitch = spinnerData.RowPitch * spinnerHeight;
+
     // The command list needs to be open to do this
     ID3D12CommandAllocator* allocator = g_commandAllocator[g_currentFrameBufferIndex].Get();
     allocator->Reset();
@@ -1603,6 +1786,11 @@ bool CreateOverlayResources() {
     UpdateSubresources(g_commandList.Get(), g_textTexture.Get(), uploadHeap.Get(), 0, 0, 1, &textureData);
     auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(g_textTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     g_commandList->ResourceBarrier(1, &barrier);
+
+    UpdateSubresources(g_commandList.Get(), g_spinnerTexture.Get(), uploadHeapSpinner.Get(), 0, 0, 1, &spinnerData);
+    auto barrierSpinner = CD3DX12_RESOURCE_BARRIER::Transition(
+        g_spinnerTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    g_commandList->ResourceBarrier(1, &barrierSpinner);
 
     g_commandList->Close();
     ID3D12CommandList* ppCommandLists[] = { g_commandList.Get() };
@@ -1615,7 +1803,7 @@ bool CreateOverlayResources() {
 
     // Create SRV for the text texture
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-    srvHeapDesc.NumDescriptors = 1;
+    srvHeapDesc.NumDescriptors = 2; // text + spinner
     srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     hr = g_d3d12Device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&g_textSrvHeap));
@@ -1629,7 +1817,14 @@ bool CreateOverlayResources() {
     srvDesc.Format = texDesc.Format;
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Texture2D.MipLevels = 1;
-    g_d3d12Device->CreateShaderResourceView(g_textTexture.Get(), &srvDesc, g_textSrvHeap->GetCPUDescriptorHandleForHeapStart());
+    // SRV #0: text
+    CD3DX12_CPU_DESCRIPTOR_HANDLE cpuHandle(g_textSrvHeap->GetCPUDescriptorHandleForHeapStart());
+    g_d3d12Device->CreateShaderResourceView(g_textTexture.Get(), &srvDesc, cpuHandle);
+
+    // SRV #1: spinner
+    cpuHandle.Offset(1, g_srvDescriptorSize);
+    srvDesc.Format = spinnerDesc.Format;
+    g_d3d12Device->CreateShaderResourceView(g_spinnerTexture.Get(), &srvDesc, cpuHandle);
 
     DebugLog(L"CreateOverlayResources: Successfully created all overlay resources.");
     return true;
@@ -1866,17 +2061,71 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
     // --- Draw Overlay if enabled ---
     if (g_showRebootOverlay.load(std::memory_order_relaxed)) {
-        // Draw semi-transparent black quad
+        // 1) Darken the render area while the server is rebooting
         g_commandList->SetPipelineState(g_overlayQuadPso.Get());
         g_commandList->SetGraphicsRootSignature(g_overlayQuadRootSignature.Get());
         g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         g_commandList->DrawInstanced(4, 1, 0, 0);
 
-        // Draw "System Rebooting..." text
+        // 2) Spinner + message (shared PSO/root signature: textured quad with alpha)
         g_commandList->SetPipelineState(g_overlayTextPso.Get());
         g_commandList->SetGraphicsRootSignature(g_overlayRootSignature.Get());
-        ID3D12DescriptorHeap* ppHeaps[] = { g_textSrvHeap.Get() };
-        g_commandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
+        ID3D12DescriptorHeap* ppHeapsOverlay[] = { g_textSrvHeap.Get() };
+        g_commandList->SetDescriptorHeaps(_countof(ppHeapsOverlay), ppHeapsOverlay);
+
+        // Update spinner quad vertices (rotate around its center each frame)
+        if (g_spinnerVertexCpuPtr[g_currentFrameBufferIndex]) {
+            const float kPi = 3.14159265358979323846f;
+            const float kTwoPi = 2.0f * kPi;
+
+            // 1 revolution per ~0.9s (tweak if needed)
+            const float periodMs = 900.0f;
+            const float t = fmodf((float)(SteadyNowMs() % (uint64_t)periodMs), periodMs) / periodMs;
+            const float ang = t * kTwoPi;
+
+            const float c = cosf(ang);
+            const float s = sinf(ang);
+
+            const float cx = 0.0f;
+            const float cy = -0.10f;
+            const float hs = 0.12f;
+
+            auto* v = reinterpret_cast<VertexPosTex*>(g_spinnerVertexCpuPtr[g_currentFrameBufferIndex]);
+
+            // local corners
+            const float lx0 = -hs, ly0 = +hs; // TL
+            const float lx1 = -hs, ly1 = -hs; // BL
+            const float lx2 = +hs, ly2 = +hs; // TR
+            const float lx3 = +hs, ly3 = -hs; // BR
+
+            // rotate
+            const float rx0 = lx0 * c - ly0 * s;
+            const float ry0 = lx0 * s + ly0 * c;
+            const float rx1 = lx1 * c - ly1 * s;
+            const float ry1 = lx1 * s + ly1 * c;
+            const float rx2 = lx2 * c - ly2 * s;
+            const float ry2 = lx2 * s + ly2 * c;
+            const float rx3 = lx3 * c - ly3 * s;
+            const float ry3 = lx3 * s + ly3 * c;
+
+            // write back (TriangleStrip order must match)
+            v[0] = { cx + rx0, cy + ry0, 0.0f, 0.0f, 0.0f }; // top-left
+            v[1] = { cx + rx1, cy + ry1, 0.0f, 0.0f, 1.0f }; // bottom-left
+            v[2] = { cx + rx2, cy + ry2, 0.0f, 1.0f, 0.0f }; // top-right
+            v[3] = { cx + rx3, cy + ry3, 0.0f, 1.0f, 1.0f }; // bottom-right
+        }
+
+        // Draw spinner (SRV #1 in g_textSrvHeap)
+        if (g_spinnerTexture && g_spinnerVertexBuffer[g_currentFrameBufferIndex] && g_textSrvHeap) {
+            D3D12_GPU_DESCRIPTOR_HANDLE spinnerSrv = g_textSrvHeap->GetGPUDescriptorHandleForHeapStart();
+            spinnerSrv.ptr += g_srvDescriptorSize; // descriptor #1
+            g_commandList->SetGraphicsRootDescriptorTable(0, spinnerSrv);
+            g_commandList->IASetVertexBuffers(0, 1, &g_spinnerVertexBufferView[g_currentFrameBufferIndex]);
+            g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+            g_commandList->DrawInstanced(4, 1, 0, 0);
+        }
+
+        // Draw message text (SRV #0)
         g_commandList->SetGraphicsRootDescriptorTable(0, g_textSrvHeap->GetGPUDescriptorHandleForHeapStart());
         g_commandList->IASetVertexBuffers(0, 1, &g_overlayVertexBufferView);
         g_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
