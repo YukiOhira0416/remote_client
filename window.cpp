@@ -523,6 +523,43 @@ void ClearReorderState()
     DebugLog(L"ClearReorderState: reorder state moved to retire bin.");
 }
 
+void ClearReorderStatePreserveLastFrame()
+{
+    // Keep this to preserve current behavior and logs:
+    WaitForGpu(); // drains graphics queue only (CUDA is handled per frame)  // (implementation references)
+
+    std::lock_guard<std::mutex> lk(g_reorderMutex);
+
+    // Record a fence point that future releases must pass
+    const UINT64 retireFence = SignalFenceNow();
+
+    // Move all frames' resources into the retire bin (no immediate Reset)
+    {
+        std::lock_guard<std::mutex> gb(g_retireBinMutex);
+        for (auto &pair : g_reorderBuffer) {
+            ReadyGpuFrame &rf = pair.second;
+
+            RetiredGpuResources r;
+            r.y = std::move(rf.hw_decoded_texture_Y);
+            r.u = std::move(rf.hw_decoded_texture_U);
+            r.v = std::move(rf.hw_decoded_texture_V);
+            r.copyDone = rf.copyDone;      // hand the event to retire bin
+            r.fenceValue = retireFence;    // conservative: release after this fence
+
+            rf.copyDone = nullptr;         // ownership transferred
+
+            g_retireBin.emplace_back(std::move(r));
+        }
+        g_reorderBuffer.clear();
+    }
+
+    // Note: g_lastDrawnFrame is PRESERVED here to support smooth transition to reboot overlay.
+
+    g_expectedInitialized = false;
+    g_expectedStreamFrame = 0;
+    DebugLog(L"ClearReorderStatePreserveLastFrame: reorder state moved to retire bin (preserving last frame).");
+}
+
 // 調整パラメータ
 static constexpr size_t REORDER_MAX_BUFFER = 4; // tighten to reduce in-buffer latency
 static constexpr int    REORDER_WAIT_MS    = 2; // base wait smaller
