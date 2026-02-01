@@ -173,6 +173,7 @@ std::mutex hevcoutputMutex;
 
 void SendFinalResolution(int width, int height);
 void ClearReorderState();
+void ClearReorderStatePreserveLastFrame();
 
 // Comparator for ParsedShardInfo to prioritize by wgcCaptureTimestamp (older first)
 struct ParsedShardInfoComparator {
@@ -919,7 +920,7 @@ void ListenForRebootCommands() {
                         DebugLog(L"ListenForRebootCommands: Received REBOOTSTART.");
                         g_showRebootOverlay = true;
                         // New server instance may reset stream frame numbers. Clear reorder state so new frames can be presented.
-                        ClearReorderState();
+                        ClearReorderStatePreserveLastFrame();
 
                         const uint64_t now = GetTickCount64();
                         g_rebootOverlayStartMs.store(now);
