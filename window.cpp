@@ -1628,6 +1628,9 @@ bool CreateOverlayResources() {
     textPsoDesc.VS = CD3DX12_SHADER_BYTECODE(textVertexShaderBlob.Get());
     textPsoDesc.PS = CD3DX12_SHADER_BYTECODE(textPixelShaderBlob.Get());
     textPsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    // Text quad can be back-face culled depending on vertex winding.
+    // Disable culling to ensure overlay text/spinner is always visible.
+    textPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     textPsoDesc.BlendState = psoDesc.BlendState; // We can safely copy the blend state
     textPsoDesc.DepthStencilState.DepthEnable = FALSE;
     textPsoDesc.DepthStencilState.StencilEnable = FALSE;
@@ -1644,10 +1647,11 @@ bool CreateOverlayResources() {
     }
 
     // --- Vertex Buffer for Text Quad ---
+    // Make the triangle strip clockwise (CW) as well (optional but safe).
     VertexPosTex vertices[] = {
         { -0.5f,  0.25f, 0.0f, 0.0f, 0.0f },
-        { -0.5f, -0.25f, 0.0f, 0.0f, 1.0f },
         {  0.5f,  0.25f, 0.0f, 1.0f, 0.0f },
+        { -0.5f, -0.25f, 0.0f, 0.0f, 1.0f },
         {  0.5f, -0.25f, 0.0f, 1.0f, 1.0f }
     };
     const UINT vertexBufferSize = sizeof(vertices);
