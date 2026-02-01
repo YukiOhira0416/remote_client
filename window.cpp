@@ -1405,6 +1405,28 @@ static bool CreateTextTexture(const wchar_t* text, ID3D12Resource** ppTexture) {
     FillRect(hdc, &rect, (HBRUSH)GetStockObject(BLACK_BRUSH)); // Fill with black for debugging
     DrawTextW(hdc, text, -1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
+    // Build alpha mask: background stays transparent, glyph becomes visible.
+    // DIB pixel format here is BGRA-like in memory; BI_RGB doesn't guarantee alpha is set.
+    if (pPixels) {
+        uint32_t* px = reinterpret_cast<uint32_t*>(pPixels);
+        const size_t total = static_cast<size_t>(textureWidth) * static_cast<size_t>(textureHeight);
+        for (size_t i = 0; i < total; ++i) {
+            uint32_t c = px[i] & 0x00FFFFFFu;
+            if (c == 0) { // background
+                px[i] = 0;
+                continue;
+            }
+            // intensity from RGB (anti-aliased edges produce intermediate values)
+            uint8_t b = static_cast<uint8_t>(c & 0xFF);
+            uint8_t g = static_cast<uint8_t>((c >> 8) & 0xFF);
+            uint8_t r = static_cast<uint8_t>((c >> 16) & 0xFF);
+            uint8_t a = (std::max)({ r, g, b });
+
+            // output: white color with computed alpha (non-premultiplied)
+            px[i] = (static_cast<uint32_t>(a) << 24) | 0x00FFFFFFu;
+        }
+    }
+
     // Cleanup GDI objects
     SelectObject(hdc, hOldFont);
     DeleteObject(hFont);
