@@ -1510,9 +1510,10 @@ bool CreateOverlayResources() {
     // --- Vertex Buffer for Text Quad ---
     // Place the message slightly above center so we can draw a spinner below it.
     VertexPosTex vertices[] = {
+        // TriangleStrip order: TL, TR, BL, BR (clockwise with default rasterizer)
         { -0.85f,  0.30f, 0.0f, 0.0f, 0.0f }, // top-left
-        { -0.85f,  0.15f, 0.0f, 0.0f, 1.0f }, // bottom-left
         {  0.85f,  0.30f, 0.0f, 1.0f, 0.0f }, // top-right
+        { -0.85f,  0.15f, 0.0f, 0.0f, 1.0f }, // bottom-left
         {  0.85f,  0.15f, 0.0f, 1.0f, 1.0f }  // bottom-right
     };
     const UINT vertexBufferSize = sizeof(vertices);
@@ -1552,9 +1553,10 @@ bool CreateOverlayResources() {
     const float spinnerHalfSize = 0.12f; // NDC half size (adjust for bigger/smaller spinner)
 
     VertexPosTex spinnerVertices[] = {
+        // TriangleStrip order: TL, TR, BL, BR (clockwise with default rasterizer)
         { spinnerCenterX - spinnerHalfSize, spinnerCenterY + spinnerHalfSize, 0.0f, 0.0f, 0.0f }, // top-left
-        { spinnerCenterX - spinnerHalfSize, spinnerCenterY - spinnerHalfSize, 0.0f, 0.0f, 1.0f }, // bottom-left
         { spinnerCenterX + spinnerHalfSize, spinnerCenterY + spinnerHalfSize, 0.0f, 1.0f, 0.0f }, // top-right
+        { spinnerCenterX - spinnerHalfSize, spinnerCenterY - spinnerHalfSize, 0.0f, 0.0f, 1.0f }, // bottom-left
         { spinnerCenterX + spinnerHalfSize, spinnerCenterY - spinnerHalfSize, 0.0f, 1.0f, 1.0f }  // bottom-right
     };
     const UINT spinnerVbSize = sizeof(spinnerVertices);
@@ -2092,10 +2094,10 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
             auto* v = reinterpret_cast<VertexPosTex*>(g_spinnerVertexCpuPtr[g_currentFrameBufferIndex]);
 
-            // local corners
+            // local corners (TriangleStrip order: TL, TR, BL, BR)
             const float lx0 = -hs, ly0 = +hs; // TL
-            const float lx1 = -hs, ly1 = -hs; // BL
-            const float lx2 = +hs, ly2 = +hs; // TR
+            const float lx1 = +hs, ly1 = +hs; // TR
+            const float lx2 = -hs, ly2 = -hs; // BL
             const float lx3 = +hs, ly3 = -hs; // BR
 
             // rotate
@@ -2110,8 +2112,8 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
             // write back (TriangleStrip order must match)
             v[0] = { cx + rx0, cy + ry0, 0.0f, 0.0f, 0.0f }; // top-left
-            v[1] = { cx + rx1, cy + ry1, 0.0f, 0.0f, 1.0f }; // bottom-left
-            v[2] = { cx + rx2, cy + ry2, 0.0f, 1.0f, 0.0f }; // top-right
+            v[1] = { cx + rx1, cy + ry1, 0.0f, 1.0f, 0.0f }; // top-right
+            v[2] = { cx + rx2, cy + ry2, 0.0f, 0.0f, 1.0f }; // bottom-left
             v[3] = { cx + rx3, cy + ry3, 0.0f, 1.0f, 1.0f }; // bottom-right
         }
 
