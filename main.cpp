@@ -889,6 +889,10 @@ void ListenForRebootCommands() {
 
     fd_set readSet;
 
+    // REBOOTSTART ループ検知用
+    static std::atomic<uint64_t> s_lastRebootStartMs{0};
+    static std::atomic<int> s_rebootStartBurst{0};
+
     while (reboot_listener_running) {
         FD_ZERO(&readSet);
         FD_SET(listenSocketStart, &readSet);
@@ -921,6 +925,24 @@ void ListenForRebootCommands() {
                     recvbuf[iResult] = '\0';
                     if (strcmp(recvbuf, "REBOOTSTART") == 0) {
                         DebugLog(L"ListenForRebootCommands: Received REBOOTSTART.");
+
+                        // ループ検知（10秒以内に連続ならカウント）
+                        uint64_t nowMs = SteadyNowMs();
+                        uint64_t last = s_lastRebootStartMs.exchange(nowMs);
+                        if (last != 0 && (nowMs - last) <= 10'000) {
+                            s_rebootStartBurst.fetch_add(1);
+                        } else {
+                            s_rebootStartBurst.store(0);
+                        }
+
+                        int burst = s_rebootStartBurst.load();
+                        if (burst >= 3) {
+                            SetOverlayMessage(L"Server reboot loop detected. Check server debuglog_capture.log");
+                            g_showRebootOverlay = true;
+                            closesocket(clientSocket);
+                            continue;
+                        }
+
                         if (g_lastVideoPacketSteadyMs.load() == 0) {
                             SetOverlayMessage(L"Server is starting...");
                         } else {
