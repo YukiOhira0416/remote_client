@@ -2061,6 +2061,19 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         outFrameToRender = g_lastDrawnFrame;
     }
 
+    // --- REBOOTEND missing protection ---
+    // If we receive only REBOOTSTART but miss REBOOTEND, we can mistakenly stay in overlay mode.
+    // If video packets resume, we should clear the overlay automatically.
+    if (g_showRebootOverlay.load(std::memory_order_relaxed)) {
+        const uint64_t now = SteadyNowMs();
+        const uint64_t lastVid = g_lastVideoPacketSteadyMs.load(std::memory_order_relaxed);
+        // If video packets arrived recently (e.g. within 500ms), assume server is back.
+        if (lastVid != 0 && (now - lastVid) < 500) {
+                DebugLog(L"Render: video packets resumed; clearing reboot overlay (REBOOTEND may be missing).");
+                g_showRebootOverlay.store(false, std::memory_order_relaxed);
+        }
+    }
+
     // --- Draw Overlay if enabled ---
     if (g_showRebootOverlay.load(std::memory_order_relaxed)) {
         // 1) Darken the render area while the server is rebooting

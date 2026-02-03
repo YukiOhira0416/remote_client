@@ -473,6 +473,10 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                     size_t payload_size = event.packet->dataLength - 1;
 
                     if (packet_type == PACKET_TYPE_FULL_SHARD) {
+                        // 映像受信の生存確認（REBOOTEND欠落対策）
+                        // ここで映像が来ているなら、サーバーは少なくとも送信に復帰している可能性が高い
+                        g_lastVideoPacketSteadyMs.store(SteadyNowMs(), std::memory_order_relaxed);
+
                         if (payload_size >= sizeof(uint64_t)) { // Check for WorkerTS
                             uint64_t worker_ts_val = *reinterpret_cast<const uint64_t*>(payload_data);//worker_ts_valはFEC完了時タイムスタンプの値
                             

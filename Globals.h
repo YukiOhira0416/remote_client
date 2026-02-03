@@ -174,6 +174,10 @@ extern std::atomic<bool> g_showRebootOverlay;
 extern std::atomic<bool> g_forcePresentOnce; // Present at least once even if no new decoded frame
 extern std::atomic<bool> dumpEncodedStreamToFiles;
 
+// 最後に「映像(シャード)を受信した」時刻（steady ms）
+// REBOOTENDが欠落しても、映像が戻ったら自動でオーバーレイ解除するために使う
+extern std::atomic<uint64_t> g_lastVideoPacketSteadyMs;
+
 // Input message types
 enum MouseInputType {
     MOUSE_MOVE,
