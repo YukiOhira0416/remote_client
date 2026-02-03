@@ -36,6 +36,19 @@
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 
+// Global for overlay message
+std::wstring g_overlayMessage = L"Please wait for the server to reboot.";
+std::mutex g_overlayMessageMutex;
+std::atomic<bool> g_overlayMessageDirty{false};
+
+void SetOverlayMessage(const std::wstring& message) {
+    std::lock_guard<std::mutex> lock(g_overlayMessageMutex);
+    if (g_overlayMessage != message) {
+        g_overlayMessage = message;
+        g_overlayMessageDirty = true;
+    }
+}
+
 // ==== [Multi-monitor helpers - BEGIN] ====
 #ifndef _USE_MATH_DEFINES
 #define _USE_MATH_DEFINES
@@ -1594,7 +1607,13 @@ bool CreateOverlayResources() {
     // We render the message into a BGRA DIB, then post-process it to produce proper alpha (transparent background).
     const int textureWidth = 1024;
     const int textureHeight = 128;
-    const wchar_t* text = L"Please wait for the server to reboot.";
+
+    std::wstring localText;
+    {
+        std::lock_guard<std::mutex> lock(g_overlayMessageMutex);
+        localText = g_overlayMessage;
+    }
+    const wchar_t* text = localText.c_str();
 
     HDC hdc = CreateCompatibleDC(nullptr);
     if (!hdc) return false;
@@ -1837,6 +1856,13 @@ UINT64 PopulateCommandListCount = 0;
 
 // 既存の PopulateCommandList 関数をまるごと置き換えてください
 bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass ReadyGpuFrame by reference
+    if (g_overlayMessageDirty.load()) {
+        WaitForGpu();
+        CleanupOverlayResources();
+        CreateOverlayResources();
+        g_overlayMessageDirty = false;
+    }
+
     DrainRetireBin(); // safe: runs on render thread, preserves timing/logging
 
     // Reset command allocator and command list

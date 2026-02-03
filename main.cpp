@@ -921,6 +921,11 @@ void ListenForRebootCommands() {
                     recvbuf[iResult] = '\0';
                     if (strcmp(recvbuf, "REBOOTSTART") == 0) {
                         DebugLog(L"ListenForRebootCommands: Received REBOOTSTART.");
+                        if (g_lastVideoPacketSteadyMs.load() == 0) {
+                            SetOverlayMessage(L"Server is starting...");
+                        } else {
+                            SetOverlayMessage(L"Please wait for the server to reboot.");
+                        }
                         g_showRebootOverlay = true;
                     }
                 }
@@ -938,6 +943,7 @@ void ListenForRebootCommands() {
                      recvbuf[iResult] = '\0';
                     if (strcmp(recvbuf, "REBOOTEND") == 0) {
                         DebugLog(L"ListenForRebootCommands: Received REBOOTEND.");
+                        SetOverlayMessage(L"Please wait for the server to reboot.");
                         g_showRebootOverlay = false;
                         // Call the existing function to send window size
                         SendFinalResolution(currentResolutionWidth.load(std::memory_order_relaxed), currentResolutionHeight.load(std::memory_order_relaxed));
