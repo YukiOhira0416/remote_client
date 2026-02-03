@@ -14,6 +14,7 @@ std::atomic<bool> g_isSizing(false);
 std::atomic<bool> g_showRebootOverlay(false);
 std::atomic<bool> g_forcePresentOnce(false);
 std::atomic<bool> dumpEncodedStreamToFiles(false);
+std::atomic<uint64_t> g_lastVideoPacketSteadyMs(0);
 
 std::atomic<uint64_t> g_streamGeneration(0);
 std::atomic<uint64_t> g_latencyEpochMs(0);
