@@ -4,8 +4,11 @@
 #include <windows.h>
 #include <wrl/client.h>
 #include <atomic>
+#include <string>
 
 extern std::atomic<bool> g_isSizing;
+
+void SetOverlayMessage(const std::wstring& message);
 
 bool InitWindow(HINSTANCE hInstance, int nCmdShow, HWND parentHwnd = NULL);
 bool InitD3D();
