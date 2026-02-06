@@ -939,6 +939,7 @@ void ListenForRebootCommands() {
                     if (strcmp(recvbuf, "REBOOTSTART") == 0) {
                         DebugLog(L"ListenForRebootCommands: Received REBOOTSTART. Showing reboot overlay + preparing handshake.");
                         g_showRebootOverlay.store(true);
+                        g_rebootOverlayStartMs.store(SteadyNowMs(), std::memory_order_relaxed);
                         PrepareRebootHandshake(true);
                     }
                 }
@@ -957,6 +958,7 @@ void ListenForRebootCommands() {
                     if (strcmp(recvbuf, "REBOOTEND") == 0) {
                         DebugLog(L"ListenForRebootCommands: Received REBOOTEND. Hiding reboot overlay + preparing handshake.");
                         g_showRebootOverlay.store(false);
+                        g_rebootOverlayStartMs.store(0, std::memory_order_relaxed);
                         PrepareRebootHandshake(false);
 
                         // ベストエフォートで即送（ただし繋がってないと落ちる可能性があるので pending も必須）

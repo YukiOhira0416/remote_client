@@ -12,6 +12,7 @@ std::condition_variable g_readyGpuFrameQueueCV;
 std::atomic<bool> app_running_atomic(true);
 std::atomic<bool> g_isSizing(false);
 std::atomic<bool> g_showRebootOverlay(false);
+std::atomic<uint64_t> g_rebootOverlayStartMs(0);
 std::atomic<bool> g_forcePresentOnce(false);
 std::atomic<bool> dumpEncodedStreamToFiles(false);
 

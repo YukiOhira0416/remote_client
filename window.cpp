@@ -2063,6 +2063,23 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
 
     // --- Draw Overlay if enabled ---
     if (g_showRebootOverlay.load(std::memory_order_relaxed)) {
+        // フェイルセーフ：REBOOTEND取り逃しでも、映像が流れているなら一定時間後に自動解除
+        const uint64_t now = SteadyNowMs();
+        const uint64_t start = g_rebootOverlayStartMs.load(std::memory_order_relaxed);
+        const uint64_t lastFrame = g_lastFrameTickMs.load(std::memory_order_relaxed);
+        const bool netReady = g_networkReady.load(std::memory_order_relaxed);
+
+        if (start != 0 && netReady) {
+             // 8秒以上 overlay が続いていて、直近 300ms 以内にフレーム描画があるなら解除
+             if ((now - start) > 8000 && lastFrame != 0 && (now - lastFrame) < 300) {
+                 DebugLog(L"Auto-clearing reboot overlay (frames are flowing, REBOOTEND may be missed).");
+                 g_showRebootOverlay.store(false, std::memory_order_relaxed);
+                 g_rebootOverlayStartMs.store(0, std::memory_order_relaxed);
+             }
+        }
+    }
+
+    if (g_showRebootOverlay.load(std::memory_order_relaxed)) {
         // 1) Darken the render area while the server is rebooting
         g_commandList->SetPipelineState(g_overlayQuadPso.Get());
         g_commandList->SetGraphicsRootSignature(g_overlayQuadRootSignature.Get());
