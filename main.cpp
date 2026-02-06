@@ -907,6 +907,27 @@ void ListenForRebootCommands() {
             continue;
         }
 
+        auto PrepareRebootHandshake = [](bool entering) {
+            // 旧ストリーム破棄（受信済みシャード/描画バッファを世代で捨てる）
+            BumpStreamGeneration();
+            ClearReorderState();
+
+            // 再接続扱いにする
+            g_networkReady.store(false, std::memory_order_release);
+
+            // ★重要：再起動後のENet connectで OnNetworkReady が “初回解像度通知” を必ず流すため
+            g_didInitialAnnounce.store(false, std::memory_order_release);
+
+            // pending を立てて、OnNetworkReady で確実に flush させる
+            int w = currentResolutionWidth.load();
+            int h = currentResolutionHeight.load();
+            if (w > 0 && h > 0) {
+                g_pendingW.store(w);
+                g_pendingH.store(h);
+                g_pendingResolutionValid.store(true, std::memory_order_release);
+            }
+        };
+
         // Check for REBOOTSTART connection
         if (FD_ISSET(listenSocketStart, &readSet)) {
             clientSocket = accept(listenSocketStart, NULL, NULL);
@@ -916,8 +937,9 @@ void ListenForRebootCommands() {
                 if (iResult > 0) {
                     recvbuf[iResult] = '\0';
                     if (strcmp(recvbuf, "REBOOTSTART") == 0) {
-                        DebugLog(L"ListenForRebootCommands: Received REBOOTSTART.");
-                        g_showRebootOverlay = true;
+                        DebugLog(L"ListenForRebootCommands: Received REBOOTSTART. Showing reboot overlay + preparing handshake.");
+                        g_showRebootOverlay.store(true);
+                        PrepareRebootHandshake(true);
                     }
                 }
                 closesocket(clientSocket);
@@ -933,10 +955,16 @@ void ListenForRebootCommands() {
                 if (iResult > 0) {
                      recvbuf[iResult] = '\0';
                     if (strcmp(recvbuf, "REBOOTEND") == 0) {
-                        DebugLog(L"ListenForRebootCommands: Received REBOOTEND.");
-                        g_showRebootOverlay = false;
-                        // Call the existing function to send window size
-                        SendFinalResolution(currentResolutionWidth.load(std::memory_order_relaxed), currentResolutionHeight.load(std::memory_order_relaxed));
+                        DebugLog(L"ListenForRebootCommands: Received REBOOTEND. Hiding reboot overlay + preparing handshake.");
+                        g_showRebootOverlay.store(false);
+                        PrepareRebootHandshake(false);
+
+                        // ベストエフォートで即送（ただし繋がってないと落ちる可能性があるので pending も必須）
+                        int w = currentResolutionWidth.load();
+                        int h = currentResolutionHeight.load();
+                        if (w > 0 && h > 0) {
+                            SendFinalResolution(w, h);
+                        }
                     }
                 }
                 closesocket(clientSocket);
