@@ -1594,7 +1594,7 @@ bool CreateOverlayResources() {
     // We render the message into a BGRA DIB, then post-process it to produce proper alpha (transparent background).
     const int textureWidth = 1024;
     const int textureHeight = 128;
-    const wchar_t* text = L"Please wait for the server to reboot.";
+    const wchar_t* text = L"Please wait while the server boots, restarts, or shuts down.";
 
     HDC hdc = CreateCompatibleDC(nullptr);
     if (!hdc) return false;
