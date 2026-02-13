@@ -11,9 +11,7 @@
 
 #include <QtCore/QVariant>
 #include <QtWidgets/QApplication>
-#include <QtWidgets/QComboBox>
 #include <QtWidgets/QGroupBox>
-#include <QtWidgets/QLabel>
 #include <QtWidgets/QMainWindow>
 #include <QtWidgets/QMenuBar>
 #include <QtWidgets/QRadioButton>
@@ -32,8 +30,6 @@ public:
     QWidget *tab;
     RenderHostWidgets *frame;
     QWidget *tab_2;
-    QComboBox *comboBox;
-    QLabel *label;
     QGroupBox *groupBox;
     QRadioButton *radioButton;
     QRadioButton *radioButton_2;
@@ -71,17 +67,6 @@ public:
         tab_2 = new QWidget();
         tab_2->setObjectName("tab_2");
         tabWidget->addTab(tab_2, QString());
-        comboBox = new QComboBox(centralwidget);
-        comboBox->setObjectName("comboBox");
-        comboBox->setGeometry(QRect(1350, 750, 141, 31));
-        QSizePolicy sizePolicy1(QSizePolicy::Policy::Expanding, QSizePolicy::Policy::Fixed);
-        sizePolicy1.setHorizontalStretch(0);
-        sizePolicy1.setVerticalStretch(0);
-        sizePolicy1.setHeightForWidth(comboBox->sizePolicy().hasHeightForWidth());
-        comboBox->setSizePolicy(sizePolicy1);
-        label = new QLabel(centralwidget);
-        label->setObjectName("label");
-        label->setGeometry(QRect(1350, 720, 101, 31));
         groupBox = new QGroupBox(centralwidget);
         groupBox->setObjectName("groupBox");
         groupBox->setGeometry(QRect(1340, 30, 161, 161));
@@ -116,7 +101,6 @@ public:
         MainWindow->setWindowTitle(QCoreApplication::translate("MainWindow", "MainWindow", nullptr));
         tabWidget->setTabText(tabWidget->indexOf(tab), QCoreApplication::translate("MainWindow", "Tab 1", nullptr));
         tabWidget->setTabText(tabWidget->indexOf(tab_2), QCoreApplication::translate("MainWindow", "Tab 2", nullptr));
-        label->setText(QCoreApplication::translate("MainWindow", "Select Keyboard", nullptr));
         groupBox->setTitle(QCoreApplication::translate("MainWindow", "Select Display", nullptr));
         radioButton->setText(QCoreApplication::translate("MainWindow", "Display 1", nullptr));
         radioButton_2->setText(QCoreApplication::translate("MainWindow", "Display 2", nullptr));

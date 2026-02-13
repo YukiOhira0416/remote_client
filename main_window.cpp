@@ -86,13 +86,6 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
         sideLayout->addStretch();
 
-        if (ui.label) {
-            sideLayout->addWidget(ui.label);
-        }
-        if (ui.comboBox) {
-            sideLayout->addWidget(ui.comboBox);
-        }
-
         mainLayout->addLayout(sideLayout);
         mainLayout->setStretch(0, 1); // tabWidgetを伸縮させる
         mainLayout->setStretch(1, 0); // 操作パネルは固定幅に近い扱い
