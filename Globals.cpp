@@ -3,6 +3,7 @@
 
 // Instantiate the global queues
 moodycamel::ConcurrentQueue<MouseInputMessage> g_mouseInputQueue;
+moodycamel::ConcurrentQueue<KeyboardInputMessage> g_keyboardInputQueue;
 moodycamel::ConcurrentQueue<EncodedFrame> g_encodedFrameQueue;
 std::deque<ReadyGpuFrame> g_readyGpuFrameQueue;
 std::mutex g_readyGpuFrameQueueMutex;

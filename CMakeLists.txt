@@ -74,6 +74,7 @@ set(SOURCES
     TimeSyncClient.cpp
     AudioClient.cpp
     InputSender.cpp
+    RemoteKeyboard.cpp
 )
 
 # ヘッダーファイル
@@ -92,6 +93,7 @@ set(HEADERS
     AudioClient.h
     AudioPacket.h
     InputSender.h
+    RemoteKeyboard.h
 )
 
 # 実行ファイルを作成

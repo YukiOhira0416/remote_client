@@ -11,6 +11,7 @@ struct AppThreads {
     std::vector<std::thread>* nvdecThreads = nullptr;
     std::thread* rebootListenerThread = nullptr;
     std::thread* inputSenderThread = nullptr;
+    std::thread* keyboardSenderThread = nullptr;
     std::atomic<bool>* input_sender_running = nullptr;
     std::thread* frameMonitorThread = nullptr;
 };

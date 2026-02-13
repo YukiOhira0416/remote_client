@@ -47,6 +47,7 @@
 #include "TimeSyncClient.h"
 #include "AudioClient.h"
 #include "InputSender.h"
+#include "RemoteKeyboard.h"
 #include <QApplication>
 #include <QTimer>
 #include "main_window.h"
@@ -1097,6 +1098,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
         return -1;
     }
 
+    // Initialize low-level remote keyboard hook (non-fatal if it fails)
+    if (!InitializeRemoteKeyboard()) {
+        DebugLog(L"wWinMain: InitializeRemoteKeyboard failed. Remote keyboard is disabled.");
+    }
+
     // Start worker threads
     std::atomic<bool> input_sender_running(true);
     std::thread timeSyncThread(TimeSyncClientThread);
@@ -1104,6 +1110,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     std::thread bandwidthThread(CountBandW);
     std::thread rebootListenerThread(ListenForRebootCommands);
     std::thread inputSenderThread(InputSendThread, std::ref(input_sender_running));
+    std::thread keyboardSenderThread(KeyboardSendThread, std::ref(input_sender_running));
 
     std::vector<std::thread> receiverThreads;
     for (int i = 0; i < getOptimalThreadConfig().receiver; ++i) {
@@ -1175,11 +1182,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
     appThreads.fecWorkerThreads = &fecWorkerThreads;
     appThreads.nvdecThreads = &nvdecThreads;
     appThreads.inputSenderThread = &inputSenderThread;
+    appThreads.keyboardSenderThread = &keyboardSenderThread;
     appThreads.input_sender_running = &input_sender_running;
     appThreads.frameMonitorThread = &frameMonitorThread;
 
     // This single call handles joining all threads and releasing all resources idempotently.
     ReleaseAllResources(appThreads);
+    
+    ShutdownRemoteKeyboard();
     
     DebugLog(L"Cleanup complete. Exiting wWinMain.");
 

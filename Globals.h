@@ -31,6 +31,14 @@
 #define INPUT_SEND_IP "192.168.0.2"
 #define INPUT_SEND_PORT 8300
 
+// Remote keyboard (client <-> agent) configuration
+#define REMOTE_KEYBOARD_CLIENT_IP   "192.168.0.3"
+#define REMOTE_KEYBOARD_CLIENT_PORT 8400
+#define REMOTE_KEYBOARD_SERVER_IP   "192.168.0.2"
+#define REMOTE_KEYBOARD_SERVER_PORT 8400
+
+
+
 // CUDA includes
 #include <cuda.h>
 
@@ -203,8 +211,19 @@ struct MouseInputMessage {
     unsigned char flags;
 };
 
+ // Struct for keyboard input messages (client -> remote)
+ struct KeyboardInputMessage {
+     uint16_t scancode;  // Physical scan code
+     uint16_t state;     // Interception-compatible key state bits (DOWN/UP/E0/E1)
+     uint32_t timestamp; // Client-side timestamp in milliseconds
+ };
+ static_assert(sizeof(KeyboardInputMessage) == 8, "KeyboardInputMessage must be 8 bytes");
+
+
+
 // Global queues and synchronization for frame management
 extern moodycamel::ConcurrentQueue<MouseInputMessage> g_mouseInputQueue;
+extern moodycamel::ConcurrentQueue<KeyboardInputMessage> g_keyboardInputQueue;
 extern moodycamel::ConcurrentQueue<EncodedFrame> g_encodedFrameQueue;
 extern std::deque<ReadyGpuFrame> g_readyGpuFrameQueue;
 extern std::mutex g_readyGpuFrameQueueMutex;

@@ -103,6 +103,7 @@ void ReleaseAllResources(const AppThreads& threads) {
         try {
             if (threads.input_sender_running) threads.input_sender_running->store(false);
             SafeJoin(threads.inputSenderThread, L"inputSenderThread");
+            SafeJoin(threads.keyboardSenderThread, L"keyboardSenderThread");
             SafeJoin(threads.bandwidthThread, L"bandwidthThread");
             SafeJoin(threads.resendThread, L"resendThread");
             SafeJoinVector(threads.receiverThreads, L"receiverThreads");
