@@ -22,6 +22,98 @@
 static HHOOK g_keyboardHook = nullptr;
 static std::atomic<bool> g_remoteKeyboardEnabled{true};
 
+// Helper to convert a virtual-key code to a scan code suitable for
+// our KeyboardInputMessage. If MapVirtualKeyW fails, we fall back
+// to the provided default scan code.
+static uint16_t GetScanCodeForVk(UINT vk, uint16_t fallback)
+{
+    UINT sc = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+    if (sc == 0) {
+        return fallback;
+    }
+    return static_cast<uint16_t>(sc & 0xFF);
+}
+
+// Helper to enqueue a single keyboard event (down/up) into the global
+// keyboard input queue, using the same encoding convention as the
+// low-level hook:
+//   state bit 0 -> 0 = DOWN, 1 = UP
+//   state bit 1 -> E0 flag (extended key)
+//   state bit 2 -> E1 flag (unused here)
+static void EnqueueSyntheticKey(uint16_t scancode, bool isExtended, bool keyDown)
+{
+    KeyboardInputMessage msg{};
+    msg.scancode  = scancode;
+    uint16_t state = keyDown ? 0x00 : 0x01; // DOWN or UP
+    if (isExtended) {
+        state = static_cast<uint16_t>(state | 0x02); // KEY_E0
+    }
+    msg.state     = state;
+    msg.timestamp = static_cast<uint32_t>(GetTickCount());
+
+    g_keyboardInputQueue.enqueue(msg);
+}
+
+// Send Win + L (lock screen) to the remote host.
+void SendShortcutWinL()
+{
+    const uint16_t scWin = GetScanCodeForVk(VK_LWIN, 0x5B);
+    const uint16_t scL   = GetScanCodeForVk('L',    0x26);
+
+    // Win down, L down, L up, Win up
+    EnqueueSyntheticKey(scWin, true,  true);
+    EnqueueSyntheticKey(scL,   false, true);
+    EnqueueSyntheticKey(scL,   false, false);
+    EnqueueSyntheticKey(scWin, true,  false);
+}
+
+// Send Win + G to the remote host.
+void SendShortcutWinG()
+{
+    const uint16_t scWin = GetScanCodeForVk(VK_LWIN, 0x5B);
+    const uint16_t scG   = GetScanCodeForVk('G',    0x22);
+
+    // Win down, G down, G up, Win up
+    EnqueueSyntheticKey(scWin, true,  true);
+    EnqueueSyntheticKey(scG,   false, true);
+    EnqueueSyntheticKey(scG,   false, false);
+    EnqueueSyntheticKey(scWin, true,  false);
+}
+
+// Send Win + Alt + B to the remote host.
+void SendShortcutWinAltB()
+{
+    const uint16_t scWin = GetScanCodeForVk(VK_LWIN, 0x5B);
+    const uint16_t scAlt = GetScanCodeForVk(VK_MENU, 0x38); // Left Alt
+    const uint16_t scB   = GetScanCodeForVk('B',     0x30);
+
+    // Win down, Alt down, B down, B up, Alt up, Win up
+    EnqueueSyntheticKey(scWin, true,  true);
+    EnqueueSyntheticKey(scAlt, false, true);
+    EnqueueSyntheticKey(scB,   false, true);
+    EnqueueSyntheticKey(scB,   false, false);
+    EnqueueSyntheticKey(scAlt, false, false);
+    EnqueueSyntheticKey(scWin, true,  false);
+}
+
+// Send Ctrl + Alt + Delete to the remote host.
+void SendShortcutCtrlAltDel()
+{
+    const uint16_t scCtrl   = GetScanCodeForVk(VK_CONTROL, 0x1D); // Left Ctrl
+    const uint16_t scAlt    = GetScanCodeForVk(VK_MENU,    0x38); // Left Alt
+    const uint16_t scDelete = GetScanCodeForVk(VK_DELETE,  0x53); // Extended Delete
+
+    // Ctrl down, Alt down, Delete down, Delete up, Alt up, Ctrl up
+    EnqueueSyntheticKey(scCtrl,   false, true);
+    EnqueueSyntheticKey(scAlt,    false, true);
+    EnqueueSyntheticKey(scDelete, true,  true);
+    EnqueueSyntheticKey(scDelete, true,  false);
+    EnqueueSyntheticKey(scAlt,    false, false);
+    EnqueueSyntheticKey(scCtrl,   false, false);
+}
+
+
+
 // Low-level keyboard hook procedure.
 // This intercepts physical keyboard input at the OS level so we can:
 //  - Forward it to the remote host, and

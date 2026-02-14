@@ -7,6 +7,7 @@
 #include <QSizePolicy>
 #include "AppShutdown.h"
 #include "window.h"
+#include "RemoteKeyboard.h"
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     ui.setupUi(this);
@@ -182,4 +183,25 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
         }
     }
     return QMainWindow::nativeEvent(eventType, message, result);
+}
+
+
+void MainWindow::on_pushButton_clicked()
+{
+    // Shortcut Key group:
+    //   radioButton_5: Win + L
+    //   radioButton_6: Win + G
+    //   radioButton_7: Win + Alt + B
+    //   radioButton_9: Ctrl + Alt + Delete
+    //
+    // If no radio button is selected, do nothing.
+    if (ui.radioButton_5 && ui.radioButton_5->isChecked()) {
+        SendShortcutWinL();
+    } else if (ui.radioButton_6 && ui.radioButton_6->isChecked()) {
+        SendShortcutWinG();
+    } else if (ui.radioButton_7 && ui.radioButton_7->isChecked()) {
+        SendShortcutWinAltB();
+    } else if (ui.radioButton_9 && ui.radioButton_9->isChecked()) {
+        SendShortcutCtrlAltDel();
+    }
 }

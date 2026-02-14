@@ -103,6 +103,7 @@ public:
         verticalLayout->setContentsMargins(0, 0, 0, 0);
         radioButton_5 = new QRadioButton(verticalLayoutWidget);
         radioButton_5->setObjectName("radioButton_5");
+        radioButton_5->setChecked(true);
 
         verticalLayout->addWidget(radioButton_5);
 
@@ -137,14 +138,17 @@ public:
 
         retranslateUi(MainWindow);
 
+        tabWidget->setCurrentIndex(0);
+
+
         QMetaObject::connectSlotsByName(MainWindow);
     } // setupUi
 
     void retranslateUi(QMainWindow *MainWindow)
     {
         MainWindow->setWindowTitle(QCoreApplication::translate("MainWindow", "MainWindow", nullptr));
-        tabWidget->setTabText(tabWidget->indexOf(tab), QCoreApplication::translate("MainWindow", "Tab 1", nullptr));
-        tabWidget->setTabText(tabWidget->indexOf(tab_2), QCoreApplication::translate("MainWindow", "Tab 2", nullptr));
+        tabWidget->setTabText(tabWidget->indexOf(tab), QCoreApplication::translate("MainWindow", "Controll", nullptr));
+        tabWidget->setTabText(tabWidget->indexOf(tab_2), QCoreApplication::translate("MainWindow", "Settings", nullptr));
         groupBox->setTitle(QCoreApplication::translate("MainWindow", "Select Display", nullptr));
         radioButton->setText(QCoreApplication::translate("MainWindow", "Display 1", nullptr));
         radioButton_2->setText(QCoreApplication::translate("MainWindow", "Display 2", nullptr));

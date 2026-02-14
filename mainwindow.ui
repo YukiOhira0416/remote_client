@@ -35,9 +35,12 @@
       <height>760</height>
      </rect>
     </property>
+    <property name="currentIndex">
+     <number>0</number>
+    </property>
     <widget class="QWidget" name="tab">
      <attribute name="title">
-      <string>Tab 1</string>
+      <string>Controll</string>
      </attribute>
      <widget class="RenderHostWidgets" name="frame">
       <property name="geometry">
@@ -64,7 +67,7 @@
     </widget>
     <widget class="QWidget" name="tab_2">
      <attribute name="title">
-      <string>Tab 2</string>
+      <string>Settings</string>
      </attribute>
     </widget>
    </widget>
@@ -159,6 +162,9 @@
        <widget class="QRadioButton" name="radioButton_5">
         <property name="text">
          <string>Win + L</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
         </property>
        </widget>
       </item>
