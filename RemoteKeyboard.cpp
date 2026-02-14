@@ -50,36 +50,59 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
 
     DWORD fgPid = 0;
     GetWindowThreadProcessId(fg, &fgPid);
-    DWORD thisPid = GetCurrentProcessId();
+    const DWORD thisPid = GetCurrentProcessId();
     if (fgPid != thisPid) {
         return CallNextHookEx(g_keyboardHook, nCode, wParam, lParam);
     }
 
-    // We only care about key down/up (including system keys).
+    // Ignore events that we injected ourselves to avoid feedback loops.
+    if (p->flags & LLKHF_INJECTED) {
+        return CallNextHookEx(g_keyboardHook, nCode, wParam, lParam);
+    }
+
     uint16_t state = 0;
     switch (wParam) {
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
         state = 0x00; // INTERCEPTION_KEY_DOWN
         break;
-
     case WM_KEYUP:
     case WM_SYSKEYUP:
         state = 0x01; // INTERCEPTION_KEY_UP
         break;
-
     default:
+        // Do not intercept other message types.
         return CallNextHookEx(g_keyboardHook, nCode, wParam, lParam);
     }
 
-    // Set extended-key flag (E0) if present.
-    // INTERCEPTION_KEY_E0 is 0x02 in the InterceptionKeyState enum.
-    if (p->flags & LLKHF_EXTENDED) {
-        state = static_cast<uint16_t>(state | 0x02);
+    // Map the LL hook data (vkCode / scanCode / flags) to Interception-style
+    // scan code + state bits. Pause and NumLock are special because they share
+    // the same physical scan code (0x45) but are distinguished by the E0/E1
+    // flags on the remote side.
+    uint16_t scancode = static_cast<uint16_t>(p->scanCode & 0xFF);
+
+    if (p->vkCode == VK_PAUSE) {
+        // Pause (and Ctrl+Pause / Break) use the E1 flag in Interception.
+        // Use the shared scan code 0x45 and set KEY_E1 (0x04).
+        scancode = 0x45;
+        state = static_cast<uint16_t>(state | 0x04); // INTERCEPTION_KEY_E1
+    } else {
+        // For all non-Pause keys, set the E0 flag when Windows reports the
+        // LLKHF_EXTENDED flag. This covers arrow keys, Insert/Delete, etc.
+        if (p->flags & LLKHF_EXTENDED) {
+            state = static_cast<uint16_t>(state | 0x02); // INTERCEPTION_KEY_E0
+        }
+
+        // NumLock does not reliably set LLKHF_EXTENDED in the low-level hook,
+        // but Interception expects the E0 flag to distinguish it from Pause.
+        // Force KEY_E0 here so that NumLock is delivered correctly.
+        if (p->vkCode == VK_NUMLOCK) {
+            state = static_cast<uint16_t>(state | 0x02); // INTERCEPTION_KEY_E0
+        }
     }
 
     KeyboardInputMessage msg{};
-    msg.scancode  = static_cast<uint16_t>(p->scanCode);
+    msg.scancode  = scancode;
     msg.state     = state;
     msg.timestamp = static_cast<uint32_t>(GetTickCount());
 
