@@ -511,8 +511,16 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
                                     auto receive_data_time = std::chrono::system_clock::now();
                                     uint64_t receive_data_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(receive_data_time.time_since_epoch()).count();
 
+                                    // サーバー時刻とクライアント時刻のオフセットを考慮したレイテンシ計算（符号付き）
+                                    int64_t offset_ms = g_TimeOffsetNs.load(std::memory_order_acquire) / 1000000;
+                                    int64_t latency_ms_signed = static_cast<int64_t>(receive_data_time_ts) - static_cast<int64_t>(worker_ts_val) + offset_ms;
+                                    if (latency_ms_signed < 0) {
+                                        // サーバー時刻の方が進んでいるなどで負になった場合は 0 にクリップ（オーバーフロー対策）
+                                        latency_ms_signed = 0;
+                                    }
+
                                     if (count % 60 == 0) DebugLog(L"ReceiveRawPacketsThread: Server FEC End to Client Receive End latency (ms): " +
-                                                     std::to_wstring(receive_data_time_ts - worker_ts_val + g_TimeOffsetNs / 1000000) + L" ms");
+                                                     std::to_wstring(latency_ms_signed) + L" ms");
 
                                 } else {
                                     DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) + L"]: Full shard packet (after WorkerTS) too small for WGCCaptureTS and SIH. Size: " + std::to_wstring(size_after_worker_ts));
@@ -642,8 +650,16 @@ void ReceiveRawPacketsThread(int threadId) { // Renaming to ReceiveENetPacketsTh
 
                                             auto receive_data_time = std::chrono::system_clock::now();
                                             uint64_t receive_data_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(receive_data_time.time_since_epoch()).count();
+
+                                            // サーバー時刻とクライアント時刻のオフセットを考慮したレイテンシ計算（符号付き）
+                                            int64_t offset_ms = g_TimeOffsetNs.load(std::memory_order_acquire) / 1000000;
+                                            int64_t latency_ms_signed = static_cast<int64_t>(receive_data_time_ts) - static_cast<int64_t>(worker_ts_val) + offset_ms;
+                                            if (latency_ms_signed < 0) {
+                                                // サーバー時刻の方が進んでいるなどで負になった場合は 0 にクリップ（オーバーフロー対策）
+                                                latency_ms_signed = 0;
+                                            }
                                             if (count % 60 == 0) DebugLog(L"ReceiveRawPacketsThread: Server FEC End to Client Receive End latency (ms): " +
-                                                     std::to_wstring(receive_data_time_ts - worker_ts_val + g_TimeOffsetNs / 1000000) + L" ms");
+                                                     std::to_wstring(latency_ms_signed) + L" ms");
                                         } else {
                                             DebugLog(L"ReceiveRawPacketsThread [" + std::to_wstring(threadId) +
                                                      L"]: Reassembled size too small for headers.");
@@ -816,8 +832,16 @@ void FecWorkerThread(int threadId) {
                 auto fec_end_time = std::chrono::system_clock::now();
                 uint64_t fec_end_time_ts = std::chrono::duration_cast<std::chrono::milliseconds>(fec_end_time.time_since_epoch()).count();
 
+                // サーバー FEC 完了からクライアント FEC 完了までのレイテンシ（符号付き）
+                int64_t offset_ms = g_TimeOffsetNs.load(std::memory_order_acquire) / 1000000;
+                int64_t fec_latency_ms = static_cast<int64_t>(fec_end_time_ts) - static_cast<int64_t>(parsedInfo.server_fec_timestamp) + offset_ms;
+                if (fec_latency_ms < 0) {
+                    // サーバー時刻の方が進んでいるなどで負になった場合は 0 にクリップ（オーバーフロー対策）
+                    fec_latency_ms = 0;
+                }
+
                 if (processed_count % 60 == 0) DebugLog(L"FecWorkerThread: Server FEC End to Client FEC End latency for frame " + std::to_wstring(frameNumber) + L": " +
-                         std::to_wstring(fec_end_time_ts - parsedInfo.server_fec_timestamp + g_TimeOffsetNs / 1000000) + L" ms");
+                         std::to_wstring(fec_latency_ms) + L" ms");
 
             } else {
                 // Decoding failed, but we might get more shards. Since we already removed it from the buffer,
