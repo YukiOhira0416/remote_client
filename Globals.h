@@ -37,6 +37,10 @@
 #define REMOTE_KEYBOARD_SERVER_IP   "192.168.0.2"
 #define REMOTE_KEYBOARD_SERVER_PORT 8400
 
+// Display sync (client <-> server task tray application) configuration
+#define DISPLAY_SYNC_SERVER_IP   "192.168.0.2"
+#define DISPLAY_SYNC_SERVER_PORT 8500
+
 
 
 // CUDA includes

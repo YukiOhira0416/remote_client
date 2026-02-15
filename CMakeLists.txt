@@ -39,7 +39,7 @@ add_definitions(-DUNICODE -D_UNICODE)
 add_definitions(-DNOMINMAX -DWIN32_LEAN_AND_MEAN)
 
 # Qt6 の検索
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
 
 # インクルードディレクトリ
 include_directories(
@@ -75,6 +75,7 @@ set(SOURCES
     AudioClient.cpp
     InputSender.cpp
     RemoteKeyboard.cpp
+    DisplaySyncClient.cpp
 )
 
 # ヘッダーファイル
@@ -94,6 +95,7 @@ set(HEADERS
     AudioPacket.h
     InputSender.h
     RemoteKeyboard.h
+    DisplaySyncClient.h
 )
 
 # 実行ファイルを作成
@@ -133,6 +135,7 @@ target_link_libraries(${PROJECT_NAME}
 
     # Qt6 ライブラリ
     Qt6::Widgets
+    Qt6::Network
 
     # ENetライブラリ
     ${CMAKE_SOURCE_DIR}/enet_x64-windows/lib/enet.lib

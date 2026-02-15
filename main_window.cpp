@@ -1,4 +1,6 @@
 #include "main_window.h"
+#include <QRadioButton>
+#include "DisplaySyncClient.h"
 #include <QCloseEvent>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -99,6 +101,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         // RenderHostWidgetsはheightForWidthを持つため、レイアウト内で16:9が維持されるように配置
         tabLayout->addWidget(ui.frame, 0, 0);
     }
+    initializeDisplaySelectionUi();
 }
 
 MainWindow::~MainWindow() {}
@@ -204,4 +207,134 @@ void MainWindow::on_pushButton_clicked()
     } else if (ui.radioButton_9 && ui.radioButton_9->isChecked()) {
         SendShortcutCtrlAltDel();
     }
+}
+
+void MainWindow::initializeDisplaySelectionUi()
+{
+    // Cache base labels for each display radio button (Display 1..4).
+    QRadioButton* displayButtons[4] = {
+        ui.radioButton,
+        ui.radioButton_2,
+        ui.radioButton_3,
+        ui.radioButton_4
+    };
+
+    for (int i = 0; i < 4; ++i) {
+        if (displayButtons[i]) {
+            m_displayBaseLabels[i] = displayButtons[i]->text();
+        } else {
+            m_displayBaseLabels[i].clear();
+        }
+    }
+
+    // Connect radio buttons -> DisplaySyncClient
+    auto connectDisplayRadio = [this](QRadioButton* button, int index) {
+        if (!button) {
+            return;
+        }
+        connect(button, &QRadioButton::toggled, this,
+                [this, index](bool checked) {
+                    if (!checked) {
+                        return;
+                    }
+                    if (m_updatingDisplayFromServer) {
+                        // Avoid feedback loops when we are applying state from the server.
+                        return;
+                    }
+                    if (m_displaySyncClient) {
+                        m_displaySyncClient->setActiveDisplayFromUi(index);
+                    }
+                });
+    };
+
+    connectDisplayRadio(ui.radioButton,   0);
+    connectDisplayRadio(ui.radioButton_2, 1);
+    connectDisplayRadio(ui.radioButton_3, 2);
+    connectDisplayRadio(ui.radioButton_4, 3);
+
+    // Create DisplaySyncClient and wire its signals to this window.
+    m_displaySyncClient = new DisplaySyncClient(this);
+
+    connect(m_displaySyncClient, &DisplaySyncClient::activeDisplayChanged,
+            this, &MainWindow::onActiveDisplayChanged);
+    connect(m_displaySyncClient, &DisplaySyncClient::displayCountChanged,
+            this, &MainWindow::onDisplayCountChanged);
+}
+
+void MainWindow::updateDisplayLabels(int activeDisplayCount)
+{
+    int count = activeDisplayCount;
+    if (count < 0) {
+        count = 0;
+    }
+    if (count > 4) {
+        count = 4;
+    }
+
+    QRadioButton* displayButtons[4] = {
+        ui.radioButton,
+        ui.radioButton_2,
+        ui.radioButton_3,
+        ui.radioButton_4
+    };
+
+    for (int i = 0; i < 4; ++i) {
+        QRadioButton* button = displayButtons[i];
+        if (!button) {
+            continue;
+        }
+
+        QString baseLabel;
+        if (i < static_cast<int>(m_displayBaseLabels.size()) &&
+            !m_displayBaseLabels[i].isEmpty()) {
+            baseLabel = m_displayBaseLabels[i];
+        } else {
+            baseLabel = QStringLiteral("Display %1").arg(i + 1);
+            m_displayBaseLabels[i] = baseLabel;
+        }
+
+        if (count > 0 && i >= count) {
+            // There are fewer physical displays than the number of radio buttons.
+            // For example: when server has 2 monitors, Display 3/4 will show "(Disconnect)".
+            button->setText(baseLabel + QStringLiteral(" (Disconnect)"));
+        } else {
+            button->setText(baseLabel);
+        }
+    }
+}
+
+void MainWindow::applyActiveDisplayToUi(int activeIndex)
+{
+    m_updatingDisplayFromServer = true;
+
+    QRadioButton* displayButtons[4] = {
+        ui.radioButton,
+        ui.radioButton_2,
+        ui.radioButton_3,
+        ui.radioButton_4
+    };
+
+    for (int i = 0; i < 4; ++i) {
+        QRadioButton* button = displayButtons[i];
+        if (!button) {
+            continue;
+        }
+        bool shouldCheck = (i == activeIndex);
+        if (button->isChecked() != shouldCheck) {
+            button->setChecked(shouldCheck);
+        }
+    }
+
+    m_updatingDisplayFromServer = false;
+}
+
+void MainWindow::onActiveDisplayChanged(int index)
+{
+    // index is 0-based; -1 means "no active display".
+    applyActiveDisplayToUi(index);
+}
+
+void MainWindow::onDisplayCountChanged(int count)
+{
+    updateDisplayLabels(count);
 }

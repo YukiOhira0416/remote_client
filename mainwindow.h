@@ -83,6 +83,7 @@ public:
         radioButton = new QRadioButton(groupBox);
         radioButton->setObjectName("radioButton");
         radioButton->setGeometry(QRect(10, 36, 92, 20));
+        radioButton->setChecked(true);
         radioButton_2 = new QRadioButton(groupBox);
         radioButton_2->setObjectName("radioButton_2");
         radioButton_2->setGeometry(QRect(10, 64, 92, 20));
