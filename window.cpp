@@ -237,6 +237,54 @@ static inline void SetViewportScissorToBackbuffer(
     cmd->RSSetScissorRects(1, &sc);
 }
 
+// Defensive wrapper around ID3D12Device::CreateShaderResourceView to avoid
+// crashing the process if a buggy driver throws an SEH exception while the
+// Qt ウィンドウのリサイズ中にリソースの再生成が走っている場合でも、
+// ここで例外を捕まえてそのフレームだけをスキップする。
+#if defined(_MSC_VER)
+// SEH を使うヘルパー関数（C++ オブジェクトのアンワインディングが不要な形で実装）
+#pragma warning(push)
+#pragma warning(disable: 4509) // SEH と C++ 混在の警告を抑制
+static int SafeCreateShaderResourceView_SEH_Inner(
+    ID3D12Device* device,
+    ID3D12Resource* resource,
+    const D3D12_SHADER_RESOURCE_VIEW_DESC* desc,
+    D3D12_CPU_DESCRIPTOR_HANDLE handle)
+{
+    __try {
+        device->CreateShaderResourceView(resource, desc, handle);
+        return 1; // Success
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER) {
+        return 0; // Exception occurred
+    }
+}
+#pragma warning(pop)
+#endif
+
+static bool SafeCreateShaderResourceView(
+    ID3D12Device* device,
+    ID3D12Resource* resource,
+    const D3D12_SHADER_RESOURCE_VIEW_DESC* desc,
+    D3D12_CPU_DESCRIPTOR_HANDLE handle)
+{
+    if (!device || !resource) {
+        return false;
+    }
+#if defined(_MSC_VER)
+    int result = SafeCreateShaderResourceView_SEH_Inner(device, resource, desc, handle);
+    if (result == 0) {
+        DebugLog(L"SafeCreateShaderResourceView: CreateShaderResourceView threw an exception. Frame skipped.");
+        return false;
+    }
+    return true;
+#else
+    // 非 MSVC 環境では SEH が使えないので、そのまま呼び出す。
+    device->CreateShaderResourceView(resource, desc, handle);
+    return true;
+#endif
+}
+
 // D3D12 Global Variables
 // Overlay Resources
 Microsoft::WRL::ComPtr<ID3D12PipelineState> g_overlayQuadPso;
@@ -2022,22 +2070,49 @@ bool PopulateCommandList(ReadyGpuFrame& outFrameToRender) { // Return bool, pass
         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srvDesc.Texture2D.MipLevels = 1;
 
+        // YUV444 テクスチャが揃っていない場合は安全のためこのフレームをスキップする。
+        if (!frameToDraw.hw_decoded_texture_Y ||
+            !frameToDraw.hw_decoded_texture_U ||
+            !frameToDraw.hw_decoded_texture_V) {
+            DebugLog(L"PopulateCommandList: YUV444 textures not ready. Skipping frame.");
+            g_commandList->Close();
+            return false;
+        }
+
         // Y plane
         srvDesc.Format = frameToDraw.hw_decoded_texture_Y->GetDesc().Format;
-        g_d3d12Device->CreateShaderResourceView(
-            frameToDraw.hw_decoded_texture_Y.Get(), &srvDesc, srvHandleCpu);
+        if (!SafeCreateShaderResourceView(
+                g_d3d12Device.Get(),
+                frameToDraw.hw_decoded_texture_Y.Get(),
+                &srvDesc,
+                srvHandleCpu)) {
+            g_commandList->Close();
+            return false;
+        }
         srvHandleCpu.Offset(1, g_srvDescriptorSize);
 
         // U plane
         srvDesc.Format = frameToDraw.hw_decoded_texture_U->GetDesc().Format;
-        g_d3d12Device->CreateShaderResourceView(
-            frameToDraw.hw_decoded_texture_U.Get(), &srvDesc, srvHandleCpu);
+        if (!SafeCreateShaderResourceView(
+                g_d3d12Device.Get(),
+                frameToDraw.hw_decoded_texture_U.Get(),
+                &srvDesc,
+                srvHandleCpu)) {
+            g_commandList->Close();
+            return false;
+        }
         srvHandleCpu.Offset(1, g_srvDescriptorSize);
 
         // V plane
         srvDesc.Format = frameToDraw.hw_decoded_texture_V->GetDesc().Format;
-        g_d3d12Device->CreateShaderResourceView(
-            frameToDraw.hw_decoded_texture_V.Get(), &srvDesc, srvHandleCpu);
+        if (!SafeCreateShaderResourceView(
+                g_d3d12Device.Get(),
+                frameToDraw.hw_decoded_texture_V.Get(),
+                &srvDesc,
+                srvHandleCpu)) {
+            g_commandList->Close();
+            return false;
+        }
 
         // シェーダ可視ヒープ設定（従来通り）
         ID3D12DescriptorHeap* ppHeaps[] = { g_srvHeap.Get() };

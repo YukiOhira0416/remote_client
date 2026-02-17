@@ -5,6 +5,9 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QMargins>
 #include <QTabBar>
 #include <QSizePolicy>
 #include "AppShutdown.h"
@@ -17,7 +20,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // 初期値サイズ 1504*846 (16:9 領域 1280*720 を確保)
     // 横: 1280 + 224 = 1504, 縦: 720 + 126 = 846
     resize(1504, 846);
-    setMinimumSize(1504, 846);
+    setMinimumSize(1504, 400);
 
     // centralwidgetにレイアウトを追加して各ウィジェットを適切に配置
     if (ui.centralwidget) {
@@ -94,20 +97,98 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         mainLayout->setStretch(1, 0); // 操作パネルは固定幅に近い扱い
     }
 
-    // タブ内にレイアウトを設定してRenderHostWidgetsをアスペクト比維持で配置
+    // タブ内にスクロールエリアを配置し、その中にRenderHostWidgetsを入れる。
+    // 描写領域は16:9を維持しつつ、横方向のリサイズに追従し、
+    // 縦方向はスクロールで表示できるようにする。
     if (ui.tab && ui.frame) {
+        m_renderScrollArea = new QScrollArea(ui.tab);
+        m_renderScrollArea->setWidgetResizable(false);
+        m_renderScrollArea->setFrameShape(QFrame::NoFrame);
+        m_renderScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_renderScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        m_renderScrollArea->setWidget(ui.frame);
+
         QGridLayout* tabLayout = new QGridLayout(ui.tab);
         tabLayout->setContentsMargins(20, 20, 20, 20); // 上下左右20pxの余白を設定
-        // RenderHostWidgetsはheightForWidthを持つため、レイアウト内で16:9が維持されるように配置
-        tabLayout->addWidget(ui.frame, 0, 0);
+        tabLayout->addWidget(m_renderScrollArea, 0, 0);
     }
     initializeDisplaySelectionUi();
+
+    // 初期表示時に、ウインドウの横幅に合わせて描写領域サイズを16:9で調整
+    updateRenderAreaByWidth();
 }
 
 MainWindow::~MainWindow() {}
 
 RenderHostWidgets* MainWindow::getRenderFrame() const {
     return ui.frame;
+}
+
+void MainWindow::updateRenderAreaByWidth()
+{
+    if (!ui.frame)
+        return;
+
+    int availableWidth = 0;
+
+    if (m_renderScrollArea && m_renderScrollArea->viewport()) {
+        int viewportWidth = m_renderScrollArea->viewport()->width();
+
+        // 垂直スクロールバーが表示されていないときにも、将来スクロールバーが出る
+        // 分の右側の領域をあらかじめ確保しておく。
+        //
+        // - スクロールバー非表示時:
+        //     viewportWidth = タブ領域の全幅
+        //     描写領域幅 = viewportWidth - scrollExtent
+        // - スクロールバー表示時:
+        //     viewportWidth = タブ領域の全幅 - scrollExtent
+        //     描写領域幅 = viewportWidth
+        //
+        // こうしておくことで、スクロールバーの有無に関わらず
+        // 「描写領域の幅」は常に同じになり、スクロールバーが描写領域を
+        // 覆わないようにできる。
+        if (auto *vbar = m_renderScrollArea->verticalScrollBar()) {
+            const int scrollExtent = vbar->sizeHint().width();
+            if (!vbar->isVisible() && scrollExtent > 0) {
+                viewportWidth -= scrollExtent;
+            }
+        }
+
+        availableWidth = viewportWidth;
+    } else if (ui.tab) {
+        if (auto *layout = ui.tab->layout()) {
+            const QMargins margins = layout->contentsMargins();
+            availableWidth = ui.tab->width() - margins.left() - margins.right();
+        } else {
+            availableWidth = ui.tab->width();
+        }
+    } else if (auto *parent = ui.frame->parentWidget()) {
+        availableWidth = parent->width();
+    } else {
+        availableWidth = ui.frame->width();
+    }
+
+    if (availableWidth <= 0)
+        return;
+
+    const int minRenderWidth  = 1280;
+    const int minRenderHeight = 720;
+
+    int renderWidth = availableWidth;
+    if (renderWidth < minRenderWidth) {
+        renderWidth = minRenderWidth;
+    }
+
+    int renderHeight = renderWidth * 9 / 16;
+    if (renderHeight < minRenderHeight) {
+        renderHeight = minRenderHeight;
+    }
+
+    if (ui.frame->width() == renderWidth && ui.frame->height() == renderHeight)
+        return;
+
+    // 常に 16:9 の描写領域を維持できるように固定サイズを設定する。
+    ui.frame->setFixedSize(renderWidth, renderHeight);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
@@ -117,6 +198,14 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 
 void MainWindow::resizeEvent(QResizeEvent *event) {
     QMainWindow::resizeEvent(event);
+
+    // 利用可能な横幅（スクロールバーの有無を含む）が変化したときに
+    // 描写領域がスクロールバーに隠れないよう、毎回サイズを更新する。
+    //
+    // ※ updateRenderAreaByWidth() は横幅だけを見て計算しているため、
+    //    縦方向のリサイズでも viewport 幅が変わる（= スクロールバー出現）場合に
+    //    正しく追従できる。
+    updateRenderAreaByWidth();
 
     // リサイズ中も描画を継続するためにRenderFrameを呼び出す
     // window.cpp側で非ブロッキング化されているため安全に呼び出せる

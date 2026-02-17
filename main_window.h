@@ -8,6 +8,7 @@
 #include "mainwindow.h"
 #include "renderhostwidgets.h"
 
+class QScrollArea;
 class DisplaySyncClient;
 
 class MainWindow : public QMainWindow {
@@ -31,8 +32,11 @@ private:
     void initializeDisplaySelectionUi();
     void updateDisplayLabels(int activeDisplayCount);
     void applyActiveDisplayToUi(int activeIndex);
+    void updateRenderAreaByWidth();
+
 
     Ui::MainWindow ui;
+    QScrollArea* m_renderScrollArea = nullptr;
     DisplaySyncClient* m_displaySyncClient = nullptr;
     std::array<QString, 4> m_displayBaseLabels{};
     bool m_updatingDisplayFromServer = false;
