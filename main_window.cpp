@@ -14,13 +14,21 @@
 #include "window.h"
 #include "RemoteKeyboard.h"
 
+namespace {
+    // 右側の操作パネル(Select Display / Shortcut Key)の基準幅
+    // - 描写領域の右端とウインドウ右端の距離を少し広げつつ一定に保つ
+    // - Display 3 (Disconnect) のラベルが切れないようにするための幅
+    constexpr int kControlPanelWidth = 199;
+}
+
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     ui.setupUi(this);
 
-    // 初期値サイズ 1504*846 (16:9 領域 1280*720 を確保)
-    // 横: 1280 + 224 = 1504, 縦: 720 + 126 = 846
-    resize(1504, 846);
-    setMinimumSize(1504, 400);
+    // 初期値サイズ 1544*846 (16:9 領域 1280*720 を確保しつつ、
+    // 右側の操作パネルに少し余裕を持たせる)
+    // 横: 1280 + 264 = 1544, 縦: 720 + 126 = 846
+    resize(1544, 846);
+    setMinimumSize(1544, 400);
 
     // centralwidgetにレイアウトを追加して各ウィジェットを適切に配置
     if (ui.centralwidget) {
@@ -44,7 +52,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
         sideLayout->setSpacing(10);
 
         if (ui.groupBox) {
-            ui.groupBox->setFixedWidth(159);
+            ui.groupBox->setFixedWidth(kControlPanelWidth);
             // 重要: groupBox配下が"絶対配置"(geometry)のみだと、外側レイアウトに組み込んだ瞬間
             //       groupBoxのsizeHintが極小になり、タイトル行だけの高さに潰れて中のRadioButtonが
             //       クリップされることがある。
@@ -85,9 +93,36 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
                 ui.groupBox->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
                 ui.groupBox->setMinimumHeight(minH);
             }
+        }
 
-            // 上寄せで配置（間にstretchが入るため、意図した高さを維持したまま上に貼り付く）
+        if (ui.groupBox_2) {
+            // Shortcut Key グループもレイアウト管理下に置く。
+            // Designer では groupBox_2 直下に verticalLayoutWidget を絶対配置しているだけなので、
+            // groupBox_2 にレイアウトを付けて横方向にきちんと広がるようにする。
+            if (ui.groupBox_2->layout() == nullptr) {
+                auto* gb2Layout = new QVBoxLayout(ui.groupBox_2);
+                // タイトル領域の分だけ上マージンを多めに取る
+                gb2Layout->setContentsMargins(10, 24, 10, 10);
+                gb2Layout->setSpacing(6);
+
+                if (ui.verticalLayoutWidget) {
+                    ui.verticalLayoutWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+                    gb2Layout->addWidget(ui.verticalLayoutWidget);
+                }
+            }
+
+            // Shortcut Key グループも Select Display と同じ幅で固定し、
+            // 右側の操作パネル全体の幅を一定に保つ
+            ui.groupBox_2->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Minimum);
+            ui.groupBox_2->setFixedWidth(kControlPanelWidth);
+        }
+
+        // 上寄せで配置（間にstretchが入るため、意図した高さを維持したまま上に貼り付く）
+        if (ui.groupBox) {
             sideLayout->addWidget(ui.groupBox, 0, Qt::AlignTop);
+        }
+        if (ui.groupBox_2) {
+            sideLayout->addWidget(ui.groupBox_2, 0, Qt::AlignTop);
         }
 
         sideLayout->addStretch();
