@@ -9,6 +9,7 @@
 #include <QScrollBar>
 #include <QMargins>
 #include <QTabBar>
+#include <QFont>
 #include <QSizePolicy>
 #include "AppShutdown.h"
 #include "window.h"
@@ -43,6 +44,28 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
             // QTabWidget::tabBar() は protected のため findChild で取得する
             if (auto *bar = ui.tabWidget->findChild<QTabBar*>()) {
                 bar->setDrawBase(false);
+
+                // タブバーの見た目と操作性を向上させる:
+                // - タブ全体の縦横サイズを拡大
+                // - 「Controll」「Settings」タブの文字サイズを少し大きく
+                // - タブの位置を少し下に下げる
+                QFont tabFont = bar->font();
+                if (tabFont.pointSize() > 0) {
+                    tabFont.setPointSizeF(tabFont.pointSizeF() * 1.3);
+                } else if (tabFont.pixelSize() > 0) {
+                    tabFont.setPixelSize(static_cast<int>(tabFont.pixelSize() * 1.3));
+                }
+                bar->setFont(tabFont);
+
+                // padding と margin を用いて、タブの縦横サイズを
+                // デフォルト比でほぼ 2 倍に拡大しつつ、
+                // タブバー全体を少し下にオフセットする。
+                bar->setStyleSheet(
+                    "QTabBar::tab {"
+                    "  padding: 10px 30px;"   // 上下, 左右 -> クリック領域を拡大
+                    "  margin-top: 6px;"      // タブを少し下にずらす
+                    "}"
+                );
             }
             mainLayout->addWidget(ui.tabWidget);
         }
