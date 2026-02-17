@@ -23,6 +23,7 @@ public:
         setContentsMargins(0, 0, 0, 0);
 
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        setMinimumSize(1280, 720);
     }
 
     // 16:9のアスペクト比を維持するための設定
