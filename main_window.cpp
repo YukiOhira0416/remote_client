@@ -1,5 +1,6 @@
 #include "main_window.h"
 #include <QRadioButton>
+#include <QTimer>
 #include "DisplaySyncClient.h"
 #include <QCloseEvent>
 #include <QVBoxLayout>
@@ -263,9 +264,13 @@ void MainWindow::resizeEvent(QResizeEvent *event) {
     //    正しく追従できる。
     updateRenderAreaByWidth();
 
-    // リサイズ中も描画を継続するためにRenderFrameを呼び出す
-    // window.cpp側で非ブロッキング化されているため安全に呼び出せる
-    RenderFrame();
+    // RenderFrame を直接呼び出すと、内部での GPU 待ちやメッセージポンプ処理と
+    // Qt のイベントディスパッチが再入してしまい、まれにウインドウ全体が固まる
+    // ことがある。そのため、ここでは Qt のイベントループに 1 フレーム分だけ
+    // 非同期で投げる。
+    QTimer::singleShot(0, []() {
+        RenderFrame();
+    });
 }
 
 

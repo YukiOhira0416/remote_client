@@ -2468,35 +2468,63 @@ void RenderFrame() {
 // Minimal blocking wait, only for shutdown.
 void WaitForGpu() {
     if (!g_d3d12CommandQueue || !g_fence || !g_fenceEvent) return;
+
     // Signal the command queue.
     UINT64 fenceValueToSignal = g_fenceValue;
     HRESULT hr = g_d3d12CommandQueue->Signal(g_fence.Get(), fenceValueToSignal);
-    if (FAILED(hr)) { return; }
+    if (FAILED(hr)) {
+        DebugLog(L"WaitForGpu: Signal failed. HR: " + HResultToHexWString(hr));
+        return;
+    }
 
-    // Wait until the fence has been processed.
-    if (g_fence->GetCompletedValue() < fenceValueToSignal) {
+    // Fast path: fence already completed.
+    if (g_fence->GetCompletedValue() >= fenceValueToSignal) {
+        g_fenceValue++;
+        return;
+    }
+
+    // Bounded wait with message pumping to keep the UI responsive.
+    // During interactive sizing (e.g., while the user is dragging the window),
+    // we keep the timeout shorter so that any stalls do not hard-freeze the app.
+    const bool sizingNow = g_isSizing.load(std::memory_order_acquire);
+    const DWORD totalTimeoutMs = sizingNow ? 500u : 2000u;
+    const DWORD step = 50u;
+
+    DWORD waited = 0;
+    while (g_fence->GetCompletedValue() < fenceValueToSignal) {
         hr = g_fence->SetEventOnCompletion(fenceValueToSignal, g_fenceEvent);
-        if (FAILED(hr)) { return; }
+        if (FAILED(hr)) {
+            DebugLog(L"WaitForGpu: SetEventOnCompletion failed. HR: " + HResultToHexWString(hr));
+            break;
+        }
 
-        while (true) {
-            DWORD waitResult = MsgWaitForMultipleObjects(1, &g_fenceEvent, FALSE, INFINITE, QS_ALLINPUT);
-            if (waitResult == WAIT_OBJECT_0) {
-                // The fence was signaled.
-                break;
+        DWORD waitResult = MsgWaitForMultipleObjects(1, &g_fenceEvent, FALSE, step, QS_ALLINPUT);
+        if (waitResult == WAIT_OBJECT_0) {
+            // The fence was signaled.
+            break;
+        }
+
+        if (waitResult == WAIT_OBJECT_0 + 1 || waitResult == WAIT_TIMEOUT) {
+            // A message is available, or we simply hit the step timeout.
+            // Pump the message queue to keep the app responsive.
+            MSG msg;
+            while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
             }
-            if (waitResult == WAIT_OBJECT_0 + 1) {
-                // A message is available. Pump the message queue.
-                MSG msg;
-                while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-                    TranslateMessage(&msg);
-                    DispatchMessage(&msg);
-                }
-            } else {
-                // An error or unexpected result occurred.
-                break;
-            }
+        } else {
+            // An error or unexpected result occurred.
+            DebugLog(L"WaitForGpu: MsgWaitForMultipleObjects returned unexpected value; aborting wait.");
+            break;
+        }
+
+        waited += step;
+        if (waited >= totalTimeoutMs) {
+            DebugLog(L"WaitForGpu: timed out before fence completion; proceeding without full GPU drain.");
+            break;
         }
     }
+
     g_fenceValue++;
 }
 
