@@ -172,17 +172,15 @@ void MainWindow::updateRenderAreaByWidth()
         return;
 
     const int minRenderWidth  = 1280;
-    const int minRenderHeight = 720;
+    // 最小幅1280の場合、16:9で自動的に高さ720になるため、minRenderHeightは不要
 
     int renderWidth = availableWidth;
     if (renderWidth < minRenderWidth) {
         renderWidth = minRenderWidth;
     }
 
+    // 常に16:9のアスペクト比を維持（最小幅1280で高さは自動的に720以上になる）
     int renderHeight = renderWidth * 9 / 16;
-    if (renderHeight < minRenderHeight) {
-        renderHeight = minRenderHeight;
-    }
 
     if (ui.frame->width() == renderWidth && ui.frame->height() == renderHeight)
         return;
