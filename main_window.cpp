@@ -265,7 +265,7 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
     if (eventType == "windows_generic_MSG" || eventType == "windows_dispatcher_MSG") {
         MSG *msg = static_cast<MSG*>(message);
         if (msg && msg->message == WM_APP + 1) {
-            // F1+F2 でフルスクリーン ⇔ 通常表示をトグル
+            // Ctrl+Alt でフルスクリーン ⇔ 通常表示をトグル
             if (isFullScreen()) {
                 showNormal();
             } else {

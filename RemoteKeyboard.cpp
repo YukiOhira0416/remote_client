@@ -121,12 +121,12 @@ void SendShortcutCtrlAltDel()
 //    when this client process owns the foreground window.
 static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
-    // F1+F2 の同時押し状態をトラッキングして、ローカル側の
+    // Ctrl+Alt の同時押し状態をトラッキングして、ローカル側の
     // フルスクリーントグル専用ホットキーとして扱う。
     // キーイベント自体は従来通りリモートへも送信する。
-    static bool sF1Down = false;
-    static bool sF2Down = false;
-    static bool sF1F2HandledForChord = false;
+    static bool sCtrlDown = false;
+    static bool sAltDown = false;
+    static bool sCtrlAltHandledForChord = false;
 
     if (nCode < 0) {
         return CallNextHookEx(g_keyboardHook, nCode, wParam, lParam);
@@ -174,32 +174,32 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
         return CallNextHookEx(g_keyboardHook, nCode, wParam, lParam);
     }
 
-    // F1+F2 のコンビネーションを検出して、Qt メインウィンドウに
-    // WM_APP+1 を投げる。1回の押下（F1/F2 どちらかが離されるまで）
+    // Ctrl+Alt のコンビネーションを検出して、Qt メインウィンドウに
+    // WM_APP+1 を投げる。1回の押下（Ctrl/Alt どちらかが離されるまで）
     // に対して 1 回だけトグルが走るようにラッチする。
     if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
-        if (p->vkCode == VK_F1) {
-            sF1Down = true;
-        } else if (p->vkCode == VK_F2) {
-            sF2Down = true;
+        if (p->vkCode == VK_LCONTROL || p->vkCode == VK_RCONTROL || p->vkCode == VK_CONTROL) {
+            sCtrlDown = true;
+        } else if (p->vkCode == VK_LMENU || p->vkCode == VK_RMENU || p->vkCode == VK_MENU) {
+            sAltDown = true;
         }
 
-        if (sF1Down && sF2Down && !sF1F2HandledForChord) {
-            sF1F2HandledForChord = true;
+        if (sCtrlDown && sAltDown && !sCtrlAltHandledForChord) {
+            sCtrlAltHandledForChord = true;
 
             if (g_mainWindowHwnd) {
                 PostMessageW(g_mainWindowHwnd, WM_APP + 1, 0, 0);
             }
         }
     } else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
-        if (p->vkCode == VK_F1) {
-            sF1Down = false;
-        } else if (p->vkCode == VK_F2) {
-            sF2Down = false;
+        if (p->vkCode == VK_LCONTROL || p->vkCode == VK_RCONTROL || p->vkCode == VK_CONTROL) {
+            sCtrlDown = false;
+        } else if (p->vkCode == VK_LMENU || p->vkCode == VK_RMENU || p->vkCode == VK_MENU) {
+            sAltDown = false;
         }
 
-        if (!sF1Down && !sF2Down) {
-            sF1F2HandledForChord = false;
+        if (!sCtrlDown && !sAltDown) {
+            sCtrlAltHandledForChord = false;
         }
     }
 
