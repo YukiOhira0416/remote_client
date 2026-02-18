@@ -102,6 +102,7 @@ extern std::atomic<int> currentResolutionWidth;
 extern std::atomic<int> currentResolutionHeight;
 extern std::chrono::high_resolution_clock::time_point g_lastFrameRenderTimeForKick;
 extern HWND g_hWnd;
+extern HWND g_mainWindowHwnd;
 extern HANDLE g_frameLatencyWaitableObject;
 // D3D12 Globals (defined in window.cpp)
 extern Microsoft::WRL::ComPtr<ID3D12Device> g_d3d12Device;

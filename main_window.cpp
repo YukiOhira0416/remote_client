@@ -14,6 +14,7 @@
 #include <QSizePolicy>
 #include "AppShutdown.h"
 #include "window.h"
+#include "Globals.h"
 #include "RemoteKeyboard.h"
 
 namespace {
@@ -25,6 +26,11 @@ namespace {
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     ui.setupUi(this);
+
+#ifdef _WIN32
+    // RemoteKeyboard から WM_APP+1 を受け取るための HWND をグローバルに保持
+    g_mainWindowHwnd = reinterpret_cast<HWND>(this->winId());
+#endif
 
     // 初期値サイズ 1544*846 (16:9 領域 1280*720 を確保しつつ、
     // 右側の操作パネルに少し余裕を持たせる)
@@ -251,6 +257,29 @@ void MainWindow::updateRenderAreaByWidth()
 void MainWindow::closeEvent(QCloseEvent *event) {
     RequestShutdown();
     QMainWindow::closeEvent(event);
+}
+
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
+{
+#ifdef _WIN32
+    if (eventType == "windows_generic_MSG" || eventType == "windows_dispatcher_MSG") {
+        MSG *msg = static_cast<MSG*>(message);
+        if (msg && msg->message == WM_APP + 1) {
+            // F1+F2 でフルスクリーン ⇔ 通常表示をトグル
+            if (isFullScreen()) {
+                showNormal();
+            } else {
+                showFullScreen();
+            }
+
+            if (result) {
+                *result = 0;
+            }
+            return true;
+        }
+    }
+#endif
+    return QMainWindow::nativeEvent(eventType, message, result);
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event) {

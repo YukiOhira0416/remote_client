@@ -24,6 +24,7 @@ std::atomic<uint64_t> g_lastFrameTickMs(0);
 PendingResize g_pendingResize;
 
 HWND g_hWnd = nullptr;
+HWND g_mainWindowHwnd = nullptr;
 HANDLE g_frameLatencyWaitableObject = nullptr;
 
 const int RS_K = 14;
