@@ -20,6 +20,7 @@
 #include "Globals.h"
 #include "RemoteKeyboard.h"
 #include "ModeSyncClient.h"
+#include "DebugLog.h"
 
 namespace {
     // 右側の操作パネル(Select Display / Shortcut Key)の基準幅
@@ -508,12 +509,20 @@ void MainWindow::onDisplayCountChanged(int count)
 void MainWindow::onSpeedSaveClicked()
 {
     if (!m_modeSyncClient) {
+        // ModeSyncClient が生成されていない場合はログを残して終了
+        DebugLog(L"MainWindow::onSpeedSaveClicked: m_modeSyncClient is null.");
         return;
     }
 
     QCheckBox* lowCheck    = ui.checkBox;
     QCheckBox* mediumCheck = ui.checkBox_2;
     QCheckBox* highCheck   = ui.checkBox_3;
+
+    // いずれのチェックボックスも UI 上に存在しない異常ケース
+    if (!lowCheck && !mediumCheck && !highCheck) {
+        DebugLog(L"MainWindow::onSpeedSaveClicked: all mode checkboxes are null.");
+        return;
+    }
 
     int mode = 0;
     if (lowCheck && lowCheck->isChecked()) {
@@ -526,19 +535,31 @@ void MainWindow::onSpeedSaveClicked()
 
     if (mode == 0) {
         // Nothing selected; do not send anything.
+        DebugLog(L"MainWindow::onSpeedSaveClicked: no mode selected; MODE command not sent.");
         return;
     }
+
+    // ここまで来たら MODE を送信する
+    std::wstring msg = L"MainWindow::onSpeedSaveClicked: sending MODE ";
+    msg += std::to_wstring(mode);
+    DebugLog(msg);
 
     m_modeSyncClient->setModeFromUi(mode);
 }
 
 void MainWindow::onModeChanged(int mode)
 {
+    // サーバ(タスクトレイ)側から受信したモードのログ
+    std::wstring msg = L"MainWindow::onModeChanged: mode received from network = ";
+    msg += std::to_wstring(mode);
+    DebugLog(msg);
+
     QCheckBox* lowCheck    = ui.checkBox;
     QCheckBox* mediumCheck = ui.checkBox_2;
     QCheckBox* highCheck   = ui.checkBox_3;
 
     if (!lowCheck || !mediumCheck || !highCheck) {
+        DebugLog(L"MainWindow::onModeChanged: one or more mode checkboxes are null.");
         return;
     }
 

@@ -133,6 +133,7 @@ public:
         checkBox = new QCheckBox(groupBox_3);
         checkBox->setObjectName("checkBox");
         checkBox->setGeometry(QRect(40, 30, 78, 20));
+        checkBox->setChecked(true);
         label_5 = new QLabel(groupBox_3);
         label_5->setObjectName("label_5");
         label_5->setGeometry(QRect(90, 20, 501, 31));
@@ -246,7 +247,7 @@ public:
         groupBox_4->setTitle(QCoreApplication::translate("MainWindow", "Medium-speed", nullptr));
         checkBox_2->setText(QString());
         label_6->setText(QCoreApplication::translate("MainWindow", "Network speed: 150-250 Mbps / Max resolution of client display area: 2560x1440", nullptr));
-        groupBox_5->setTitle(QCoreApplication::translate("MainWindow", "Higt-speed", nullptr));
+        groupBox_5->setTitle(QCoreApplication::translate("MainWindow", "High-speed", nullptr));
         checkBox_3->setText(QString());
         label_7->setText(QCoreApplication::translate("MainWindow", "Network speed: 300+ Mbps / Max resolution of client display area: 3840x2160", nullptr));
         pushButton_3->setText(QCoreApplication::translate("MainWindow", "Save", nullptr));
