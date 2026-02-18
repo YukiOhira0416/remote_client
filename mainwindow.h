@@ -53,6 +53,7 @@ public:
     QGroupBox *groupBox_5;
     QCheckBox *checkBox_3;
     QLabel *label_7;
+    QPushButton *pushButton_3;
     QGroupBox *groupBox;
     QRadioButton *radioButton;
     QRadioButton *radioButton_2;
@@ -109,6 +110,7 @@ public:
         pushButton_2 = new QPushButton(tab_2);
         pushButton_2->setObjectName("pushButton_2");
         pushButton_2->setGeometry(QRect(410, 60, 91, 41));
+        pushButton_2->setFont(font);
         label_2 = new QLabel(tab_2);
         label_2->setObjectName("label_2");
         label_2->setGeometry(QRect(560, 20, 171, 31));
@@ -156,6 +158,10 @@ public:
         label_7 = new QLabel(groupBox_5);
         label_7->setObjectName("label_7");
         label_7->setGeometry(QRect(90, 20, 501, 31));
+        pushButton_3 = new QPushButton(tab_2);
+        pushButton_3->setObjectName("pushButton_3");
+        pushButton_3->setGeometry(QRect(710, 660, 91, 51));
+        pushButton_3->setFont(font);
         tabWidget->addTab(tab_2, QString());
         groupBox = new QGroupBox(centralwidget);
         groupBox->setObjectName("groupBox");
@@ -219,7 +225,7 @@ public:
 
         retranslateUi(MainWindow);
 
-        tabWidget->setCurrentIndex(0);
+        tabWidget->setCurrentIndex(1);
 
 
         QMetaObject::connectSlotsByName(MainWindow);
@@ -243,6 +249,7 @@ public:
         groupBox_5->setTitle(QCoreApplication::translate("MainWindow", "Higt-speed", nullptr));
         checkBox_3->setText(QString());
         label_7->setText(QCoreApplication::translate("MainWindow", "Network speed: 300+ Mbps / Max resolution of client display area: 3840x2160", nullptr));
+        pushButton_3->setText(QCoreApplication::translate("MainWindow", "Save", nullptr));
         tabWidget->setTabText(tabWidget->indexOf(tab_2), QCoreApplication::translate("MainWindow", "Settings", nullptr));
         groupBox->setTitle(QCoreApplication::translate("MainWindow", "Select Display", nullptr));
         radioButton->setText(QCoreApplication::translate("MainWindow", "Display 1", nullptr));
