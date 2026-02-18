@@ -12,10 +12,14 @@
 #include <QTabBar>
 #include <QFont>
 #include <QSizePolicy>
+#include <QCheckBox>
+#include <QPushButton>
+#include <QSignalBlocker>
 #include "AppShutdown.h"
 #include "window.h"
 #include "Globals.h"
 #include "RemoteKeyboard.h"
+#include "ModeSyncClient.h"
 
 namespace {
     // 右側の操作パネル(Select Display / Shortcut Key)の基準幅
@@ -26,6 +30,54 @@ namespace {
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     ui.setupUi(this);
+
+    // --- Mode Selection (Low/Medium/High speed) UI wiring ---
+    {
+        QCheckBox* lowCheck    = ui.checkBox;
+        QCheckBox* mediumCheck = ui.checkBox_2;
+        QCheckBox* highCheck   = ui.checkBox_3;
+
+        if (lowCheck && mediumCheck && highCheck) {
+            auto connectExclusive = [this](QCheckBox* source, QCheckBox* other1, QCheckBox* other2) {
+                if (!source) {
+                    return;
+                }
+                connect(source, &QCheckBox::toggled, this,
+                        [other1, other2](bool checked) {
+                            if (!checked) {
+                                return;
+                            }
+                            if (other1) {
+                                QSignalBlocker b1(other1);
+                                other1->setChecked(false);
+                            }
+                            if (other2) {
+                                QSignalBlocker b2(other2);
+                                other2->setChecked(false);
+                            }
+                        });
+            };
+
+            connectExclusive(lowCheck,    mediumCheck, highCheck);
+            connectExclusive(mediumCheck, lowCheck,    highCheck);
+            connectExclusive(highCheck,   lowCheck,    mediumCheck);
+        }
+    }
+
+    // Create ModeSyncClient to keep speed mode in sync with the task-tray app.
+    m_modeSyncClient = new ModeSyncClient(this);
+
+    if (m_modeSyncClient) {
+        // Apply mode changes received from the server to the UI.
+        connect(m_modeSyncClient, &ModeSyncClient::modeChanged,
+                this, &MainWindow::onModeChanged);
+    }
+
+    // Hook the Save button (on Settings tab) to notify the server of changes.
+    if (ui.pushButton_3) {
+        connect(ui.pushButton_3, &QPushButton::clicked,
+                this, &MainWindow::onSpeedSaveClicked);
+    }
 
 #ifdef _WIN32
     // RemoteKeyboard から WM_APP+1 を受け取るための HWND をグローバルに保持
@@ -451,4 +503,50 @@ void MainWindow::onActiveDisplayChanged(int index)
 void MainWindow::onDisplayCountChanged(int count)
 {
     updateDisplayLabels(count);
+}
+
+void MainWindow::onSpeedSaveClicked()
+{
+    if (!m_modeSyncClient) {
+        return;
+    }
+
+    QCheckBox* lowCheck    = ui.checkBox;
+    QCheckBox* mediumCheck = ui.checkBox_2;
+    QCheckBox* highCheck   = ui.checkBox_3;
+
+    int mode = 0;
+    if (lowCheck && lowCheck->isChecked()) {
+        mode = 1;
+    } else if (mediumCheck && mediumCheck->isChecked()) {
+        mode = 2;
+    } else if (highCheck && highCheck->isChecked()) {
+        mode = 3;
+    }
+
+    if (mode == 0) {
+        // Nothing selected; do not send anything.
+        return;
+    }
+
+    m_modeSyncClient->setModeFromUi(mode);
+}
+
+void MainWindow::onModeChanged(int mode)
+{
+    QCheckBox* lowCheck    = ui.checkBox;
+    QCheckBox* mediumCheck = ui.checkBox_2;
+    QCheckBox* highCheck   = ui.checkBox_3;
+
+    if (!lowCheck || !mediumCheck || !highCheck) {
+        return;
+    }
+
+    QSignalBlocker b1(lowCheck);
+    QSignalBlocker b2(mediumCheck);
+    QSignalBlocker b3(highCheck);
+
+    lowCheck->setChecked(mode == 1);
+    mediumCheck->setChecked(mode == 2);
+    highCheck->setChecked(mode == 3);
 }

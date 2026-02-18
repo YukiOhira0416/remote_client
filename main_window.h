@@ -10,6 +10,7 @@
 
 class QScrollArea;
 class DisplaySyncClient;
+class ModeSyncClient;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -35,9 +36,13 @@ private:
     void applyActiveDisplayToUi(int activeIndex);
     void updateRenderAreaByWidth();
 
+    void onSpeedSaveClicked();
+    void onModeChanged(int mode);
+
 
     Ui::MainWindow ui;
     QScrollArea* m_renderScrollArea = nullptr;
+    ModeSyncClient* m_modeSyncClient = nullptr;
     DisplaySyncClient* m_displaySyncClient = nullptr;
     std::array<QString, 4> m_displayBaseLabels{};
     bool m_updatingDisplayFromServer = false;

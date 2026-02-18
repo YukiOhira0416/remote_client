@@ -283,7 +283,7 @@
        </rect>
       </property>
       <property name="title">
-       <string>Higt-speed</string>
+       <string>High-speed</string>
       </property>
       <widget class="QCheckBox" name="checkBox_3">
        <property name="geometry">

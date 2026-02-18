@@ -41,6 +41,11 @@
 #define DISPLAY_SYNC_SERVER_IP   "192.168.0.2"
 #define DISPLAY_SYNC_SERVER_PORT 8500
 
+// Mode sync (client <-> server task tray application) configuration
+#define MODE_SYNC_SERVER_IP   "192.168.0.2"
+#define MODE_SYNC_SERVER_PORT 8600
+
+
 
 
 // CUDA includes

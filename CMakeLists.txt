@@ -76,6 +76,7 @@ set(SOURCES
     InputSender.cpp
     RemoteKeyboard.cpp
     DisplaySyncClient.cpp
+    ModeSyncClient.cpp
 )
 
 # ヘッダーファイル
@@ -96,6 +97,7 @@ set(HEADERS
     InputSender.h
     RemoteKeyboard.h
     DisplaySyncClient.h
+    ModeSyncClient.h
 )
 
 # 実行ファイルを作成
