@@ -1,7 +1,7 @@
 /********************************************************************************
 ** Form generated from reading UI file 'mainwindow.ui'
 **
-** Created by: Qt User Interface Compiler version 6.9.3
+** Created by: Qt User Interface Compiler version 6.10.2
 **
 ** WARNING! All changes made in this file will be lost when recompiling UI file!
 ********************************************************************************/
@@ -11,13 +11,17 @@
 
 #include <QtCore/QVariant>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QGroupBox>
+#include <QtWidgets/QLabel>
+#include <QtWidgets/QLineEdit>
 #include <QtWidgets/QMainWindow>
 #include <QtWidgets/QMenuBar>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QRadioButton>
 #include <QtWidgets/QStatusBar>
 #include <QtWidgets/QTabWidget>
+#include <QtWidgets/QTextEdit>
 #include <QtWidgets/QVBoxLayout>
 #include <QtWidgets/QWidget>
 #include "renderhostwidgets.h"
@@ -32,6 +36,23 @@ public:
     QWidget *tab;
     RenderHostWidgets *frame;
     QWidget *tab_2;
+    QTextEdit *textEdit;
+    QLabel *label;
+    QPushButton *pushButton_2;
+    QLabel *label_2;
+    QLineEdit *lineEdit;
+    QLabel *label_3;
+    QLineEdit *lineEdit_2;
+    QGroupBox *groupBox_3;
+    QCheckBox *checkBox;
+    QLabel *label_5;
+    QLabel *label_4;
+    QGroupBox *groupBox_4;
+    QCheckBox *checkBox_2;
+    QLabel *label_6;
+    QGroupBox *groupBox_5;
+    QCheckBox *checkBox_3;
+    QLabel *label_7;
     QGroupBox *groupBox;
     QRadioButton *radioButton;
     QRadioButton *radioButton_2;
@@ -76,6 +97,65 @@ public:
         tabWidget->addTab(tab, QString());
         tab_2 = new QWidget();
         tab_2->setObjectName("tab_2");
+        textEdit = new QTextEdit(tab_2);
+        textEdit->setObjectName("textEdit");
+        textEdit->setGeometry(QRect(30, 60, 341, 41));
+        label = new QLabel(tab_2);
+        label->setObjectName("label");
+        label->setGeometry(QRect(30, 30, 151, 21));
+        QFont font;
+        font.setPointSize(12);
+        label->setFont(font);
+        pushButton_2 = new QPushButton(tab_2);
+        pushButton_2->setObjectName("pushButton_2");
+        pushButton_2->setGeometry(QRect(410, 60, 91, 41));
+        label_2 = new QLabel(tab_2);
+        label_2->setObjectName("label_2");
+        label_2->setGeometry(QRect(560, 20, 171, 31));
+        label_2->setFont(font);
+        lineEdit = new QLineEdit(tab_2);
+        lineEdit->setObjectName("lineEdit");
+        lineEdit->setGeometry(QRect(560, 60, 471, 171));
+        sizePolicy.setHeightForWidth(lineEdit->sizePolicy().hasHeightForWidth());
+        lineEdit->setSizePolicy(sizePolicy);
+        label_3 = new QLabel(tab_2);
+        label_3->setObjectName("label_3");
+        label_3->setGeometry(QRect(40, 230, 221, 31));
+        label_3->setFont(font);
+        lineEdit_2 = new QLineEdit(tab_2);
+        lineEdit_2->setObjectName("lineEdit_2");
+        lineEdit_2->setGeometry(QRect(40, 260, 761, 131));
+        groupBox_3 = new QGroupBox(tab_2);
+        groupBox_3->setObjectName("groupBox_3");
+        groupBox_3->setGeometry(QRect(40, 450, 631, 71));
+        checkBox = new QCheckBox(groupBox_3);
+        checkBox->setObjectName("checkBox");
+        checkBox->setGeometry(QRect(40, 30, 78, 20));
+        label_5 = new QLabel(groupBox_3);
+        label_5->setObjectName("label_5");
+        label_5->setGeometry(QRect(90, 20, 501, 31));
+        label_4 = new QLabel(tab_2);
+        label_4->setObjectName("label_4");
+        label_4->setGeometry(QRect(40, 410, 221, 41));
+        label_4->setFont(font);
+        groupBox_4 = new QGroupBox(tab_2);
+        groupBox_4->setObjectName("groupBox_4");
+        groupBox_4->setGeometry(QRect(40, 550, 631, 71));
+        checkBox_2 = new QCheckBox(groupBox_4);
+        checkBox_2->setObjectName("checkBox_2");
+        checkBox_2->setGeometry(QRect(40, 30, 78, 20));
+        label_6 = new QLabel(groupBox_4);
+        label_6->setObjectName("label_6");
+        label_6->setGeometry(QRect(90, 20, 501, 31));
+        groupBox_5 = new QGroupBox(tab_2);
+        groupBox_5->setObjectName("groupBox_5");
+        groupBox_5->setGeometry(QRect(40, 640, 631, 71));
+        checkBox_3 = new QCheckBox(groupBox_5);
+        checkBox_3->setObjectName("checkBox_3");
+        checkBox_3->setGeometry(QRect(40, 30, 78, 20));
+        label_7 = new QLabel(groupBox_5);
+        label_7->setObjectName("label_7");
+        label_7->setGeometry(QRect(90, 20, 501, 31));
         tabWidget->addTab(tab_2, QString());
         groupBox = new QGroupBox(centralwidget);
         groupBox->setObjectName("groupBox");
@@ -149,6 +229,20 @@ public:
     {
         MainWindow->setWindowTitle(QCoreApplication::translate("MainWindow", "MainWindow", nullptr));
         tabWidget->setTabText(tabWidget->indexOf(tab), QCoreApplication::translate("MainWindow", "Controll", nullptr));
+        label->setText(QCoreApplication::translate("MainWindow", "Client Name", nullptr));
+        pushButton_2->setText(QCoreApplication::translate("MainWindow", "Save", nullptr));
+        label_2->setText(QCoreApplication::translate("MainWindow", "System Infomation", nullptr));
+        label_3->setText(QCoreApplication::translate("MainWindow", "Announcement", nullptr));
+        groupBox_3->setTitle(QCoreApplication::translate("MainWindow", "Low-speed", nullptr));
+        checkBox->setText(QString());
+        label_5->setText(QCoreApplication::translate("MainWindow", "Network speed: ~100 Mbps / Max resolution of client display area: 1920x1080", nullptr));
+        label_4->setText(QCoreApplication::translate("MainWindow", "Mode Selection", nullptr));
+        groupBox_4->setTitle(QCoreApplication::translate("MainWindow", "Medium-speed", nullptr));
+        checkBox_2->setText(QString());
+        label_6->setText(QCoreApplication::translate("MainWindow", "Network speed: 150-250 Mbps / Max resolution of client display area: 2560x1440", nullptr));
+        groupBox_5->setTitle(QCoreApplication::translate("MainWindow", "Higt-speed", nullptr));
+        checkBox_3->setText(QString());
+        label_7->setText(QCoreApplication::translate("MainWindow", "Network speed: 300+ Mbps / Max resolution of client display area: 3840x2160", nullptr));
         tabWidget->setTabText(tabWidget->indexOf(tab_2), QCoreApplication::translate("MainWindow", "Settings", nullptr));
         groupBox->setTitle(QCoreApplication::translate("MainWindow", "Select Display", nullptr));
         radioButton->setText(QCoreApplication::translate("MainWindow", "Display 1", nullptr));
