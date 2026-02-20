@@ -241,6 +241,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 
     // 初期表示時に、ウインドウの横幅に合わせて描写領域サイズを16:9で調整
     updateRenderAreaByWidth();
+    // フルスクリーン解除時に、直前の状態（通常 / 最大化）へ戻すための初期状態を記録しておく
+    m_previousWindowState = windowState();
 }
 
 MainWindow::~MainWindow() {}
@@ -327,8 +329,20 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
         if (msg && msg->message == WM_APP + 1) {
             // Ctrl+Alt でフルスクリーン ⇔ 通常表示をトグル
             if (isFullScreen()) {
-                showNormal();
+                // フルスクリーン解除時に、直前のウインドウ状態に応じて復元する。
+                // - 最大化状態からフルスクリーンにした場合: showMaximized() で再度最大化
+                // - 最小化状態からフルスクリーンにした場合: showMinimized() で再度最小化
+                // - それ以外の場合: showNormal() で通常表示に戻す
+                if (m_previousWindowState.testFlag(Qt::WindowMaximized)) {
+                    showMaximized();
+                } else if (m_previousWindowState.testFlag(Qt::WindowMinimized)) {
+                    showMinimized();
+                } else {
+                    showNormal();
+                }
             } else {
+                // フルスクリーンへ入る直前のウインドウ状態を記録しておく
+                m_previousWindowState = windowState();
                 showFullScreen();
             }
 

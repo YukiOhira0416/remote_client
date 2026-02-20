@@ -47,6 +47,7 @@ private:
     DisplaySyncClient* m_displaySyncClient = nullptr;
     std::array<QString, 4> m_displayBaseLabels{};
     bool m_updatingDisplayFromServer = false;
+    Qt::WindowStates m_previousWindowState = Qt::WindowNoState;
 };
 
 #endif // MAIN_WINDOW_H
