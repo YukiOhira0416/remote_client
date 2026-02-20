@@ -10,6 +10,7 @@
 #include <QScrollBar>
 #include <QMargins>
 #include <QTabBar>
+#include <QTabWidget>
 #include <QFont>
 #include <QSizePolicy>
 #include <QCheckBox>
@@ -127,6 +128,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
                     "}"
                 );
             }
+
+            // ウインドウサイズが "Settings" タブ選択中に変更された場合でも、
+            // "Controll" タブに戻ったタイミングで描写領域のサイズが追従するようにする。
+            connect(ui.tabWidget, &QTabWidget::currentChanged,
+                    this, &MainWindow::onTabCurrentChanged);
+
             mainLayout->addWidget(ui.tabWidget);
         }
 
@@ -333,6 +340,32 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
     }
 #endif
     return QMainWindow::nativeEvent(eventType, message, result);
+}
+
+void MainWindow::onTabCurrentChanged(int index)
+{
+    if (!ui.tabWidget) {
+        return;
+    }
+
+    QWidget* current = ui.tabWidget->widget(index);
+    if (!current) {
+        return;
+    }
+
+    // 描写エリアが配置されている "Controll" タブがアクティブになったときだけ、
+    // タブ領域の幅に合わせて描写エリアのサイズを再計算する。
+    if (current != ui.tab) {
+        return;
+    }
+
+    // タブ切り替え後のレイアウトに合わせて描写領域のサイズを更新し、
+    // 1フレーム分だけ再描画を要求する。
+    updateRenderAreaByWidth();
+
+    QTimer::singleShot(0, []() {
+        RenderFrame();
+    });
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event) {

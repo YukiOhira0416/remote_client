@@ -29,6 +29,7 @@ private slots:
     void on_pushButton_clicked();
     void onActiveDisplayChanged(int index);
     void onDisplayCountChanged(int count);
+    void onTabCurrentChanged(int index);
 
 private:
     void initializeDisplaySelectionUi();
